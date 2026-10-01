@@ -15,6 +15,7 @@ MISSING = FIXTURES / "module_missing.xml"
 DOTNET_PACKAGE = FIXTURES / "dotnet_package.xml"
 DOTNET_CLASS = FIXTURES / "dotnet_class.xml"
 TEST_NAME_ONLY = FIXTURES / "test_name_only.xml"
+PRODUCTION_VS_TESTS = FIXTURES / "production_vs_tests.xml"
 
 
 def test_above_floor_passes() -> None:
@@ -64,6 +65,37 @@ def test_below_floor_message_names_module_floor_and_observed_rate() -> None:
 
 def test_module_does_not_match_files_that_merely_contain_the_name() -> None:
     result = check_coverage(TEST_NAME_ONLY, "depcheck", 90)
+    assert result.matched_units == 0
+    assert result.meets_floor is False
+
+
+def test_test_sources_do_not_count_toward_the_production_floor() -> None:
+    result = check_coverage(PRODUCTION_VS_TESTS, "core-math", 90)
+    assert result.matched_units >= 1
+    assert result.covered_lines == 5
+    assert result.total_lines == 5
+    assert result.rate == pytest.approx(100.0)
+    assert result.meets_floor is True
+
+
+def test_test_only_path_does_not_match_a_production_module(tmp_path: Path) -> None:
+    report = tmp_path / "tests_only.xml"
+    report.write_text(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        '<coverage line-rate="0" lines-covered="0" lines-valid="3" version="0">\n'
+        "  <sources>\n    <source>cpp</source>\n  </sources>\n"
+        "  <packages>\n"
+        '    <package name="tests.core-math" line-rate="0">\n      <classes>\n'
+        '        <class name="version_test.cpp" filename="tests/core-math/version_test.cpp" line-rate="0">\n'
+        "          <lines>\n"
+        '            <line number="5" hits="0"/>\n'
+        '            <line number="6" hits="0"/>\n'
+        '            <line number="7" hits="0"/>\n'
+        "          </lines>\n"
+        "        </class>\n      </classes>\n    </package>\n  </packages>\n</coverage>\n",
+        encoding="utf-8",
+    )
+    result = check_coverage(report, "core-math", 90)
     assert result.matched_units == 0
     assert result.meets_floor is False
 

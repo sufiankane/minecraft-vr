@@ -3,10 +3,10 @@
            "handcore":  { "forbidIncludes": ["windows.h", "onnxruntime", "xr_", "viture", "thread", "fstream", "filesystem", "mutex"] } },
   "dotnet": { "Cubeglass.CoreMath": { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": [] },
-              "Cubeglass.Voxel":     { "forbidNamespaces": ["UnityEngine", "UnityEditor"],
+              "Cubeglass.Voxel":     { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath"] },
-              "Cubeglass.Mesh":      { "forbidNamespaces": ["UnityEngine", "UnityEditor"],
+              "Cubeglass.Mesh":      { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] },
-              "Cubeglass.Gameplay":  { "forbidNamespaces": ["UnityEngine", "UnityEditor"],
+              "Cubeglass.Gameplay":  { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] } }
 }

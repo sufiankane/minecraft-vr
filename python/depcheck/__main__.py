@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from depcheck.coverage_check import CoverageError, check_coverage
-from depcheck.licences import check_licences
+from depcheck.licences import LicenceError, check_licences
 from depcheck.rules import check_root
 
 _ROOT_HELP = "Repository root (default: current directory)."
@@ -70,7 +70,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "licences":
         licences_root: Path = args.licences_root or args.root or Path.cwd()
-        missing = check_licences(licences_root)
+        try:
+            missing = check_licences(licences_root)
+        except LicenceError as error:
+            print(f"licences error: {error}")
+            return 1
         for package in missing:
             print(package)
         return 1 if missing else 0

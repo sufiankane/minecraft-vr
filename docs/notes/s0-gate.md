@@ -5,9 +5,11 @@
 - **Task:** S0-WI6 / Task 11
 - **Branch:** `s0/exit-gate` (short-lived; not pushed, not tagged — the
   controller performs the remote steps and the `stage-0-complete` tag)
-- **Commit under test:** `f171df2 fix(ci): create the Unity Assets folder before
-  the test lane` (script final; the evidence-log commit that follows does not
-  change the runner)
+- **Commit under test:** `29d3da6 S0: fresh-clone validation and exit-gate
+  evidence (#5)` (squash-merge of this work onto `main`; the pre-squash branch
+  commit was `f171df2 fix(ci): create the Unity Assets folder before the test
+  lane`, script final — the evidence-log commit that followed does not change the
+  runner)
 - **Runner:** `scripts/ci-local.ps1`
 
 ## 1. Toolchain versions
@@ -66,7 +68,7 @@ from the GitHub URL and then the local branch commit was fetched into it:
 $local = (Get-Location).Path
 git clone https://github.com/sufiankane/minecraft-vr.git $cloneDir
 git -C $cloneDir fetch $local s0/exit-gate
-git -C $cloneDir checkout -q FETCH_HEAD      # f171df2
+git -C $cloneDir checkout -q FETCH_HEAD      # f171df2 (pre-squash branch commit)
 git -C $cloneDir clean -xdn                  # no ignored build state
 ```
 
@@ -154,7 +156,8 @@ Controlled isolation (outside the repository, copied project trees):
 - same project once an empty `Assets` folder exists → exit 0, `1 passed`;
 - main workspace (which has had Unity create `Assets`) → exit 0.
 
-Fix (commits `206dfca` hardening + `f171df2`):
+Fix (pre-squash branch commits `206dfca` hardening + `f171df2`, merged as
+`29d3da6`):
 
 - run the Unity lane from the repository root using the canonical relative
   project path `unity/Cubeglass` (matching `docs/toolchains.md`) rather than an
@@ -193,8 +196,8 @@ the merge runs show PRs only land on `main` after all required checks pass.
 
 ## 7. Files added by this task
 
-- `scripts/ci-local.ps1` — fail-fast local CI runner (commits `8b804b7`,
-  `206dfca`, `f171df2`).
+- `scripts/ci-local.ps1` — fail-fast local CI runner (pre-squash branch commits
+  `8b804b7`, `206dfca`, `f171df2`; merged as `29d3da6`).
 - `docs/notes/s0-gate.md` — this evidence log.
 
 ## 8. Local smoke test (pre-clone)

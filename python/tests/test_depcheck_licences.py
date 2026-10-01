@@ -39,15 +39,47 @@ def test_missing_allowlist_file_treats_every_package_as_unknown(
     root = tmp_path / "root"
     (root / "cpp").mkdir(parents=True)
     (root / "cpp" / "vcpkg.json").write_text('{"dependencies": ["gtest"]}', encoding="utf-8")
+    (root / "dotnet").mkdir(parents=True)
+    (root / "dotnet" / "Directory.Packages.props").write_text("<Project />", encoding="utf-8")
 
     code, lines = run_cli(root, capsys)
     assert code == 1
     assert lines == ["gtest"]
 
 
+def test_missing_vcpkg_manifest_fails_and_names_the_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    (root / "dotnet").mkdir(parents=True)
+    (root / "dotnet" / "Directory.Packages.props").write_text("<Project />", encoding="utf-8")
+
+    code, lines = run_cli(root, capsys)
+    assert code == 1
+    assert any("vcpkg.json" in line for line in lines)
+
+
+def test_missing_dotnet_manifest_fails_and_names_the_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    (root / "cpp").mkdir(parents=True)
+    (root / "cpp" / "vcpkg.json").write_text('{"dependencies": []}', encoding="utf-8")
+
+    code, lines = run_cli(root, capsys)
+    assert code == 1
+    assert any("Directory.Packages.props" in line for line in lines)
+
+
 def test_root_option_defaults_to_current_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    (tmp_path / "cpp").mkdir()
+    (tmp_path / "cpp" / "vcpkg.json").write_text('{"dependencies": []}', encoding="utf-8")
+    (tmp_path / "dotnet").mkdir()
+    (tmp_path / "dotnet" / "Directory.Packages.props").write_text("<Project />", encoding="utf-8")
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "licence-allowlist.json").write_text("{}", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     code = main(["licences"])
     captured = capsys.readouterr()

@@ -29,11 +29,20 @@ jobs:
       - name: Cache vcpkg installed tree
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/vcpkg/installed
-          key: vcpkg-installed-windows-${{ hashFiles('cpp/vcpkg.json') }}
-          restore-keys: vcpkg-installed-windows-
+          path: cpp/build/windows-msvc/vcpkg_installed
+          key: vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-${{ hashFiles('cpp/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-
 
       - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Toolchain versions
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          cmake --version
+          ninja --version
+          clang-format --version
+          clang-tidy --version
 
       - name: Configure
         run: cmake --preset windows-msvc
@@ -78,6 +87,11 @@ jobs:
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Toolchain versions
+        run: |
+          cmake --version
+          ninja --version
 
       - name: Clone and bootstrap vcpkg at the pinned baseline
         run: |
@@ -141,6 +155,9 @@ jobs:
         with:
           global-json-file: dotnet/global.json
 
+      - name: Toolchain versions
+        run: dotnet --version
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -172,6 +189,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+
+      - name: Toolchain versions
+        run: python --version
 
       - name: Install development requirements
         run: python -m pip install -r requirements-dev.txt
