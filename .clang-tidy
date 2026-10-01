@@ -3,13 +3,6 @@ Checks: >
   bugprone-*,
   performance-*,
   cppcoreguidelines-*,
-  -cppcoreguidelines-avoid-magic-numbers,
-  -cppcoreguidelines-macro-usage,
-  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
-  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
-  -cppcoreguidelines-pro-type-reinterpret-cast,
-  -cppcoreguidelines-pro-type-vararg,
-  -cppcoreguidelines-non-private-member-variables-in-classes,
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(^|[/\\])cpp[/\\].*\.(h|hpp)$'
 FormatStyle: file
