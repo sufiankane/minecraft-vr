@@ -26,7 +26,7 @@ Quat Quat::FromComponents(double w, double x, double y, double z) noexcept {
 
 Quat Quat::FromAxisAngle(Vec3 axis, double radians) noexcept {
     const double squaredAxisLength = (axis.x * axis.x) + (axis.y * axis.y) + (axis.z * axis.z);
-    if (!std::isfinite(squaredAxisLength) || squaredAxisLength < kMinimumSquaredNorm) {
+    if (!std::isfinite(radians) || !std::isfinite(squaredAxisLength) || squaredAxisLength < kMinimumSquaredNorm) {
         return kIdentity;
     }
     const double inverseLength = 1.0 / std::sqrt(squaredAxisLength);

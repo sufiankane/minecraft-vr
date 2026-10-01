@@ -87,6 +87,29 @@ TEST(Quat, FromAxisAngleZeroAxisIsIdentity) {
     EXPECT_DOUBLE_EQ(q.z(), 0.0);
 }
 
+TEST(Quat, FromAxisAngleNaNRadiansIsIdentity) {
+    const Quat q = Quat::FromAxisAngle(Vec3{0.0, 1.0, 0.0}, std::numeric_limits<double>::quiet_NaN());
+    EXPECT_DOUBLE_EQ(q.w(), 1.0);
+    EXPECT_DOUBLE_EQ(q.x(), 0.0);
+    EXPECT_DOUBLE_EQ(q.y(), 0.0);
+    EXPECT_DOUBLE_EQ(q.z(), 0.0);
+}
+
+TEST(Quat, FromAxisAngleInfiniteRadiansIsIdentity) {
+    const double infinity = std::numeric_limits<double>::infinity();
+    const Quat positive = Quat::FromAxisAngle(Vec3{0.0, 1.0, 0.0}, infinity);
+    EXPECT_DOUBLE_EQ(positive.w(), 1.0);
+    EXPECT_DOUBLE_EQ(positive.x(), 0.0);
+    EXPECT_DOUBLE_EQ(positive.y(), 0.0);
+    EXPECT_DOUBLE_EQ(positive.z(), 0.0);
+
+    const Quat negative = Quat::FromAxisAngle(Vec3{0.0, 1.0, 0.0}, -infinity);
+    EXPECT_DOUBLE_EQ(negative.w(), 1.0);
+    EXPECT_DOUBLE_EQ(negative.x(), 0.0);
+    EXPECT_DOUBLE_EQ(negative.y(), 0.0);
+    EXPECT_DOUBLE_EQ(negative.z(), 0.0);
+}
+
 TEST(Quat, IdentityRotationLeavesVectorUnchanged) {
     const Vec3 v{0.25, -1.5, 3.0};
     const Vec3 rotated = Quat::kIdentity.Rotate(v);
@@ -135,6 +158,14 @@ TEST(Quat, SlerpNearParallelUsesLinearInterpolation) {
 
     const Quat mid = Slerp(a, b, 0.5);
     ExpectQuatNear(mid, 0.999999999996875, 0.0, 2.4999999999973958e-6, 0.0, 1e-12);
+    EXPECT_TRUE(mid.IsNormalized(1e-9));
+}
+
+TEST(Quat, SlerpIdenticalPairReturnsSameRotation) {
+    const Quat a = Quat::FromAxisAngle(Vec3{1.0, 2.0, 3.0}, 0.7);
+
+    const Quat mid = Slerp(a, a, 0.5);
+    ExpectQuatNear(mid, a.w(), a.x(), a.y(), a.z(), 1e-12);
     EXPECT_TRUE(mid.IsNormalized(1e-9));
 }
 

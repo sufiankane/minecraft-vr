@@ -41,8 +41,8 @@ class Quat {
 
     /// Builds a unit quaternion rotating `radians` about `axis` (right-hand rule).
     ///
-    /// The axis is normalised first; a zero or non-finite axis yields
-    /// `kIdentity`. No allocation.
+    /// The axis is normalised first; a zero or non-finite axis, or a non-finite
+    /// `radians`, yields `kIdentity`. No allocation.
     [[nodiscard]] static Quat FromAxisAngle(Vec3 axis, double radians) noexcept;
 
     Quat() = delete;
