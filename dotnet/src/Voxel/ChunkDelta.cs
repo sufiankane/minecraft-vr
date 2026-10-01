@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace Cubeglass.Voxel
 {
@@ -10,8 +11,11 @@ namespace Cubeglass.Voxel
     /// <remarks>
     /// Immutable: the constructor copies the edit map, and equality compares
     /// the coordinate and every entry, so save then load can be asserted
-    /// directly. The codec that turns deltas into bytes is a later addition;
-    /// this type is the plain store contract.
+    /// directly. Every key is a chunk-local cell in
+    /// <c>[0, ChunkMath.ChunkSize)</c> per axis, rejected at construction
+    /// otherwise, so a delta can never alias one cell onto another or index
+    /// outside the flat grid. The codec that turns deltas into bytes is a
+    /// later addition; this type is the plain store contract.
     /// </remarks>
     public sealed class ChunkDelta : IEquatable<ChunkDelta>
     {
@@ -20,11 +24,35 @@ namespace Cubeglass.Voxel
         private readonly Dictionary<Int3, BlockId> _edits;
 
         /// <summary>Creates a delta for <paramref name="coord"/> with a copy of <paramref name="edits"/>.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="edits"/> is null.</exception>
+        /// <exception cref="ArgumentException">
+        /// An edit key is not a chunk-local cell in
+        /// <c>[0, ChunkMath.ChunkSize)</c> per axis; the message names the
+        /// offending cell.
+        /// </exception>
         public ChunkDelta(ChunkCoord coord, IReadOnlyDictionary<Int3, BlockId> edits)
         {
             if (edits is null)
             {
                 throw new ArgumentNullException(nameof(edits));
+            }
+
+            foreach (Int3 cell in edits.Keys)
+            {
+                if (cell.X < 0 || cell.X >= ChunkMath.ChunkSize
+                    || cell.Y < 0 || cell.Y >= ChunkMath.ChunkSize
+                    || cell.Z < 0 || cell.Z >= ChunkMath.ChunkSize)
+                {
+                    throw new ArgumentException(
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Edit cell ({0}, {1}, {2}) is outside the chunk-local range [0, {3}).",
+                            cell.X,
+                            cell.Y,
+                            cell.Z,
+                            ChunkMath.ChunkSize),
+                        nameof(edits));
+                }
             }
 
             Coord = coord;

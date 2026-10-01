@@ -59,7 +59,9 @@ namespace Cubeglass.Voxel
         /// </exception>
         /// <exception cref="FormatException">
         /// The text is not valid JSON, is not an array, contains a duplicate id,
-        /// omits air (id 0), or contains a negative atlas index or hardness.
+        /// omits air (id 0), defines the reserved id 65535 (0xFFFF), omits a
+        /// name or declares an empty one, or contains a negative atlas index or
+        /// hardness.
         /// </exception>
         public static BlockRegistry Parse(string json)
         {
@@ -122,6 +124,18 @@ namespace Cubeglass.Voxel
                 {
                     throw new FormatException(
                         string.Format(CultureInfo.InvariantCulture, "Duplicate block id {0}.", dto.Id));
+                }
+
+                if (dto.Id == ushort.MaxValue)
+                {
+                    throw new FormatException(
+                        "Block id 65535 (0xFFFF) is reserved by ADR-0006 and must not be defined.");
+                }
+
+                if (string.IsNullOrEmpty(dto.Name))
+                {
+                    throw new FormatException(
+                        string.Format(CultureInfo.InvariantCulture, "Block {0} must declare a non-empty name.", dto.Id));
                 }
 
                 if (dto.AtlasIndexTop < 0 || dto.AtlasIndexFront < 0 || dto.AtlasIndexSide < 0)
