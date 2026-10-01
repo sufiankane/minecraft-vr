@@ -176,18 +176,34 @@ jobs:
           report=""
           for candidate in coverage/*/coverage.cobertura.xml; do
             [ -f "$candidate" ] || continue
-            if [ "$(grep -c '<package name=' "$candidate")" -eq 1 ] \
-               && grep -q '<package name="Cubeglass.CoreMath"' "$candidate"; then
+            if grep -q '<source>[^<]*src/CoreMath/</source>' "$candidate"; then
               report="$candidate"
               break
             fi
           done
-          if [ -z "$report" ]; then
-            echo "ERROR: no coverage report containing only Cubeglass.CoreMath was found under coverage/*/coverage.cobertura.xml" >&2
+          test -n "$report" || {
+            echo "ERROR: no coverage report rooted at src/CoreMath/ was found under coverage/*/coverage.cobertura.xml" >&2
             exit 1
-          fi
+          }
           echo "Enforcing floor against ${report}"
           python -m depcheck coverage --report "$report" --module Cubeglass.CoreMath --floor 95
+
+      - name: Enforce Voxel coverage floor
+        run: |
+          report=""
+          for candidate in coverage/*/coverage.cobertura.xml; do
+            [ -f "$candidate" ] || continue
+            if grep -q '<package name="Cubeglass.Voxel"' "$candidate"; then
+              report="$candidate"
+              break
+            fi
+          done
+          test -n "$report" || {
+            echo "ERROR: no coverage report containing the Cubeglass.Voxel package was found under coverage/*/coverage.cobertura.xml" >&2
+            exit 1
+          }
+          echo "Enforcing floor against ${report}"
+          python -m depcheck coverage --report "$report" --module Cubeglass.Voxel --floor 90
 
   python:
     name: python

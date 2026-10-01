@@ -57,13 +57,37 @@ jobs:
         with:
           global-json-file: dotnet/global.json
 
-      - name: Run benchmarks
+      - name: Run CoreMath benchmarks
         run: >-
           dotnet run --configuration Release
           --project benchmarks/CoreMath.Benchmarks/CoreMath.Benchmarks.csproj
+
+      - name: Run Voxel benchmarks
+        run: >-
+          dotnet run --configuration Release
+          --project benchmarks/Voxel.Benchmarks/Voxel.Benchmarks.csproj
 
       - name: Upload BenchmarkDotNet artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bench-dotnet-results
           path: dotnet/BenchmarkDotNet.Artifacts
+
+  mutation:
+    name: mutation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dotnet
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: dotnet/global.json
+
+      - name: Restore local tools
+        run: dotnet tool restore
+
+      - name: Run Stryker mutation testing
+        run: dotnet stryker --config-file stryker-config.json
