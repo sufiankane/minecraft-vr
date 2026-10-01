@@ -9,6 +9,7 @@ add_executable(
     core-math/pose_test.cpp
     core-math/convert_test.cpp
     core-math/time_test.cpp
+    core-math/clock_mapper_test.cpp
 )
 
 target_link_libraries(

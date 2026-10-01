@@ -24,6 +24,11 @@ TEST(Time, ToNanosecondsRoundsToNearestNanosecond) {
     EXPECT_EQ(ToNanoseconds(1.0000000006), 1'000'000'001);
 }
 
+TEST(TimeTest, ToNanosecondsRoundsHalfwayAwayFromZero) {
+    EXPECT_EQ(ToNanoseconds(0.5e-9), 1);
+    EXPECT_EQ(ToNanoseconds(-0.5e-9), -1);
+}
+
 TEST(Time, RoundTripStaysWithinOneNanosecond) {
     constexpr HostTime kSamples[] = {
         0,
