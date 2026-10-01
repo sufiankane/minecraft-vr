@@ -99,6 +99,35 @@ jobs:
         run: ctest --preset linux-asan
         working-directory: cpp
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install coverage tooling
+        run: |
+          python -m pip install gcovr==8.6
+          python -m pip install -e python
+
+      - name: Configure (coverage)
+        run: cmake --preset linux-coverage
+        working-directory: cpp
+
+      - name: Build (coverage)
+        run: cmake --build --preset linux-coverage
+        working-directory: cpp
+
+      - name: Test (coverage)
+        run: ctest --preset linux-coverage
+        working-directory: cpp
+
+      - name: Generate Cobertura XML
+        run: gcovr --root . --xml --output coverage.cobertura.xml
+        working-directory: cpp
+
+      - name: Enforce core-math coverage floor
+        run: python -m depcheck coverage --report coverage.cobertura.xml --module core-math --floor 90
+        working-directory: cpp
+
   dotnet:
     name: dotnet
     runs-on: ubuntu-latest
@@ -112,8 +141,24 @@ jobs:
         with:
           global-json-file: dotnet/global.json
 
-      - name: Test
-        run: dotnet test Cubeglass.sln --configuration Release
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install coverage tooling
+        working-directory: .
+        run: python -m pip install -e python
+
+      - name: Test with coverage
+        run: >-
+          dotnet test Cubeglass.sln --configuration Release
+          --collect:"XPlat Code Coverage" --results-directory ./coverage
+
+      - name: Enforce CoreMath coverage floor
+        run: |
+          report=$(find coverage -name 'coverage.cobertura.xml' | head -n 1)
+          echo "Enforcing floor against ${report}"
+          python -m depcheck coverage --report "$report" --module Cubeglass.CoreMath --floor 90
 
   python:
     name: python
@@ -140,8 +185,17 @@ jobs:
       - name: mypy
         run: python -m mypy calib depcheck
 
-      - name: pytest
-        run: python -m pytest
+      - name: pytest with coverage
+        # Source is the project root so Cobertura filenames keep the module
+        # directory (calib/..., depcheck/...); per-directory sources collapse to
+        # basenames and collide across packages.
+        run: python -m pytest --cov=. --cov-report=xml:coverage.xml
+
+      - name: Enforce calib coverage floor
+        run: python -m depcheck coverage --report coverage.xml --module calib --floor 90
+
+      - name: Enforce depcheck coverage floor
+        run: python -m depcheck coverage --report coverage.xml --module depcheck --floor 90
 
   depcheck:
     name: depcheck

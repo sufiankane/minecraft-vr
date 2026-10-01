@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1" branch-rate="1" version="1.9" timestamp="1790864735" lines-covered="0" lines-valid="0" branches-covered="0" branches-valid="0">
+  <sources />
+  <packages>
+    <package name="Cubeglass.CoreMath" line-rate="1" branch-rate="1" complexity="0">
+      <classes />
+    </package>
+  </packages>
+</coverage>

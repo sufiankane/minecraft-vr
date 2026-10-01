@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1" lines-covered="1" lines-valid="1" version="0">
+  <sources>
+    <source>python</source>
+  </sources>
+  <packages>
+    <package name="calib" line-rate="1">
+      <classes>
+        <class name="__init__.py" filename="calib/__init__.py" line-rate="1">
+          <lines>
+            <line number="7" hits="1"/>
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1" branch-rate="1" version="1.9" timestamp="1790864735" lines-covered="2" lines-valid="2" branches-covered="0" branches-valid="0">
+  <sources />
+  <packages>
+    <package name="Cubeglass.CoreMath" line-rate="1" branch-rate="1" complexity="1">
+      <classes>
+        <class name="Cubeglass.CoreMath.AbiVersion" filename="D:\a\repo\dotnet\src\CoreMath\AbiVersion.cs" line-rate="1" branch-rate="1" complexity="1">
+          <methods />
+          <lines>
+            <line number="5" hits="1" branch="false" />
+            <line number="6" hits="1" branch="false" />
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from depcheck.coverage_check import CoverageError, check_coverage
 from depcheck.licences import check_licences
 from depcheck.rules import check_root
 
@@ -35,7 +36,37 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help=_ROOT_HELP,
     )
+    coverage_parser = subparsers.add_parser(
+        "coverage",
+        help="Enforce a line-coverage floor from a Cobertura XML report.",
+    )
+    coverage_parser.add_argument(
+        "--report",
+        type=Path,
+        required=True,
+        help="Path to a Cobertura XML coverage report.",
+    )
+    coverage_parser.add_argument(
+        "--module",
+        required=True,
+        help="Module name to match (case-insensitive, e.g. core-math or Cubeglass.CoreMath).",
+    )
+    coverage_parser.add_argument(
+        "--floor",
+        type=float,
+        required=True,
+        help="Minimum line coverage percentage.",
+    )
     args = parser.parse_args(argv)
+
+    if args.command == "coverage":
+        try:
+            coverage = check_coverage(args.report, args.module, args.floor)
+        except CoverageError as error:
+            print(f"coverage error: {error}")
+            return 1
+        print(coverage.summary())
+        return 0 if coverage.meets_floor else 1
 
     if args.command == "licences":
         licences_root: Path = args.licences_root or args.root or Path.cwd()
