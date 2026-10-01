@@ -45,7 +45,6 @@ $PythonDir = Join-Path $RepoRoot 'python'
 $VenvDir = Join-Path $PythonDir '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 $RequirementsDev = Join-Path $PythonDir 'requirements-dev.txt'
-$UnityProject = Join-Path $RepoRoot 'unity\Cubeglass'
 $UnityExe = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
 $UnityResults = Join-Path $env:TEMP 'cg-unity-results.xml'
 
@@ -176,8 +175,17 @@ try {
             if (-not (Test-Path $UnityExe)) {
                 throw "Unity CLI not found at '$UnityExe'"
             }
-            Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
-                & $UnityExe test $UnityProject --mode EditMode --non-interactive --output $UnityResults
+            # The Unity CLI resolves the project argument against the current
+            # directory and mangles Windows absolute paths, so run from the repo
+            # root with the canonical relative path (see docs/toolchains.md).
+            Push-Location $RepoRoot
+            try {
+                Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
+                    & $UnityExe test 'unity\Cubeglass' --mode EditMode --non-interactive --output $UnityResults
+                }
+            }
+            finally {
+                Pop-Location
             }
         }
     }
