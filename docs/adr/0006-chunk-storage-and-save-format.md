@@ -5,6 +5,10 @@
 - Deciders: Sufyan Khan (owner)
 - Consulted: Stage S2 build agents
 - Informed: all later-stage builders and reviewers
+- Amended (pre-release): version 1 block ids gain a `0xFFFF` no-edit sentinel
+  so a mined cell (an explicit Air edit) survives a save/load round trip. No
+  released format exists to migrate; `0xFFFF` is reserved forever and is never
+  a valid block id in a delta.
 
 ## Context and problem statement
 
@@ -83,15 +87,25 @@ All integers are little-endian. Layout:
 | 4 | 2 | version | `uint16`, currently `1` |
 | 6 | 2 | reserved | `uint16`, `0` for version 1 |
 | 8 | 4 | entryCount | `uint32`, number of RLE runs |
-| 12 | `6 × entryCount` | runs | `uint16 blockId`, `uint32 runLength` |
+| 12 | `6 × entryCount` | runs | `uint16 blockId` (sentinel-carrying), `uint32 runLength` |
 
 Runs cover the chunk's full 4096-cell grid in Z-major local order: linear index
-`i = x + 16*y + 256*z`, so X varies fastest and Z slowest. Every `runLength` is
-at least 1 and the run lengths sum to exactly 4096: no gaps, no overruns, no
-trailing bytes. An all-air delta is a single run `(Air, 4096)`; an all-stone
-delta is also a single run. `Serialize` expands the edit map over an air-filled
-grid and emits the canonical bytes; `TryDeserialize(Serialize(d))` returns an
-equal delta, and re-serialising yields identical bytes.
+`i = x + 16y + 256z`, so X varies fastest and Z slowest. The block id field is
+sentinel-carrying (amended pre-release):
+
+| Block id | Meaning |
+| --- | --- |
+| `0xFFFF` | no edit: the cell is untouched and is not part of the delta |
+| `0x0000` | Air edit: an explicit removal, so mining persists |
+| `0x0001..0xFFFE` | block ids |
+
+Every `runLength` is at least 1 and the run lengths sum to exactly 4096: no
+gaps, no overruns, no trailing bytes. An all-untouched delta is a single run
+`(0xFFFF, 4096)`; an all-stone delta is the single run `(Stone, 4096)`.
+`Serialize` starts every cell as the no-edit sentinel, applies the delta's
+edits (including Air edits) and emits the canonical bytes;
+`TryDeserialize(Serialize(d))` returns an equal delta, and re-serialising
+yields identical bytes.
 
 ### Versioning and migration hook
 
@@ -107,8 +121,10 @@ future versions add a reader case and keep writing the newest version. The
 an unknown, newer or zero version; a non-zero `reserved`; an `entryCount`
 inconsistent with the remaining byte count or above 4096; a zero run length;
 run coverage summing to less or more than 4096; and trailing bytes after the
-last run. The S2 fuzz test mutates valid bytes, truncates at every length and
-feeds random byte arrays, asserting that no exception escapes (Task 4).
+last run. The `0xFFFF` no-edit sentinel is accepted in every run position and
+contributes no edit; `0x0000` decodes to an Air edit. The S2 fuzz test mutates
+valid bytes, truncates at every length and feeds random byte arrays, asserting
+that no exception escapes (Task 4).
 
 ### Consequences
 
@@ -116,6 +132,8 @@ feeds random byte arrays, asserting that no exception escapes (Task 4).
   mesher, raycaster, `ChunkHash` and save/load tests can assert exact values.
 - Good: deltas are compact for uniform and sparse chunks alike, and validation
   is a single coverage sum plus length checks.
+- Good: the no-edit sentinel keeps untouched cells out of the delta while
+  explicit Air edits are stored, so mined blocks survive save, load and replay.
 - Bad: 16³ fixes upper bounds on meshing batches and raycast step counts; a
   future larger chunk needs a new ADR and format version.
 - Bad: zero-length runs and `entryCount > 4096` need explicit checks to avoid
@@ -130,8 +148,9 @@ feeds random byte arrays, asserting that no exception escapes (Task 4).
   `[-1000, 1000]³` and the `[0, 15]` local range.
 - Task 3 pins a golden `ChunkHash` over `Generate((0, 0, 0), seed: 42)`.
 - Task 4 `ChunkDeltaCodecTests` pin a hand-built version-1 byte fixture, the
-  byte-stable round trip and the single-run cases; `ChunkDeltaFuzzTests` pin
-  no-throw rejection of every malformed input.
+  byte-stable round trip, the single-run cases and a mined Air edit that is
+  replayed over a generated chunk; `ChunkDeltaFuzzTests` pin no-throw
+  rejection of every malformed input.
 - Review focus 3: corrupted save data never escapes `TryDeserialize`.
 
 ## Links
