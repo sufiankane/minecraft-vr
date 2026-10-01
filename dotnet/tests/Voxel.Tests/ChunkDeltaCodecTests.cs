@@ -9,8 +9,11 @@ namespace Cubeglass.Voxel.Tests
 {
     // Pins the version-1 delta format from ADR-0006: a hand-built byte fixture,
     // canonical single-run encodings, a byte-stable round trip and every
-    // rejection rule. The payload carries no coordinate (the store keys by
-    // ChunkCoord), so decoded deltas carry the origin coordinate.
+    // rejection rule. The RLE block id carries the no-edit sentinel 0xFFFF
+    // (untouched cell), 0x0000 means an explicit Air edit (a removal, so mining
+    // survives save/load) and 0x0001..0xFFFE are block ids. The payload carries
+    // no coordinate (the store keys by ChunkCoord), so decoded deltas carry the
+    // origin coordinate.
     [TestFixture]
     public sealed class ChunkDeltaCodecTests
     {
@@ -19,6 +22,7 @@ namespace Cubeglass.Voxel.Tests
         private const int HeaderSize = 12;
         private const int RunSize = 6;
         private const int CellCount = 4096;
+        private const ushort NoEdit = 0xFFFF;
 
         private static readonly ChunkCoord Origin = new ChunkCoord(0, 0, 0);
         private static readonly BlockId Stone = new BlockId(1);
@@ -26,13 +30,13 @@ namespace Cubeglass.Voxel.Tests
         private static readonly BlockId Grass = new BlockId(3);
 
         [Test]
-        public void EmptyDeltaSerializesToASingleAirRun()
+        public void EmptyDeltaSerializesToASingleNoEditRun()
         {
             byte[] bytes = ChunkDeltaCodec.Serialize(ChunkDelta.Empty(Origin));
 
             Assert.That(bytes.Length, Is.EqualTo(HeaderSize + RunSize));
             Assert.That(ReadUInt32(bytes, 8), Is.EqualTo(1u));
-            Assert.That(ReadUInt16(bytes, 12), Is.EqualTo((ushort)0));
+            Assert.That(ReadUInt16(bytes, 12), Is.EqualTo(NoEdit));
             Assert.That(ReadUInt32(bytes, 14), Is.EqualTo(4096u));
         }
 
@@ -62,16 +66,17 @@ namespace Cubeglass.Voxel.Tests
         [Test]
         public void FixedVersionOneFixtureDecodesToTheExpectedDelta()
         {
-            // Hand-built v1 payload: air, stone at local (1, 0, 0), air to 4096.
+            // Hand-built v1 payload: no edit, stone at local (1, 0, 0), no
+            // edit to 4096.
             byte[] bytes =
             {
                 0x43, 0x47, 0x44, 0x4C,             // magic "CGDL"
                 0x01, 0x00,                         // version 1
                 0x00, 0x00,                         // reserved 0
                 0x03, 0x00, 0x00, 0x00,             // entryCount 3
-                0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // (Air, 1)
+                0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00, // (no edit, 1)
                 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, // (Stone, 1)
-                0x00, 0x00, 0xFE, 0x0F, 0x00, 0x00, // (Air, 4094)
+                0xFF, 0xFF, 0xFE, 0x0F, 0x00, 0x00, // (no edit, 4094)
             };
 
             bool ok = ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? delta);
@@ -87,15 +92,34 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
-        public void EmptyFixtureFromTheAdrDecodesToAnEmptyDelta()
+        public void AllSentinelPayloadDecodesToAnEmptyDelta()
         {
-            // ADR-0006: an all-air delta is the single run (Air, 4096).
-            byte[] bytes = Encode(1, 0, 1, ((ushort)0, 4096u));
+            // ADR-0006: an all-untouched delta is the single run (no edit, 4096).
+            byte[] bytes = Encode(1, 0, 1, (NoEdit, 4096u));
 
             bool ok = ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? delta);
 
             Assert.That(ok, Is.True);
             Assert.That(delta, Is.EqualTo(ChunkDelta.Empty(Origin)));
+            Assert.That(ChunkDeltaCodec.Serialize(delta!), Is.EqualTo(bytes));
+        }
+
+        [Test]
+        public void AllAirPayloadDecodesToExplicitRemovals()
+        {
+            // 0x0000 is an Air edit, not "untouched": the whole chunk is mined.
+            byte[] bytes = Encode(1, 0, 1, ((ushort)0, 4096u));
+
+            bool ok = ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? delta);
+
+            Assert.That(ok, Is.True);
+            Assert.That(delta!.Edits.Count, Is.EqualTo(CellCount));
+            foreach (KeyValuePair<Int3, BlockId> edit in delta.Edits)
+            {
+                Assert.That(edit.Value, Is.EqualTo(BlockId.Air));
+            }
+
+            Assert.That(ChunkDeltaCodec.Serialize(delta), Is.EqualTo(bytes));
         }
 
         [Test]
@@ -113,11 +137,11 @@ namespace Cubeglass.Voxel.Tests
             // i = x + 16y + 256z: (1,0,0) is i=1 and (0,0,1) is i=256.
             var expected = new List<(ushort Block, uint Length)>
             {
-                ((ushort)0, 1u),
+                (NoEdit, 1u),
                 (Dirt.Value, 1u),
-                ((ushort)0, 254u),
+                (NoEdit, 254u),
                 (Stone.Value, 1u),
-                ((ushort)0, 3839u),
+                (NoEdit, 3839u),
             };
             Assert.That(runs, Is.EqualTo(expected));
         }
@@ -125,7 +149,7 @@ namespace Cubeglass.Voxel.Tests
         [Test]
         public void NonCanonicalAdjacentRunsDecodeAndReserializeCanonically()
         {
-            byte[] nonCanonical = Encode(1, 0, 3, (Stone.Value, 1u), (Stone.Value, 1u), (0, 4094u));
+            byte[] nonCanonical = Encode(1, 0, 3, (Stone.Value, 1u), (Stone.Value, 1u), (NoEdit, 4094u));
 
             bool ok = ChunkDeltaCodec.TryDeserialize(nonCanonical, out ChunkDelta? delta);
 
@@ -140,22 +164,143 @@ namespace Cubeglass.Voxel.Tests
             Assert.That(delta, Is.EqualTo(expected));
             Assert.That(
                 ChunkDeltaCodec.Serialize(delta!),
-                Is.EqualTo(Encode(1, 0, 2, (Stone.Value, 2u), (0, 4094u))));
+                Is.EqualTo(Encode(1, 0, 2, (Stone.Value, 2u), (NoEdit, 4094u))));
         }
 
         [Test]
-        public void AirEditsAreIndistinguishableFromUntouchedCells()
+        public void AdjacentSentinelRunsDecodeAndReserializeCanonically()
         {
-            // The v1 payload expands edits over an air baseline, so an edit
-            // that sets a cell back to Air produces no bytes of its own.
+            byte[] nonCanonical = Encode(1, 0, 2, (NoEdit, 1u), (NoEdit, 4095u));
+
+            bool ok = ChunkDeltaCodec.TryDeserialize(nonCanonical, out ChunkDelta? delta);
+
+            Assert.That(ok, Is.True);
+            Assert.That(delta, Is.EqualTo(ChunkDelta.Empty(Origin)));
+            Assert.That(
+                ChunkDeltaCodec.Serialize(delta!),
+                Is.EqualTo(Encode(1, 0, 1, (NoEdit, 4096u))));
+        }
+
+        [Test]
+        public void SentinelIsAcceptedInAnyRunPosition()
+        {
+            byte[] bytes = Encode(
+                1,
+                0,
+                3,
+                (NoEdit, 1u),
+                ((ushort)0, 1u),
+                (NoEdit, 4094u));
+
+            bool ok = ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? delta);
+
+            Assert.That(ok, Is.True);
+            var expected = new ChunkDelta(
+                Origin,
+                new Dictionary<Int3, BlockId> { [new Int3(1, 0, 0)] = BlockId.Air });
+            Assert.That(delta, Is.EqualTo(expected));
+        }
+
+        [Test]
+        public void AirEditsRoundTripAsExplicitRemovals()
+        {
             var delta = new ChunkDelta(
                 Origin,
                 new Dictionary<Int3, BlockId> { [new Int3(1, 2, 3)] = BlockId.Air });
 
             byte[] bytes = ChunkDeltaCodec.Serialize(delta);
+            bool ok = ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? loaded);
 
+            Assert.That(ok, Is.True);
+            Assert.That(loaded, Is.EqualTo(delta));
+            Assert.That(loaded!.Edits[new Int3(1, 2, 3)], Is.EqualTo(BlockId.Air));
+            Assert.That(ChunkDeltaCodec.Serialize(loaded), Is.EqualTo(bytes));
+        }
+
+        [Test]
+        public void MinedEditsSurviveSerializationAndReplay()
+        {
+            var minedCell = new Int3(3, 4, 5);
+            Chunk baseline = TestWorld.CreateChunk(Origin, (minedCell, Stone));
+            var generator = new ScriptedGenerator((_, _) => TestWorld.CreateChunk(Origin, (minedCell, Stone)));
+            var world = new World(generator);
+            world.LoadChunk(generator.Generate(Origin, 0));
+            var delta = new ChunkDelta(
+                Origin,
+                new Dictionary<Int3, BlockId> { [minedCell] = BlockId.Air });
+
+            byte[] bytes = ChunkDeltaCodec.Serialize(delta);
             Assert.That(ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? loaded), Is.True);
-            Assert.That(loaded, Is.EqualTo(ChunkDelta.Empty(Origin)));
+            Assert.That(loaded, Is.EqualTo(delta));
+
+            foreach (KeyValuePair<Int3, BlockId> edit in loaded!.Edits)
+            {
+                BlockId before = world.Get(edit.Key);
+                Assert.That(
+                    world.Apply(new EditCommand(edit.Key, before, edit.Value, 1)),
+                    Is.EqualTo(EditResult.Applied));
+            }
+
+            Assert.That(baseline.Get(minedCell), Is.EqualTo(Stone));
+            Assert.That(world.Get(minedCell), Is.EqualTo(BlockId.Air));
+        }
+
+        [Test]
+        public void UntouchedCellsAreNotPartOfTheDeltaAndReplayLeavesTheBaseline()
+        {
+            var touched = new Int3(7, 8, 9);
+            var world = new World();
+            world.LoadChunk(BuildBaseline());
+            var delta = new ChunkDelta(
+                Origin,
+                new Dictionary<Int3, BlockId> { [touched] = Stone });
+
+            byte[] bytes = ChunkDeltaCodec.Serialize(delta);
+            Assert.That(ChunkDeltaCodec.TryDeserialize(bytes, out ChunkDelta? loaded), Is.True);
+            Assert.That(loaded!.Edits.Count, Is.EqualTo(1));
+            Assert.That(loaded.Edits.TryGetValue(touched, out BlockId touchedValue), Is.True);
+            Assert.That(touchedValue, Is.EqualTo(Stone));
+
+            foreach (KeyValuePair<Int3, BlockId> edit in loaded.Edits)
+            {
+                BlockId before = world.Get(edit.Key);
+                Assert.That(
+                    world.Apply(new EditCommand(edit.Key, before, edit.Value, 1)),
+                    Is.EqualTo(EditResult.Applied));
+            }
+
+            Chunk reference = BuildBaseline();
+            for (int z = 0; z < ChunkMath.ChunkSize; z++)
+            {
+                for (int y = 0; y < ChunkMath.ChunkSize; y++)
+                {
+                    for (int x = 0; x < ChunkMath.ChunkSize; x++)
+                    {
+                        var local = new Int3(x, y, z);
+                        BlockId expected = local == touched ? Stone : reference.Get(local);
+                        Assert.That(world.Get(local), Is.EqualTo(expected), $"cell {local} diverged from the baseline");
+                    }
+                }
+            }
+        }
+
+        [Test]
+        public void SerializeRejectsTheReservedSentinelBlockId()
+        {
+            var delta = new ChunkDelta(
+                Origin,
+                new Dictionary<Int3, BlockId> { [new Int3(1, 1, 1)] = new BlockId(NoEdit) });
+
+            Assert.Throws<ArgumentException>(() => ChunkDeltaCodec.Serialize(delta));
+        }
+
+        private static Chunk BuildBaseline()
+        {
+            return TestWorld.CreateChunk(
+                Origin,
+                (new Int3(0, 0, 0), Stone),
+                (new Int3(5, 5, 5), Dirt),
+                (new Int3(15, 15, 15), Grass));
         }
 
         [Test]
@@ -337,7 +482,7 @@ namespace Cubeglass.Voxel.Tests
                 from x in Gen.Choose(0, ChunkMath.ChunkSize - 1)
                 from y in Gen.Choose(0, ChunkMath.ChunkSize - 1)
                 from z in Gen.Choose(0, ChunkMath.ChunkSize - 1)
-                from block in Gen.Choose(1, 8)
+                from block in Gen.Choose(0, 8)
                 select (x, y, z, (ushort)block);
 
             return Arb.From(

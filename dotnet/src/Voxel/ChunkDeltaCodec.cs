@@ -11,14 +11,17 @@ namespace Cubeglass.Voxel
     /// <c>uint16 reserved = 0</c>, <c>uint32 entryCount</c>, then
     /// <c>entryCount</c> runs of <c>uint16 blockId</c> and
     /// <c>uint32 runLength</c>. Runs cover exactly the 4096 cells in Z-major
-    /// local order (<c>i = x + 16y + 256z</c>). <see cref="Serialize"/> is
-    /// canonical: it expands the edit map over an air baseline, sorts edits
-    /// into that order and merges adjacent equal blocks, so a codec-produced
-    /// payload is byte-stable across a decode/encode round trip. The payload
-    /// carries no coordinate, because <see cref="IWorldStore"/> keys deltas by
-    /// <see cref="ChunkCoord"/>; a decoded delta therefore carries the origin
-    /// coordinate. Cells edited to <see cref="BlockId.Air"/> are
-    /// indistinguishable from untouched cells in version 1.
+    /// local order (<c>i = x + 16y + 256z</c>). The block id field is
+    /// sentinel-carrying (amended pre-release): <c>0xFFFF</c> means "no edit"
+    /// (the cell is untouched and is not part of the delta), <c>0x0000</c> is
+    /// an explicit Air edit (a removal, so mining persists) and
+    /// <c>0x0001..0xFFFE</c> are block ids. <see cref="Serialize"/> is
+    /// canonical: it starts every cell as the no-edit sentinel, applies the
+    /// delta's edits including Air edits, and merges adjacent equal values, so
+    /// a codec-produced payload is byte-stable across a decode/encode round
+    /// trip. The payload carries no coordinate, because
+    /// <see cref="IWorldStore"/> keys deltas by <see cref="ChunkCoord"/>; a
+    /// decoded delta therefore carries the origin coordinate.
     /// </remarks>
     public static class ChunkDeltaCodec
     {
@@ -27,6 +30,7 @@ namespace Cubeglass.Voxel
         private const int CellCount = ChunkMath.ChunkSize * ChunkMath.ChunkSize * ChunkMath.ChunkSize;
         private const int LayerSize = ChunkMath.ChunkSize * ChunkMath.ChunkSize;
         private const int MaxRuns = CellCount;
+        private const ushort NoEdit = 0xFFFF;
 
         /// <summary>
         /// Serializes <paramref name="delta"/> to the canonical version-1
@@ -34,9 +38,13 @@ namespace Cubeglass.Voxel
         /// </summary>
         /// <remarks>
         /// Every local cell of <paramref name="delta"/> must lie in
-        /// <c>[0, ChunkMath.ChunkSize)</c> per axis.
+        /// <c>[0, ChunkMath.ChunkSize)</c> per axis, and no edit may use the
+        /// reserved <c>0xFFFF</c> no-edit sentinel as a block id.
         /// </remarks>
         /// <exception cref="ArgumentNullException"><paramref name="delta"/> is null.</exception>
+        /// <exception cref="ArgumentException">
+        /// An edit uses the reserved <c>0xFFFF</c> block id.
+        /// </exception>
         public static byte[] Serialize(ChunkDelta delta)
         {
             if (delta is null)
@@ -44,10 +52,22 @@ namespace Cubeglass.Voxel
                 throw new ArgumentNullException(nameof(delta));
             }
 
-            var cells = new BlockId[CellCount];
+            var cells = new ushort[CellCount];
+            for (int i = 0; i < CellCount; i++)
+            {
+                cells[i] = NoEdit;
+            }
+
             foreach (KeyValuePair<Int3, BlockId> edit in delta.Edits)
             {
-                cells[Index(edit.Key)] = edit.Value;
+                if (edit.Value.Value == NoEdit)
+                {
+                    throw new ArgumentException(
+                        "0xFFFF is the reserved no-edit sentinel and is not a valid block id in a delta.",
+                        nameof(delta));
+                }
+
+                cells[Index(edit.Key)] = edit.Value.Value;
             }
 
             int runs = CountRuns(cells);
@@ -64,9 +84,9 @@ namespace Cubeglass.Voxel
             int start = 0;
             for (int i = 1; i <= CellCount; i++)
             {
-                if (i == CellCount || !cells[i].Equals(cells[i - 1]))
+                if (i == CellCount || cells[i] != cells[i - 1])
                 {
-                    WriteUInt16(bytes, offset, cells[start].Value);
+                    WriteUInt16(bytes, offset, cells[start]);
                     WriteUInt32(bytes, offset + 2, (uint)(i - start));
                     offset += RunSize;
                     start = i;
@@ -85,7 +105,9 @@ namespace Cubeglass.Voxel
         /// Rejected: a short or bad header; a version other than 1; a non-zero
         /// reserved field; an entry count above 4096 or inconsistent with the
         /// remaining bytes; a zero run length; run coverage summing to less or
-        /// more than 4096; and trailing bytes.
+        /// more than 4096; and trailing bytes. The <c>0xFFFF</c> no-edit
+        /// sentinel is accepted in any run position and contributes no edit;
+        /// <c>0x0000</c> decodes to an Air edit.
         /// </remarks>
         public static bool TryDeserialize(ReadOnlySpan<byte> bytes, out ChunkDelta? delta)
         {
@@ -125,7 +147,7 @@ namespace Cubeglass.Voxel
                     return false;
                 }
 
-                if (block != 0)
+                if (block != NoEdit)
                 {
                     var blockId = new BlockId(block);
                     int end = cell + (int)runLength;
@@ -155,12 +177,12 @@ namespace Cubeglass.Voxel
             return local.X + (ChunkMath.ChunkSize * local.Y) + (LayerSize * local.Z);
         }
 
-        private static int CountRuns(BlockId[] cells)
+        private static int CountRuns(ushort[] cells)
         {
             int runs = 1;
             for (int i = 1; i < CellCount; i++)
             {
-                if (!cells[i].Equals(cells[i - 1]))
+                if (cells[i] != cells[i - 1])
                 {
                     runs++;
                 }

@@ -8,7 +8,8 @@ namespace Cubeglass.Voxel.Tests
     // every position, truncations at every length, random flips) and feed
     // random byte arrays, asserting that TryDeserialize either returns true
     // with a valid delta or false. Any exception escaping the codec fails the
-    // test with the input that produced it.
+    // test with the input that produced it. Air edits (0x0000) are legal
+    // removals; the 0xFFFF no-edit sentinel must never surface as an edit.
     [TestFixture]
     public sealed class ChunkDeltaFuzzTests
     {
@@ -124,6 +125,7 @@ namespace Cubeglass.Voxel.Tests
                 [new Int3(0, 0, 0)] = Stone,
                 [new Int3(1, 0, 0)] = Stone,
                 [new Int3(5, 3, 2)] = Dirt,
+                [new Int3(9, 9, 9)] = BlockId.Air,
                 [new Int3(15, 15, 15)] = Grass,
             };
 
@@ -186,7 +188,10 @@ namespace Cubeglass.Voxel.Tests
                     && cell.Y >= 0 && cell.Y < ChunkMath.ChunkSize
                     && cell.Z >= 0 && cell.Z < ChunkMath.ChunkSize;
                 Assert.That(inRange, Is.True, $"{context}: decoded local {cell} is outside the chunk");
-                Assert.That(edit.Value, Is.Not.EqualTo(BlockId.Air), $"{context}: decoded an air edit");
+                Assert.That(
+                    edit.Value.Value,
+                    Is.Not.EqualTo((ushort)0xFFFF),
+                    $"{context}: decoded the no-edit sentinel as an edit");
             }
 
             byte[] canonical = ChunkDeltaCodec.Serialize(delta);
