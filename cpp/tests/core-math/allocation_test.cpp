@@ -87,11 +87,14 @@ void DeallocateAligned(void *memory) noexcept { std::free(memory); }
 
 #endif
 
+// The accumulated results of the measured loops land here. This is a
+// namespace-scope (not local) volatile, so the stores are observable side
+// effects the optimiser must keep, while GCC's -Wunused-but-set-variable
+// (which only covers locals) stays quiet.
+volatile double g_consumed_sink = 0.0;
+
 // Pins the accumulated result so the optimiser cannot discard the loops.
-void Consume(double value) noexcept {
-    static volatile double sink = 0.0;
-    sink = value;
-}
+void Consume(double value) noexcept { g_consumed_sink = value; }
 
 using cg::core_math::ClockMapper;
 using cg::core_math::Compose;
