@@ -44,6 +44,12 @@ def test_forbidden_dotnet_namespace_is_reported_with_line(capsys: pytest.Capture
     assert "dotnet/src/Voxel/Bad.cs:3 forbidNamespaces" in lines
 
 
+def test_forbidden_system_io_namespace_in_voxel_is_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = run_cli(FIXTURES / "dotnet_pure_io", capsys)
+    assert code == 1
+    assert "dotnet/src/Voxel/Bad.cs:1 forbidNamespaces" in lines
+
+
 def test_disallowed_project_reference_is_reported_with_line(capsys: pytest.CaptureFixture[str]) -> None:
     code, lines = run_cli(FIXTURES / "dotnet_reference", capsys)
     assert code == 1
