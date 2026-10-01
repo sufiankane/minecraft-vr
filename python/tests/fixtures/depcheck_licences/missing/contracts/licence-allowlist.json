@@ -1,0 +1,5 @@
+{
+  "coverlet.collector": "MIT",
+  "gtest": "BSD-3-Clause",
+  "NUnit": "MIT"
+}

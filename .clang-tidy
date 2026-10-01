@@ -1,0 +1,9 @@
+---
+Checks: >
+  bugprone-*,
+  performance-*,
+  cppcoreguidelines-*,
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(^|[/\\])cpp[/\\].*\.(h|hpp)$'
+FormatStyle: file
+...

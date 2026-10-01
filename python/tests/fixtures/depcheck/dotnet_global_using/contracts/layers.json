@@ -1,0 +1,5 @@
+{
+  "dotnet": {
+    "Cubeglass.CoreMath": { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"], "allowedProjectReferences": [] }
+  }
+}

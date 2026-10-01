@@ -1,0 +1,38 @@
+# Build outputs
+build/
+out/
+vcpkg_installed/
+
+# Python
+**/.venv/
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# .NET
+bin/
+obj/
+
+# Unity
+unity/**/Library/
+unity/**/Temp/
+unity/**/Logs/
+unity/**/UserSettings/
+unity/**/obj/
+
+# Generated (Unity IDE / Python packaging)
+unity/**/.vscode/
+unity/**/*.csproj
+unity/**/*.slnx
+**/*.egg-info/
+
+# Ctxo local cache (never committed)
+.ctxo/.cache/
+
+# SDD workspace (never committed)
+.superpowers/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,9 @@
+{
+  "cpp": {
+    "core-math": { "forbidIncludes": ["thread"] },
+    "handcore": { "forbidIncludes": ["thread"] }
+  },
+  "dotnet": {
+    "Cubeglass.Gameplay": { "forbidNamespaces": ["UnityEngine"], "allowedProjectReferences": [] }
+  }
+}
