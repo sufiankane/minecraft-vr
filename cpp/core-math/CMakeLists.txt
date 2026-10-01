@@ -1,4 +1,4 @@
-add_library(cg_core_math STATIC src/version.cpp)
+add_library(cg_core_math STATIC src/version.cpp src/vec3.cpp src/quat.cpp)
 add_library(cg::core_math ALIAS cg_core_math)
 
 target_compile_features(cg_core_math PUBLIC cxx_std_20)

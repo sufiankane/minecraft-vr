@@ -4,6 +4,8 @@
   "coverlet.collector": "MIT",
   "gtest": "BSD-3-Clause",
   "Microsoft.NET.Test.Sdk": "MIT",
+  "nlohmann-json": "MIT",
   "NUnit": "MIT",
-  "NUnit3TestAdapter": "MIT"
+  "NUnit3TestAdapter": "MIT",
+  "rapidcheck": "BSD-2-Clause"
 }
