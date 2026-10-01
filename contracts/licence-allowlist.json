@@ -2,10 +2,12 @@
   "BenchmarkDotNet": "MIT",
   "benchmark": "Apache-2.0",
   "coverlet.collector": "MIT",
+  "FsCheck": "BSD-3-Clause",
   "gtest": "BSD-3-Clause",
   "Microsoft.NET.Test.Sdk": "MIT",
   "nlohmann-json": "MIT",
   "NUnit": "MIT",
   "NUnit3TestAdapter": "MIT",
-  "rapidcheck": "BSD-2-Clause"
+  "rapidcheck": "BSD-2-Clause",
+  "System.Text.Json": "MIT"
 }
