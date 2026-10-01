@@ -114,16 +114,15 @@ Property runs use a fixed `Rnd` seed so failures replay deterministically.
 
 ### Contract shape and language level
 
-The S2 plan pins `Cubeglass.Voxel` to `LangVersion 9.0`, while dossier section
-5.9 writes the value contracts as `readonly record struct` — a C# 10 feature
-that additionally needs an `IsExternalInit` polyfill on `netstandard2.1`. The
-project keeps C# 9, so `Int3` and `ChunkCoord` (Task 1), and later `BlockId`,
-`EditCommand`, `Ray` and `RayHit`, are written out as `readonly struct` types
-with the record-struct public surface: positional constructor, `X`/`Y`/`Z`
-properties, value equality, `==`/`!=`, `Equals`/`GetHashCode`, `ToString` and
-`Deconstruct`. No C# 9 consumer can observe the difference. Follow-up: if a
-later stage raises the language level, these types can be converted to
-positional `readonly record struct`s mechanically.
+The dossier writes the value contracts as literal C# 10 `readonly record
+struct`s. `Cubeglass.Voxel` therefore sets `LangVersion 10.0` and carries a
+one-file internal `System.Runtime.CompilerServices.IsExternalInit` polyfill
+(`dotnet/src/Voxel/IsExternalInit.cs`), because `netstandard2.1` predates that
+type. The language level is a build setting, not a contract: the frozen
+contract shape wins, so `Int3` and `ChunkCoord` (Task 1) and `BlockId`,
+`EditCommand`, `Ray` and `RayHit` (later tasks) are declared exactly as dossier
+section 5.9 writes them, with compiler-generated equality, hashing and
+formatting.
 
 ### Consequences
 
@@ -133,12 +132,15 @@ positional `readonly record struct`s mechanically.
   reviewed, test-covered `contracts/layers.json`.
 - Good: block content is data; malformed content is rejected in pure code and
   testable without a file system.
+- Good: the value contracts are literal record structs, so equality, hashing
+  and formatting are compiler-generated and identical to the dossier type
+  declarations.
 - Bad: depcheck cannot distinguish "signature only" from "starts a task", so a
   `using System.Threading.Tasks;` anywhere in Voxel passes the gate; review and
   the S2 invariant tests carry that part.
-- Bad: the value contracts are hand-written rather than compiler-generated
-  records; equality, hashing and formatting must be kept in sync by hand, which
-  their tests cover.
+- Bad: the build needs `LangVersion 10.0` and an `IsExternalInit` polyfill on
+  `netstandard2.1`; both are recorded here so no later stage mistakes them for
+  drift.
 - Follow-up: S7 implements `IWorldStore` with real IO and is the only place
   allowed to await; Task 5 allocation tests pin the hot paths.
 
