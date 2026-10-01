@@ -1,0 +1,5 @@
+{
+  "dotnet": {
+    "Cubeglass.Voxel": { "forbidNamespaces": ["UnityEngine", "UnityEditor"], "allowedProjectReferences": ["Cubeglass.CoreMath"] }
+  }
+}

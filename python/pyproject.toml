@@ -9,7 +9,7 @@ description = "Offline Python tooling for Cubeglass."
 requires-python = ">=3.11"
 
 [tool.setuptools]
-packages = ["calib"]
+packages = ["calib", "depcheck"]
 
 [tool.ruff]
 line-length = 120

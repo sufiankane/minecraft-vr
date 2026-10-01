@@ -1,0 +1,5 @@
+{
+  "cpp": {
+    "core-math": { "forbidIncludes": ["windows.h", "onnxruntime", "xr_", "viture", "thread", "fstream", "filesystem", "mutex"] }
+  }
+}
