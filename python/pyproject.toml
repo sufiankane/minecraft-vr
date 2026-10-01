@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cubeglass-tools"
+version = "0.0.0"
+description = "Offline Python tooling for Cubeglass."
+requires-python = ">=3.11"
+
+[tool.setuptools]
+packages = ["calib"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
