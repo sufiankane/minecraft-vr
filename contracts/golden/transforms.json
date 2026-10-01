@@ -1,0 +1,210 @@
+{
+  "schema": 1,
+  "tolerance": 1e-6,
+  "cases": [
+    {
+      "name": "vec3_dot_basic",
+      "op": "vec3_dot",
+      "input": { "a": [1, 2, 3], "b": [4, 5, 6] },
+      "expected": 32.0
+    },
+    {
+      "name": "vec3_cross_basis",
+      "op": "vec3_cross",
+      "input": { "a": [1, 0, 0], "b": [0, 1, 0] },
+      "expected": [0, 0, 1]
+    },
+    {
+      "name": "vec3_length_345_12",
+      "op": "vec3_length",
+      "input": { "a": [3, 4, 12] },
+      "expected": 13.0
+    },
+    {
+      "name": "vec3_normalize_034",
+      "op": "vec3_normalize",
+      "input": { "a": [0, 3, 4] },
+      "expected": [0, 0.6, 0.8]
+    },
+    {
+      "name": "quat_normalize_axis2",
+      "op": "quat_normalize",
+      "input": { "q": [2, 0, 0, 0] },
+      "expected": [1, 0, 0, 0]
+    },
+    {
+      "name": "quat_normalize_diagonal",
+      "op": "quat_normalize",
+      "input": { "q": [1, 1, 1, 1] },
+      "expected": [0.5, 0.5, 0.5, 0.5]
+    },
+    {
+      "name": "quat_rotate_identity",
+      "op": "quat_rotate",
+      "input": { "q": [1, 0, 0, 0], "v": [0, 0, -1] },
+      "expected": [0, 0, -1]
+    },
+    {
+      "name": "quat_rotate_yaw90",
+      "op": "quat_rotate",
+      "input": { "q": [0.7071067811865476, 0, 0.7071067811865476, 0], "v": [0, 0, -1] },
+      "expected": [-1, 0, 0]
+    },
+    {
+      "name": "quat_rotate_pitch90",
+      "op": "quat_rotate",
+      "input": { "q": [0.7071067811865476, 0.7071067811865476, 0, 0], "v": [0, 1, 0] },
+      "expected": [0, 0, 1]
+    },
+    {
+      "name": "quat_rotate_roll180",
+      "op": "quat_rotate",
+      "input": { "q": [0, 0, 0, 1], "v": [1, 0, 0] },
+      "expected": [-1, 0, 0]
+    },
+    {
+      "name": "quat_rotate_yaw180",
+      "op": "quat_rotate",
+      "input": { "q": [0, 0, 1, 0], "v": [0, 0, -1] },
+      "expected": [0, 0, 1]
+    },
+    {
+      "name": "quat_multiply_yaw90_pitch90",
+      "op": "quat_multiply",
+      "input": {
+        "a": [0.7071067811865476, 0, 0.7071067811865476, 0],
+        "b": [0.7071067811865476, 0.7071067811865476, 0, 0]
+      },
+      "expected": [0.5, 0.5, 0.5, -0.5]
+    },
+    {
+      "name": "quat_rotate_compound",
+      "op": "quat_rotate",
+      "input": { "q": [0.5, 0.5, 0.5, -0.5], "v": [0, 0, -1] },
+      "expected": [0, 1, 0]
+    },
+    {
+      "name": "quat_inverse_yaw90",
+      "op": "quat_inverse",
+      "input": { "q": [0.7071067811865476, 0, 0.7071067811865476, 0] },
+      "expected": [0.7071067811865476, 0, -0.7071067811865476, 0]
+    },
+    {
+      "name": "quat_slerp_mid_22_5deg",
+      "op": "quat_slerp",
+      "input": {
+        "a": [1, 0, 0, 0],
+        "b": [0.7071067811865476, 0, 0.7071067811865476, 0],
+        "t": 0.5
+      },
+      "expected": [0.9238795325112867, 0, 0.3826834323650898, 0]
+    },
+    {
+      "name": "quat_slerp_t0",
+      "op": "quat_slerp",
+      "input": {
+        "a": [1, 0, 0, 0],
+        "b": [0.7071067811865476, 0, 0.7071067811865476, 0],
+        "t": 0
+      },
+      "expected": [1, 0, 0, 0]
+    },
+    {
+      "name": "quat_slerp_t1",
+      "op": "quat_slerp",
+      "input": {
+        "a": [1, 0, 0, 0],
+        "b": [0.7071067811865476, 0, 0.7071067811865476, 0],
+        "t": 1
+      },
+      "expected": [0.7071067811865476, 0, 0.7071067811865476, 0]
+    },
+    {
+      "name": "pose_compose_translates_child",
+      "op": "pose_compose",
+      "input": {
+        "a": { "p": [1, 2, 3], "q": [0.7071067811865476, 0, 0.7071067811865476, 0] },
+        "b": { "p": [0, 0, -1], "q": [1, 0, 0, 0] }
+      },
+      "expected": {
+        "p": [0, 2, 3],
+        "q": [0.7071067811865476, 0, 0.7071067811865476, 0]
+      }
+    },
+    {
+      "name": "pose_inverse_yaw90",
+      "op": "pose_inverse",
+      "input": { "a": { "p": [1, 0, 0], "q": [0.7071067811865476, 0, 0.7071067811865476, 0] } },
+      "expected": {
+        "p": [0, 0, -1],
+        "q": [0.7071067811865476, 0, -0.7071067811865476, 0]
+      }
+    },
+    {
+      "name": "pose_transform_point",
+      "op": "pose_transform_point",
+      "input": {
+        "a": { "p": [1, 2, 3], "q": [0.7071067811865476, 0, 0.7071067811865476, 0] },
+        "v": [0, 0, -1]
+      },
+      "expected": [0, 2, 3]
+    },
+    {
+      "name": "sdk_pose_layout",
+      "op": "sdk_pose_to_internal",
+      "input": { "sdk": [0.1, 0.2, 0.3, 0, 0, 0, 2] },
+      "expected": { "p": [0.1, 0.2, 0.3], "q": [0, 0, 0, 1] }
+    },
+    {
+      "name": "sdk_pose_normalizes",
+      "op": "sdk_pose_to_internal",
+      "input": { "sdk": [0, 0, 0, 1, 1, 1, 1] },
+      "expected": { "p": [0, 0, 0], "q": [0.5, 0.5, 0.5, 0.5] }
+    },
+    {
+      "name": "unity_position_flips_z",
+      "op": "unity_position",
+      "input": { "p": [1, 2, -3] },
+      "expected": [1, 2, 3]
+    },
+    {
+      "name": "unity_rotation_identity",
+      "op": "unity_rotation",
+      "input": { "q": [1, 0, 0, 0] },
+      "expected": [1, 0, 0, 0]
+    },
+    {
+      "name": "unity_rotation_yaw90",
+      "op": "unity_rotation",
+      "input": { "q": [0.7071067811865476, 0, 0.7071067811865476, 0] },
+      "expected": [0.7071067811865476, 0, -0.7071067811865476, 0]
+    },
+    {
+      "name": "unity_pose_both",
+      "op": "unity_pose",
+      "input": { "a": { "p": [1, 2, -3], "q": [0.7071067811865476, 0, 0.7071067811865476, 0] } },
+      "expected": {
+        "p": [1, 2, 3],
+        "q": [0.7071067811865476, 0, -0.7071067811865476, 0]
+      }
+    },
+    {
+      "name": "clock_map_odd_median",
+      "op": "clock_map",
+      "input": {
+        "samples": [[1.0, 1000500000], [2.0, 2000400000], [3.0, 3000600000]],
+        "query_sdk": 4.0
+      },
+      "expected": 4000500000
+    },
+    {
+      "name": "clock_map_even_median",
+      "op": "clock_map",
+      "input": {
+        "samples": [[1.0, 1000400000], [2.0, 2000500000], [3.0, 3000600000], [4.0, 4000400000]],
+        "query_sdk": 5.0
+      },
+      "expected": 5000450000
+    }
+  ]
+}
