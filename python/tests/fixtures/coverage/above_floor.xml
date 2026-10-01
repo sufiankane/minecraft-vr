@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<coverage line-rate="1" lines-covered="5" lines-valid="5" version="0">
+  <sources>
+    <source>cpp</source>
+  </sources>
+  <packages>
+    <package name="core-math" line-rate="1">
+      <classes>
+        <class name="version.cpp" filename="core-math/src/version.cpp" line-rate="1">
+          <lines>
+            <line number="5" hits="1"/>
+            <line number="7" hits="1"/>
+          </lines>
+        </class>
+        <class name="math.cpp" filename="core-math/src/math.cpp" line-rate="1">
+          <lines>
+            <line number="3" hits="1"/>
+            <line number="4" hits="1"/>
+            <line number="5" hits="1"/>
+          </lines>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

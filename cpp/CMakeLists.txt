@@ -22,3 +22,8 @@ find_package(GTest CONFIG REQUIRED)
 
 add_subdirectory(core-math)
 add_subdirectory(tests)
+
+if(CG_BUILD_BENCHMARKS)
+    find_package(benchmark CONFIG REQUIRED)
+    add_subdirectory(tests/benchmarks)
+endif()
