@@ -21,6 +21,12 @@ unity/**/Logs/
 unity/**/UserSettings/
 unity/**/obj/
 
+# Generated (Unity IDE / Python packaging)
+unity/**/.vscode/
+unity/**/*.csproj
+unity/**/*.slnx
+**/*.egg-info/
+
 # Ctxo local cache (never committed)
 .ctxo/.cache/
 
