@@ -1,8 +1,9 @@
 # Performance numbers
 
-Measured performance data for Cubeglass lives in `docs/perf/`. This directory is
-the home for checked-in performance notes and any budget tables introduced by
-later stages.
+Measured performance numbers are **not** committed to the repository. The nightly
+workflow produces them and uploads them as GitHub Actions artefacts. This
+directory holds the human-authored notes, methodology and budget tables that
+later stages introduce.
 
 ## What is measured where
 
@@ -18,6 +19,18 @@ later stages.
 - Both jobs upload their output as GitHub Actions artefacts. Download the
   artefacts from a workflow run to compare numbers; nothing is committed
   automatically.
+- The `dotnet` solution build includes the benchmark project, so a broken
+  benchmark does not only fail the nightly lane: it also fails the required
+  `dotnet` CI gate.
+
+## S0 stub caveat
+
+The S0 modules are stubs. `Cubeglass.CoreMath` currently contains only a
+`const`, which emits no IL, so the .NET coverage report has zero coverable lines
+and the 90% floor cannot be enforced yet: the coverage tool prints a `WARNING`
+and exits 0. The same applies to any matched-but-empty module. The floor becomes
+real as instrumentable code lands in S1, so a green `dotnet` job does not
+currently mean CoreMath coverage is enforced.
 
 ## Regression budgets
 

@@ -72,9 +72,11 @@ def test_dotnet_package_without_coverable_lines_passes() -> None:
     result = check_coverage(DOTNET_PACKAGE, "Cubeglass.CoreMath", 90)
     assert result.matched_units >= 1
     assert result.total_lines == 0
-    assert result.rate == pytest.approx(100.0)
     assert result.meets_floor is True
-    assert "no coverable lines" in result.summary()
+    summary = result.summary()
+    assert summary.startswith("WARNING:")
+    assert "0 coverable lines" in summary
+    assert "floor not enforced" in summary
 
 
 def test_dotnet_class_matches_assembly_qualified_module() -> None:
@@ -102,6 +104,19 @@ def test_malformed_report_raises_coverage_error(tmp_path: Path) -> None:
     broken.write_text("<coverage><packages>", encoding="utf-8")
     with pytest.raises(CoverageError):
         check_coverage(broken, "core-math", 90)
+
+
+def test_cli_matched_but_empty_module_warns_and_exits_zero(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(
+        ["coverage", "--report", str(DOTNET_PACKAGE), "--module", "Cubeglass.CoreMath", "--floor", "90"]
+    )
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "WARNING" in captured.out
+    assert "0 coverable lines" in captured.out
+    assert "floor not enforced" in captured.out
 
 
 def test_cli_above_floor_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:

@@ -61,8 +61,8 @@ class CoverageResult:
             )
         if self.total_lines == 0:
             return (
-                f"coverage {verdict}: module '{self.module}' observed 100.00% "
-                f"(no coverable lines); floor {self.floor:g}%"
+                f"WARNING: module '{self.module}' matched {self.matched_units} units "
+                f"but has 0 coverable lines; floor not enforced"
             )
         return (
             f"coverage {verdict}: module '{self.module}' observed {self.rate:.2f}% "
