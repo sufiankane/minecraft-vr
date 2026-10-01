@@ -92,16 +92,20 @@ actionlint .github/workflows/ci.yml
 ## Coverage floors
 
 The required jobs enforce the module line-coverage floors from dossier NFR-05
-(90 percent). `cpp-linux-asan` builds and runs the `linux-coverage` preset,
-generates Cobertura XML with `gcovr`, and runs
+(at least 90 percent). S1 raised the two core-math floors to 95 percent — C++
+`core-math` and .NET `Cubeglass.CoreMath` — because both modules now contain
+real instrumentable code; the `calib` and `depcheck` floors remain at 90.
+`cpp-linux-asan` builds and runs the `linux-coverage` preset, generates
+Cobertura XML with `gcovr`, and runs
 `python -m depcheck coverage --report coverage.cobertura.xml --module core-math
---floor 90`. The `dotnet` job runs
+--floor 95`. The `dotnet` job runs
 `dotnet test Cubeglass.sln --configuration Release` with `XPlat Code Coverage`
-and enforces `--module Cubeglass.CoreMath --floor 90`. The `python` job runs
+and enforces `--module Cubeglass.CoreMath --floor 95`. The `python` job runs
 `pytest` with coverage and enforces `--module calib --floor 90` and `--module
-depcheck --floor 90`. A module with zero coverable lines prints a `WARNING` and
-exits 0 until instrumentable code lands; see
-[`docs/perf/README.md`](perf/README.md) for the S0 stub caveat.
+depcheck --floor 90`. A matched module with zero coverable lines still prints a
+`WARNING` and exits 0, but no current module takes that path: both core-math
+floors are enforced from the jobs' coverage reports. See
+[`docs/perf/README.md`](perf/README.md) for details.
 
 ## Nightly benchmark lane
 

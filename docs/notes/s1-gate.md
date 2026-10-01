@@ -5,9 +5,9 @@
 - **Task:** S1-WI2g / Task 10
 - **Branch:** `s1/clock-budgets` (short-lived; not pushed by this task, not tagged —
   the controller performs the remote steps and the `stage-1-complete` tag)
-- **Commit under test:** `0a7224c test(core-math): add allocation gates and
-  operation benchmarks` (the coverage-floor/evidence commit on top of it changes
-  only `.github/workflows/ci.yml` and this file)
+- **Commit under test:** `4039bac fix(core-math): keep the allocation sink
+  GCC-clean` (current branch head; includes the coverage-floor/evidence commit
+  `c18251b` and the GCC allocation-sink fix)
 - **Runner:** `scripts/ci-local.ps1 -SkipUnity` (Unity is untouched by S1)
 
 ## 1. Local lanes
@@ -64,7 +64,8 @@ Commands (first from `dotnet/`, second from the repository root):
 
 ```powershell
 dotnet test Cubeglass.sln --configuration Release --collect:"XPlat Code Coverage" --results-directory ./coverage
-python\.venv\Scripts\python.exe -m depcheck coverage --report <cobertura> --module Cubeglass.CoreMath --floor 95
+$report = (Get-ChildItem -Recurse -Filter coverage.cobertura.xml coverage | Select-Object -First 1).FullName
+python\.venv\Scripts\python.exe -m depcheck coverage --report $report --module Cubeglass.CoreMath --floor 95
 ```
 
 - Report: `dotnet/coverage/ae4cb72a-2fee-4b5c-b8a2-4ac28bdba1e4/coverage.cobertura.xml`
@@ -85,8 +86,9 @@ C++ coverage is measured only by `gcovr` in the `cpp-linux-asan` CI job (the
 Linux/gcovr pipeline cannot run on this Windows workstation, and no local
 substitute number is claimed).
 
-C++ core-math coverage: verified in CI (cpp-linux-asan) — run URL to be added
-by the controller after the PR checks run.
+C++ core-math coverage: verified in CI on `4039bac` — the `cpp-linux-asan`
+coverage step reports `coverage PASS: module 'core-math' observed 99.19%
+(122/123 lines); floor 95%`.
 
 ## 4. Allocation gates
 
@@ -135,4 +137,14 @@ from 90 to 95:
 No other job, floor or command changed. `CONTRIBUTING.md` is unchanged (no
 documented command changed).
 
-CI verification: pending
+## 7. CI verification
+
+All six required checks are green on PR #10 head `4039bac`:
+[run 36922538193](https://github.com/sufiankane/minecraft-vr/actions/runs/36922538193).
+The `cpp-linux-asan` coverage step reports `coverage PASS: module 'core-math'
+observed 99.19% (122/123 lines); floor 95%`; the C# result above (95.76%,
+158/165 lines, floor 95) is the local coverlet measurement recorded in
+section 3.
+
+The docs-only fix commit that follows `4039bac` — this evidence update — is
+CI-verified by the PR's rerun after that commit.
