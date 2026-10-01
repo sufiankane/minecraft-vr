@@ -24,7 +24,7 @@ jobs:
           git -C "$env:VCPKG_ROOT" checkout eb2d3a3279fd019cb7733072d86900d0ad2a1aef
 
       - name: Bootstrap vcpkg
-        run: "& \"$env:VCPKG_ROOT\bootstrap-vcpkg.bat\" -disableMetrics"
+        run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
 
       - name: Cache vcpkg installed tree
         uses: actions/cache@v4
