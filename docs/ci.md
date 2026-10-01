@@ -17,11 +17,21 @@ merging is blocked while any of them fails.
 | `licences` | `ubuntu-latest` | `python -m depcheck licences --root .` (licence allowlist for declared dependencies) |
 
 C++ dependencies are resolved from vcpkg at the pinned baseline
-`eb2d3a3279fd019cb7733072d86900d0ad2a1aef`. `cpp-windows` caches the vcpkg
-`installed` tree keyed on `cpp/vcpkg.json`.
+`eb2d3a3279fd019cb7733072d86900d0ad2a1aef`. `cpp-windows` caches the manifest-mode
+tree (`cpp/build/windows-msvc/vcpkg_installed`) keyed on the baseline commit and
+`hashFiles('cpp/vcpkg.json')`.
 
-`cpp-linux-asan` runs the `linux-asan` test preset because Task 2 binds the `ci`
-test preset to the `windows-msvc` configure preset.
+## Toolchain policy
+
+vcpkg (pinned baseline above), the .NET SDK (`dotnet/global.json`) and the Unity
+editor are version-pinned. Tools provided by the hosted runner image (CMake,
+Ninja, clang-format, clang-tidy, MSVC, Python) are deliberately not
+version-locked: each relevant job prints a "Toolchain versions" step so image
+drift is visible in the run log. Local development pins live in
+[`docs/toolchains.md`](toolchains.md).
+
+`cpp-linux-asan` runs the `linux-asan` test preset because the `ci` test preset
+in `cpp/CMakePresets.json` is bound to the `windows-msvc` configure preset.
 
 ## Licence allowlist
 
