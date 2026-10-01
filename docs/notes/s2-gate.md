@@ -161,8 +161,9 @@ pins the hash of `TerrainGenerator.Generate((0,0,0), 42)`; green in the
   coverage ≥ 90 (new step) and selects both .NET reports by content with a
   fail-loud guard (CoreMath keeps floor 95).
 - `.github/workflows/nightly.yml`: `bench-dotnet` runs both benchmark projects;
-  new dispatch-only `mutation` job runs `dotnet tool restore` +
-  `dotnet stryker --config-file stryker-config.json` from `dotnet/`.
+  the nightly workflow additionally gains a `mutation` job that runs
+  `dotnet tool restore` + `dotnet stryker --config-file stryker-config.json`
+  from `dotnet/`.
 - `docs/ci.md`: coverage table gains `Cubeglass.Voxel` at 90 (calib/depcheck 90,
   core-math/CoreMath 95 unchanged).
 

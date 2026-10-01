@@ -128,10 +128,10 @@ required CI gates. The nightly lane runs `bench-cpp` (the Google Benchmark targe
 `cg_core_math_benchmarks` from the `benchmarks` CMake preset) and `bench-dotnet`
 (the `dotnet/benchmarks/CoreMath.Benchmarks` and
 `dotnet/benchmarks/Voxel.Benchmarks` console projects), and uploads both outputs
-as GitHub Actions artefacts. A dispatch-only `mutation` job runs `dotnet stryker`
-against `Cubeglass.Voxel` with the break threshold at 70. Nothing is committed
-automatically. The methodology, the artefact locations and the S0 caveat are
-documented in [`docs/perf/README.md`](perf/README.md).
+as GitHub Actions artefacts. The same workflow's `mutation` job runs
+`dotnet stryker` against `Cubeglass.Voxel` with the break threshold at 70.
+Nothing is committed automatically. The methodology, the artefact locations and
+the S0 caveat are documented in [`docs/perf/README.md`](perf/README.md).
 
 ## Negative gates
 
