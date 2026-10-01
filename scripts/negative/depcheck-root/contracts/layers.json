@@ -1,0 +1,5 @@
+{
+  "cpp": {
+    "core-math": { "forbidIncludes": ["thread"] }
+  }
+}

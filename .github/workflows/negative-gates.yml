@@ -1,0 +1,86 @@
+name: Negative gates (expect red)
+
+# Dispatch-only on purpose: these jobs prove that the real gates reject
+# deliberately bad inputs. They must never run on push/pull_request, because
+# their fixtures are intentionally broken and a failure here is the success
+# condition.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  expect-red-format:
+    name: expect-red-format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - name: clang-format must reject the mis-formatted fixture
+        run: |
+          set +e
+          clang-format --dry-run --Werror scripts/negative/fixtures/fail-format.cpp
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::clang-format accepted the mis-formatted fixture; the format gate is not enforcing."
+            exit 1
+          fi
+          echo "OK: clang-format rejected the fixture (exit $status) as expected."
+
+  expect-red-test:
+    name: expect-red-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: python -m pip install -r python/requirements-dev.txt
+
+      - name: pytest must reject the failing fixture
+        run: |
+          set +e
+          python -m pytest scripts/negative/fixtures/fail-test.py
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::pytest passed the failing fixture; the test gate is not enforcing."
+            exit 1
+          fi
+          echo "OK: pytest rejected the fixture (exit $status) as expected."
+
+  expect-red-depcheck:
+    name: expect-red-depcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: |
+          python -m pip install -r python/requirements-dev.txt
+          python -m pip install -e python
+
+      - name: depcheck must reject the forbidden include fixture
+        run: |
+          set +e
+          output=$(python -m depcheck --root scripts/negative/depcheck-root)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "::error::depcheck accepted the forbidden include; the dependency gate is not enforcing."
+            exit 1
+          fi
+          echo "$output"
+          echo "OK: depcheck rejected the fixture (exit $status) as expected."
