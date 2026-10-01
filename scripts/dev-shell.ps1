@@ -20,6 +20,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+$vcpkgRootWasSet = -not [string]::IsNullOrWhiteSpace($env:VCPKG_ROOT)
+
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path $vswhere)) {
     throw "vswhere.exe not found at '$vswhere'. Install Visual Studio Build Tools with the 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' component."
@@ -41,4 +43,9 @@ Import-Module $devShellDll -ErrorAction Stop
 $devCmdArguments = "-arch=$Arch -host_arch=x64"
 Enter-VsDevShell -VsInstallPath $installPath -SkipAutomaticLocation -DevCmdArguments $devCmdArguments -ErrorAction Stop
 
+if (-not $vcpkgRootWasSet) {
+    $env:VCPKG_ROOT = Join-Path $env:USERPROFILE 'vcpkg'
+}
+
 Write-Output "Entered MSVC $Arch developer shell: $installPath"
+Write-Output "VCPKG_ROOT: $env:VCPKG_ROOT"
