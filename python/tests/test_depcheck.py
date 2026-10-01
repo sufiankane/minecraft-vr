@@ -20,13 +20,13 @@ def run_cli(root: Path, capsys: pytest.CaptureFixture[str]) -> tuple[int, list[s
 
 
 def test_compliant_cpp_has_no_violations(capsys: pytest.CaptureFixture[str]) -> None:
-    code, lines = run_cli(FIXTURES / "compliant", capsys)
+    code, lines = run_cli(FIXTURES / "cpp_compliant", capsys)
     assert code == 0
     assert lines == []
 
 
 def test_compliant_dotnet_has_no_violations(capsys: pytest.CaptureFixture[str]) -> None:
-    code, lines = run_cli(FIXTURES / "compliant", capsys)
+    code, lines = run_cli(FIXTURES / "dotnet_compliant", capsys)
     assert code == 0
     assert lines == []
 
@@ -66,7 +66,7 @@ def invoke_module(root: Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_module_invocation_exits_zero_when_clean() -> None:
-    result = invoke_module(FIXTURES / "compliant")
+    result = invoke_module(FIXTURES / "cpp_compliant")
     assert result.returncode == 0
     assert result.stdout.strip() == ""
 
