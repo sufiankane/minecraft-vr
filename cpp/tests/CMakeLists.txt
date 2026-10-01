@@ -12,6 +12,7 @@ add_executable(
     core-math/time_test.cpp
     core-math/clock_mapper_test.cpp
     core-math/golden_test.cpp
+    core-math/allocation_test.cpp
 )
 
 target_link_libraries(

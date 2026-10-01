@@ -23,14 +23,15 @@ later stages introduce.
   benchmark does not only fail the nightly lane: it also fails the required
   `dotnet` CI gate.
 
-## S0 stub caveat
+## CoreMath coverage floor
 
-The S0 modules are stubs. `Cubeglass.CoreMath` currently contains only a
-`const`, which emits no IL, so the .NET coverage report has zero coverable lines
-and the 90% floor cannot be enforced yet: the coverage tool prints a `WARNING`
-and exits 0. The same applies to any matched-but-empty module. The floor becomes
-real as instrumentable code lands in S1, so a green `dotnet` job does not
-currently mean CoreMath coverage is enforced.
+The S0 stub caveat no longer applies: `Cubeglass.CoreMath` has contained real
+instrumentable code since S1, so its floor is enforced at 95 percent from the
+required `dotnet` job's coverage report (`dotnet test … --collect:"XPlat Code
+Coverage"`, then `python -m depcheck coverage --module Cubeglass.CoreMath
+--floor 95`). A matched module with zero coverable lines would still print a
+`WARNING` and exit 0, but the current `Cubeglass.CoreMath` does not take that
+path.
 
 ## Regression budgets
 
