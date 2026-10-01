@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Pure module: no `UnityEngine`, no `System.IO`, no `System.Threading` (ADR-0005 adds a narrow `System.Threading.Tasks` exception for `IWorldStore` signatures only), no file system, no threads. `contracts/layers.json` gains `allowNamespaces` support in depcheck and this exception for `Cubeglass.Voxel`.
-- `Cubeglass.Voxel` targets `netstandard2.1`, `LangVersion 9.0`, nullable, warnings as errors. No allocation on hot paths (`Get`, `Apply`, `Cast`; verified by counter tests).
+- `Cubeglass.Voxel` targets `netstandard2.1`, `LangVersion 10.0` with the `IsExternalInit` polyfill so the frozen contracts are literal `readonly record struct`s (ADR-0005), nullable, warnings as errors. No allocation on hot paths (`Get`, `Apply`, `Cast`; verified by counter tests).
 - Contracts frozen: `Int3`, `BlockId`, `IBlockRegistry`, `IWorld`, `IWorldGenerator`, `IRaycaster`, `IWorldStore`, `EditCommand` exactly as section 5.9. Chunk size and byte format are new (ADR-0006).
 - Deterministic: generation depends only on `(seed, ChunkCoord)`; serialisation is byte-stable; no clocks, no randomness outside explicit seeds.
 - TDD for every task; Conventional Commits; one logical change per commit.
@@ -53,7 +53,7 @@
 - [ ] **Step 1: ADR-0005** (MADR): `IWorldStore` stays in `Cubeglass.Voxel` per contract 5.9; `System.Threading.Tasks` types (`ValueTask`, `CancellationToken`) are signatures only — Voxel never starts tasks or touches IO; `layers.json` gains the narrow `allowNamespaces` mechanism; block definitions are read from an embedded JSON resource with System.Text.Json (MIT, test-visible); FsCheck (BSD-3-Clause) for property tests. `docs/adr/0006-...`: chunk size 16³, Air=0, save format header (`magic "CGDL"`, `uint16 version = 1`, `uint32 count`), RLE layout (u16 blockId, u32 runLength in Z-major local order), migration hook (switch on version), and the rule that unknown/newer versions and malformed data are rejected by `TryDeserialize`.
 - [ ] **Step 2: depcheck rule.** Extend the project rule model with optional `allowNamespaces`; a namespace is a violation when it matches `forbidNamespaces` and does not match `allowNamespaces` (exact or `entry + "."` prefix, same semantics as the forbid list). Add tests: allowed exact, allowed child, forbidden sibling still caught, missing allow list unchanged behaviour.
 - [ ] **Step 3: Tests first for `Int3`/`ChunkCoord`/`ChunkMath`.** NUnit: floor behaviour (`ToChunk((-1,-1,-1)) == (-1,-1,-1)`, `ToLocal((-1,-1,-1)) == (15,15,15)`, `ToWorld((-1,-1,-1),(15,15,15)) == (-1,-1,-1)`, `ToChunk((-17,0,15)) == (-2,0,0)`, `ToLocal((-17,0,15)) == (15,0,15)`); local range invariant; FsCheck property `ToWorld(ToChunk(c), ToLocal(c)) == c` for arbitrary `Int3` in `[-1000,1000]³` and `ToLocal` components in `[0,15]` always.
-- [ ] **Step 4: Implement** the three value types; docs with preconditions.
+- [ ] **Step 4: Implement** the three value types as literal C# 10 `readonly record struct`s (`dotnet/src/Voxel/IsExternalInit.cs` polyfill plus `LangVersion 10.0`; ADR-0005); docs with preconditions.
 - [ ] **Step 5: Run** `dotnet test Cubeglass.sln --configuration Release` (from `dotnet/`), `python -m pytest python/tests -q` from repo root (depcheck tests), `powershell -File scripts/ci-local.ps1 -SkipUnity`. Commit: `feat(voxel): add chunk coordinate maths, layer exception and S2 ADRs`.
 
 ---
@@ -122,7 +122,7 @@
 
 **Interfaces:**
 - `ChunkDelta` (immutable): `ChunkCoord Coord`, `IReadOnlyDictionary<Int3, BlockId> Edits` (local cells); `ChunkDelta.Empty(ChunkCoord)`.
-- `ChunkDeltaCodec` (static, pure): `byte[] Serialize(ChunkDelta)`; `bool TryDeserialize(ReadOnlySpan<byte>, out ChunkDelta?)` — never throws for any input; rejects bad magic, unknown/newer version, truncated data, count mismatch, run over/underrun, out-of-range locals (must be `[0,15]`), duplicate cells.
+- `ChunkDeltaCodec` (static, pure): `byte[] Serialize(ChunkDelta)`; `bool TryDeserialize(ReadOnlySpan<byte>, out ChunkDelta?)` — never throws for any input; rejects bad magic, unknown/newer version, truncated data, count mismatch, run over/underrun (the declared entry count must not exceed 4096 and the run lengths must sum to exactly the expected 4096-cell total), and trailing bytes (a full-grid RLE payload has no per-run coordinates, so out-of-range locals and duplicates cannot occur).
 - Format per ADR-0006: `magic "CGDL"` (4 bytes), `uint16 version = 1`, `uint16 reserved = 0`, `uint32 entryCount`, then RLE runs `uint16 blockId, uint32 runLength` in Z-major local order; `Serialize` sorts edits into that order; round trip is byte-stable (`Serialize(Deserialize(bytes))` equals the original byte prefix).
 - `Aabb` (readonly struct): `Vec3 Min`, `Vec3 Max` (half-open semantics: contains `p` iff `Min <= p < Max`); `Overlaps(Aabb other)`.
 - `VoxelCollision` (static): `bool Overlaps(IWorld world, Aabb box)` — iterates the cell range covering the box, treats unloaded as Air, true iff any solid cell's half-open cube overlaps; `bool CanPlace(IWorld world, Int3 cell, Aabb playerBox)` — false when `cell`'s cube overlaps the player box.
