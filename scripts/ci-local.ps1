@@ -175,13 +175,20 @@ try {
             if (-not (Test-Path $UnityExe)) {
                 throw "Unity CLI not found at '$UnityExe'"
             }
-            # The Unity CLI resolves the project argument against the current
-            # directory and mangles Windows absolute paths, so run from the repo
-            # root with the canonical relative path (see docs/toolchains.md).
+            # The Unity CLI mishandles the project argument (it prepends the
+            # current directory to an already-absolute path) when the project
+            # has no Assets folder, so a pristine clone aborts before importing.
+            # Unity always creates Assets on first import; create it up front so
+            # the recorded relative invocation below resolves correctly.
+            $unityAssets = Join-Path $RepoRoot 'unity\Cubeglass\Assets'
+            if (-not (Test-Path $unityAssets)) {
+                Write-Host "Creating missing Unity Assets folder: $unityAssets"
+                New-Item -ItemType Directory -Path $unityAssets -Force | Out-Null
+            }
             Push-Location $RepoRoot
             try {
                 Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
-                    & $UnityExe test 'unity\Cubeglass' --mode EditMode --non-interactive --output $UnityResults
+                    & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResults
                 }
             }
             finally {
