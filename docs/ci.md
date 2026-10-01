@@ -79,8 +79,34 @@ Workflow syntax can be checked with
 actionlint .github/workflows/ci.yml
 ```
 
+## Coverage floors
+
+The required jobs enforce the module line-coverage floors from dossier NFR-05
+(90 percent). `cpp-linux-asan` builds and runs the `linux-coverage` preset,
+generates Cobertura XML with `gcovr`, and runs
+`python -m depcheck coverage --report coverage.cobertura.xml --module core-math
+--floor 90`. The `dotnet` job runs
+`dotnet test Cubeglass.sln --configuration Release` with `XPlat Code Coverage`
+and enforces `--module Cubeglass.CoreMath --floor 90`. The `python` job runs
+`pytest` with coverage and enforces `--module calib --floor 90` and `--module
+depcheck --floor 90`. A module with zero coverable lines prints a `WARNING` and
+exits 0 until instrumentable code lands; see
+[`docs/perf/README.md`](perf/README.md) for the S0 stub caveat.
+
+## Nightly benchmark lane
+
+Performance numbers are produced by `.github/workflows/nightly.yml`, not by the
+required CI gates. The nightly lane runs `bench-cpp` (the Google Benchmark target
+`cg_core_math_benchmarks` from the `benchmarks` CMake preset) and `bench-dotnet`
+(the `dotnet/benchmarks/CoreMath.Benchmarks` console project), and uploads both
+outputs as GitHub Actions artefacts. Nothing is committed automatically. The
+methodology, the artefact locations and the S0 caveat are documented in
+[`docs/perf/README.md`](perf/README.md).
+
 ## Negative gates
 
-This workflow covers the positive gates only. Negative gates — checks that
-deliberately broken inputs are rejected — arrive in Task 8 and will be
-referenced here.
+Negative gates — checks that deliberately broken inputs are rejected — are
+dispatch-only and documented in
+[`docs/ci/negative-gates.md`](ci/negative-gates.md). They are self-tests for the
+positive gates and are deliberately absent from the required checks; see that
+document for why they must stay dispatch-only.

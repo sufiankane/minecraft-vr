@@ -24,14 +24,50 @@ local C++ build:
 . scripts/dev-shell.ps1
 ```
 
-## One command per language
+## Local commands
 
-These are the canonical lane commands (kept in sync with `CONTRIBUTING.md`):
+These are the canonical lane commands, kept in sync with
+[`CONTRIBUTING.md`](CONTRIBUTING.md). See that file for the full conventions.
 
-| Lane | Command |
-| --- | --- |
-| C++ | `cmake -S cpp -B build -G Ninja; cmake --build build; ctest --test-dir build` |
-| C# (.NET) | `dotnet test dotnet/Cubeglass.sln` |
-| Python | `python -m pytest python; python -m ruff check python; python -m mypy python` |
-| Unity | `unity test --project unity/Cubeglass` |
-| Dependency check | `python -m depcheck --root .` |
+C++ (enter the MSVC x64 developer shell first; it sets `VCPKG_ROOT`):
+
+```powershell
+. .\scripts\dev-shell.ps1
+cd cpp
+cmake --preset windows-msvc
+cmake --build --preset windows-msvc
+ctest --preset ci
+```
+
+C# (.NET), from the SDK pinned in `dotnet/global.json`:
+
+```powershell
+cd dotnet
+dotnet test Cubeglass.sln --configuration Release
+```
+
+Python, using the virtual environment in `python/.venv`:
+
+```powershell
+cd python
+python -m pip install -r requirements-dev.txt
+python -m pip install -e .
+python -m pytest
+python -m ruff check .
+python -m mypy calib depcheck
+```
+
+Dependency and licence gates, from the repository root:
+
+```powershell
+python -m depcheck --root .
+python -m depcheck licences --root .
+```
+
+Unity:
+
+```powershell
+unity test unity/Cubeglass --mode EditMode --non-interactive
+```
+
+CI gate details are in [`docs/ci.md`](docs/ci.md).
