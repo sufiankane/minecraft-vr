@@ -24,9 +24,12 @@ RULE_ALLOWED_PROJECT_REFERENCES = "allowedProjectReferences"
 
 _CPP_SUFFIXES: frozenset[str] = frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"})
 
+_IGNORED_DIRECTORIES: frozenset[str] = frozenset({"obj", "bin"})
+
 _INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
 _USING_RE = re.compile(
-    r"^\s*(?:global\s+)?using\s+(?:static\s+)?(?:[A-Za-z_]\w*\s*=\s*)?([A-Za-z_][\w.]*)\s*;"
+    r"^\s*(?:global\s+)?using\s+(?:static\s+)?(?:[A-Za-z_]\w*\s*=\s*)?"
+    r"(?:global\s*::\s*)?([A-Za-z_][\w.]*)\s*;"
 )
 _PROJECT_REFERENCE_RE = re.compile(r"<ProjectReference\b[^>]*?\bInclude\s*=\s*\"([^\"]+)\"")
 
@@ -108,6 +111,10 @@ def _relative(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _is_ignored(path: Path, base: Path) -> bool:
+    return any(part in _IGNORED_DIRECTORIES for part in path.relative_to(base).parts)
+
+
 def _check_cpp_file(root: Path, path: Path, forbid_includes: tuple[str, ...]) -> list[Violation]:
     violations: list[Violation] = []
     relative = _relative(root, path)
@@ -157,7 +164,7 @@ def _check_cpp(root: Path, rules: dict[str, _CppModule]) -> list[Violation]:
         if not module_dir.is_dir():
             continue
         for path in sorted(module_dir.rglob("*")):
-            if path.is_file() and path.suffix.lower() in _CPP_SUFFIXES:
+            if path.is_file() and path.suffix.lower() in _CPP_SUFFIXES and not _is_ignored(path, module_dir):
                 violations.extend(_check_cpp_file(root, path, rules[module].forbid_includes))
     return violations
 
@@ -172,7 +179,7 @@ def _check_dotnet(root: Path, rules: dict[str, _DotnetModule]) -> list[Violation
             continue
         module = rules[project]
         for path in sorted(project_dir.rglob("*")):
-            if not path.is_file():
+            if not path.is_file() or _is_ignored(path, project_dir):
                 continue
             if path.suffix == ".cs":
                 violations.extend(_check_cs_file(root, path, module.forbid_namespaces))
