@@ -139,7 +139,7 @@ jobs:
         working-directory: cpp
 
       - name: Enforce core-math coverage floor
-        run: python -m depcheck coverage --report coverage.cobertura.xml --module core-math --floor 90
+        run: python -m depcheck coverage --report coverage.cobertura.xml --module core-math --floor 95
         working-directory: cpp
 
   dotnet:
@@ -175,7 +175,7 @@ jobs:
         run: |
           report=$(find coverage -name 'coverage.cobertura.xml' | head -n 1)
           echo "Enforcing floor against ${report}"
-          python -m depcheck coverage --report "$report" --module Cubeglass.CoreMath --floor 90
+          python -m depcheck coverage --report "$report" --module Cubeglass.CoreMath --floor 95
 
   python:
     name: python
