@@ -44,3 +44,17 @@ C++ build.
 - Baseline commit: `eb2d3a3279fd019cb7733072d86900d0ad2a1aef`
 - No C++ dependencies are built by this task; the commit is the reproducibility
   baseline for later tasks.
+
+## Unity
+
+Run the `unity/Cubeglass` EditMode tests with the Unity CLI (`unity` 1.0.0-beta.11):
+
+```powershell
+unity test unity/Cubeglass --mode EditMode --non-interactive
+```
+
+The project path is a positional argument (`unity test [project]`); there is no
+`--project` flag. `--mode EditMode` selects the platform, `--non-interactive`
+is the global flag required for headless/CI runs, and `--output <path>` writes
+the NUnit XML results report (default `test-results.xml`). Flags confirmed
+against `unity test --help`.
