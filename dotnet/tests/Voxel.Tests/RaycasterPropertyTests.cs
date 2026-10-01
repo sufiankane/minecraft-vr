@@ -26,6 +26,7 @@ namespace Cubeglass.Voxel.Tests
         [Test]
         public void EveryReportedHitIsSolidInRangeAndFacesTheRayOrigin()
         {
+            int hits = 0;
             Property property = Prop.ForAll(
                 CaseArbitrary(),
                 (RayCase c) =>
@@ -41,6 +42,7 @@ namespace Cubeglass.Voxel.Tests
                         return true;
                     }
 
+                    hits++;
                     RayHit hit = result.Value;
                     if (hit.Block == BlockId.Air)
                     {
@@ -52,6 +54,9 @@ namespace Cubeglass.Voxel.Tests
                         return false;
                     }
 
+                    // maxDistance is inclusive; distance zero is valid for an
+                    // inside hit (zero normal) and for an entry hit whose origin
+                    // lies exactly on the entry face (non-zero normal).
                     if (hit.Distance < 0f || hit.Distance > MaxDistance)
                     {
                         return false;
@@ -62,16 +67,12 @@ namespace Cubeglass.Voxel.Tests
                         return hit.Distance == 0f && FloorCell(ray.Origin) == hit.Cell;
                     }
 
-                    if (hit.Distance <= 0f)
-                    {
-                        return false;
-                    }
-
                     var normal = new Vec3(hit.Normal.X, hit.Normal.Y, hit.Normal.Z);
                     return Vec3.Dot(normal, Vec3.Normalized(ray.Direction)) < 0.0;
                 });
 
             Check.One("raycast hit invariants", DeterministicConfig(), property);
+            Assert.That(hits, Is.GreaterThan(0), "the property run must observe at least one hit");
         }
 
         [Test]

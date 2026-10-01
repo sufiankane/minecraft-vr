@@ -218,6 +218,77 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
+        public void CastFromAnExactFaceTowardsANegativeDirectionIsAnEntryHitAtZeroDistance()
+        {
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(1, 0, 0), Stone));
+            var ray = new Ray(new Vec3(2.0, 0.5, 0.5), new Vec3(-1.0, 0.0, 0.0));
+
+            RayHit? result = new DdaRaycaster().Cast(world, ray, 10f);
+
+            Assert.That(result, Is.Not.Null);
+            RayHit hit = result.GetValueOrDefault();
+            Assert.That(hit.Cell, Is.EqualTo(new Int3(1, 0, 0)));
+            Assert.That(hit.Normal, Is.EqualTo(new Int3(1, 0, 0)));
+            Assert.That(hit.Distance, Is.Zero);
+            Assert.That(hit.Block, Is.EqualTo(Stone));
+        }
+
+        [Test]
+        public void CastFromAnExactFaceTowardsAPositiveDirectionEntersAfterOneFullUnit()
+        {
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(2, 0, 0), Stone));
+            var ray = new Ray(new Vec3(1.0, 0.5, 0.5), new Vec3(1.0, 0.0, 0.0));
+
+            RayHit? result = new DdaRaycaster().Cast(world, ray, 10f);
+
+            Assert.That(result, Is.Not.Null);
+            RayHit hit = result.GetValueOrDefault();
+            Assert.That(hit.Cell, Is.EqualTo(new Int3(2, 0, 0)));
+            Assert.That(hit.Normal, Is.EqualTo(new Int3(-1, 0, 0)));
+            Assert.That(hit.Distance, Is.EqualTo(1.0f));
+            Assert.That(hit.Block, Is.EqualTo(Stone));
+        }
+
+        [Test]
+        public void CastFromAnExactFaceOnTheYAxisIsAnEntryHitAtZeroDistance()
+        {
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(0, 1, 0), Dirt));
+            var ray = new Ray(new Vec3(0.5, 2.0, 0.5), new Vec3(0.0, -1.0, 0.0));
+
+            RayHit? result = new DdaRaycaster().Cast(world, ray, 10f);
+
+            Assert.That(result, Is.Not.Null);
+            RayHit hit = result.GetValueOrDefault();
+            Assert.That(hit.Cell, Is.EqualTo(new Int3(0, 1, 0)));
+            Assert.That(hit.Normal, Is.EqualTo(new Int3(0, 1, 0)));
+            Assert.That(hit.Distance, Is.Zero);
+            Assert.That(hit.Block, Is.EqualTo(Dirt));
+        }
+
+        [Test]
+        public void ZeroDistanceHitsAreDistinguishedFromInsideHitsByTheirNormal()
+        {
+            var raycaster = new DdaRaycaster();
+            var ray = new Ray(new Vec3(2.0, 0.5, 0.5), new Vec3(-1.0, 0.0, 0.0));
+
+            World entryOnly = TestWorld.CreateLoaded(Origin, (new Int3(1, 0, 0), Stone));
+            RayHit? entry = raycaster.Cast(entryOnly, ray, 10f);
+
+            Assert.That(entry, Is.Not.Null);
+            Assert.That(entry.GetValueOrDefault().Cell, Is.EqualTo(new Int3(1, 0, 0)));
+            Assert.That(entry.GetValueOrDefault().Normal, Is.EqualTo(new Int3(1, 0, 0)));
+            Assert.That(entry.GetValueOrDefault().Distance, Is.Zero);
+
+            World insideOnly = TestWorld.CreateLoaded(Origin, (new Int3(2, 0, 0), Dirt));
+            RayHit? inside = raycaster.Cast(insideOnly, ray, 10f);
+
+            Assert.That(inside, Is.Not.Null);
+            Assert.That(inside.GetValueOrDefault().Cell, Is.EqualTo(new Int3(2, 0, 0)));
+            Assert.That(inside.GetValueOrDefault().Normal, Is.EqualTo(Int3.Zero));
+            Assert.That(inside.GetValueOrDefault().Distance, Is.Zero);
+        }
+
+        [Test]
         public void CastTowardsNegativeCoordinatesFindsSolidsInNegativeChunks()
         {
             World world = TestWorld.CreateLoaded(new ChunkCoord(-1, 0, 0), (new Int3(14, 0, 0), Stone));

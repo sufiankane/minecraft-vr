@@ -13,10 +13,20 @@ namespace Cubeglass.Voxel
     /// in world units along that normalised direction.
     /// </para>
     /// <para>
-    /// <b>Inside hits.</b> When the ray origin's floor cell is loaded and
-    /// solid, that cell is returned immediately with <see cref="Int3.Zero"/>
-    /// normal and distance zero, however far the ray would otherwise travel.
-    /// The floor cell also owns an origin lying exactly on a cell face.
+    /// <b>Inside and face-origin hits.</b> When the ray origin's floor cell is
+    /// loaded and solid, that cell is returned immediately with
+    /// <see cref="Int3.Zero"/> normal and distance zero. An origin lying
+    /// exactly on a cell face belongs to the floor cell: moving away from that
+    /// face into an adjacent solid cell is an entry hit at distance zero with
+    /// the adjacent cell's non-zero entry normal, while moving along the
+    /// positive axis direction enters the cell beyond the face after one full
+    /// unit. The normal distinguishes the two zero-distance cases: only an
+    /// inside hit has <see cref="Int3.Zero"/>.
+    /// </para>
+    /// <para>
+    /// <b>Range.</b> <paramref name="maxDistance"/> is inclusive: a hit exactly
+    /// at <paramref name="maxDistance"/> is returned, so every accepted
+    /// <see cref="RayHit.Distance"/> lies in <c>[0, maxDistance]</c>.
     /// </para>
     /// <para>
     /// <b>Tie rule.</b> When the next boundary crossing is exactly shared by
