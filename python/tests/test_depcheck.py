@@ -59,7 +59,23 @@ def test_allowed_namespaces_exact_and_child_are_not_reported(capsys: pytest.Capt
 def test_forbidden_sibling_namespace_is_still_reported(capsys: pytest.CaptureFixture[str]) -> None:
     code, lines = run_cli(FIXTURES / "dotnet_allow_namespace_sibling", capsys)
     assert code == 1
-    assert lines == ["dotnet/src/Voxel/Mixed.cs:1 forbidNamespaces"]
+    assert lines == [
+        "dotnet/src/Voxel/Bare.cs:1 forbidNamespaces",
+        "dotnet/src/Voxel/Mixed.cs:1 forbidNamespaces",
+        "dotnet/src/Voxel/TasksX.cs:1 forbidNamespaces",
+    ]
+
+
+def test_bare_parent_namespace_is_still_reported_under_an_allow_list(capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = run_cli(FIXTURES / "dotnet_allow_namespace_sibling", capsys)
+    assert code == 1
+    assert "dotnet/src/Voxel/Bare.cs:1 forbidNamespaces" in lines
+
+
+def test_allow_entry_does_not_cover_a_longer_sibling_name(capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = run_cli(FIXTURES / "dotnet_allow_namespace_sibling", capsys)
+    assert code == 1
+    assert "dotnet/src/Voxel/TasksX.cs:1 forbidNamespaces" in lines
 
 
 def test_missing_allow_list_keeps_forbidden_namespaces_reported(capsys: pytest.CaptureFixture[str]) -> None:

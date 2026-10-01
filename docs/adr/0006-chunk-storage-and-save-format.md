@@ -57,6 +57,10 @@ format version bump.
 
 ## Decision outcome
 
+Chosen option: "16³ chunks with a full-grid, versioned RLE delta format",
+because 4096 cells keep mesh, raycast and collision work unit-testable while
+sequential run coverage makes corrupt save data reduce to one validated sum.
+
 ### Chunk size and coordinates
 
 A chunk is `16 × 16 × 16` cells (`ChunkMath.ChunkSize = 16`), local coordinates

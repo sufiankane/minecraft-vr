@@ -3,13 +3,11 @@
 - **Date:** 2026-10-02
 - **Stage:** S2 (voxel core: coordinates, chunk/world model, DDA raycaster, terrain generation, delta persistence, collision)
 - **Task:** S2-WI7 / Task 5 (budgets, mutation score and exit gate)
-- **Branch:** `s2/budgets-gate` (not pushed by this task; the controller runs the
-  PR checks and completes the CI line below)
-- **Commit under test:** `d6f93704e3627f891e8d29be0f8a5f608d0cbf35`
-  (`ci(voxel): enforce 90 percent coverage and add stryker lane`), preceded by
-  `a16de81 test(voxel): gate cast get and apply hot paths at zero allocations`
-  and `f6f7a09 build(voxel): add BenchmarkDotNet project for chunk generation
-  and raycast`
+- **Branch:** `s2/budgets-gate` (PR #15)
+- **Commit under test:** `24d5b99` (`docs: describe the nightly mutation job
+  accurately`), preceded by `f1db575 ci: enforce voxel budgets and record S2
+  evidence` and `d6f93704 ci(voxel): enforce 90 percent coverage and add
+  stryker lane`.
 - **Runner:** `scripts/ci-local.ps1 -SkipUnity` (Unity is untouched by S2)
 
 ## 1. Local lanes
@@ -167,4 +165,26 @@ pins the hash of `TerrainGenerator.Generate((0,0,0), 42)`; green in the
 - `docs/ci.md`: coverage table gains `Cubeglass.Voxel` at 90 (calib/depcheck 90,
   core-math/CoreMath 95 unchanged).
 
-CI verification: pending
+## 8. CI verification
+
+- Commit under test: `24d5b99` (`docs: describe the nightly mutation job
+  accurately`).
+- PR #15 checks are green for that head:
+  `https://github.com/sufiankane/minecraft-vr/actions/runs/36940886728`.
+- The S2 fix-wave commit on top of `24d5b99` is covered by the PR rerun after
+  push.
+
+## 9. Deferred minors
+
+The S2 final review recorded these non-blocking minors; they are deliberately
+deferred beyond the fix wave and remain open for a later stage:
+
+- duplicate chunk accessor;
+- mutable-backed read-only views;
+- `InMemoryWorldStore` XML docs;
+- store contract test not factory-parameterized;
+- codec scratch allocations;
+- version switch seam;
+- collision area guard;
+- noise direct tests;
+- SimpleJob noise.
