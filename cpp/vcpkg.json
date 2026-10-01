@@ -5,6 +5,8 @@
   "builtin-baseline": "eb2d3a3279fd019cb7733072d86900d0ad2a1aef",
   "dependencies": [
     "benchmark",
-    "gtest"
+    "gtest",
+    "nlohmann-json",
+    "rapidcheck"
   ]
 }
