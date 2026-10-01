@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Content\blocks.json" />
+    <PackageReference Include="System.Text.Json" />
+    <InternalsVisibleTo Include="Cubeglass.Voxel.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CoreMath\Cubeglass.CoreMath.csproj" />
   </ItemGroup>
 

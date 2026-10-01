@@ -1,0 +1,8 @@
+[
+  { "Id": 0, "Name": "Air",   "Solid": false, "Opaque": false, "Hardness": 0.0, "AtlasIndexTop": 0, "AtlasIndexFront": 0, "AtlasIndexSide": 0 },
+  { "Id": 1, "Name": "Stone", "Solid": true,  "Opaque": true,  "Hardness": 1.5, "AtlasIndexTop": 1, "AtlasIndexFront": 1, "AtlasIndexSide": 1 },
+  { "Id": 2, "Name": "Dirt",  "Solid": true,  "Opaque": true,  "Hardness": 0.5, "AtlasIndexTop": 2, "AtlasIndexFront": 2, "AtlasIndexSide": 2 },
+  { "Id": 3, "Name": "Grass", "Solid": true,  "Opaque": true,  "Hardness": 0.6, "AtlasIndexTop": 3, "AtlasIndexFront": 4, "AtlasIndexSide": 4 },
+  { "Id": 4, "Name": "Sand",  "Solid": true,  "Opaque": true,  "Hardness": 0.5, "AtlasIndexTop": 5, "AtlasIndexFront": 5, "AtlasIndexSide": 5 },
+  { "Id": 5, "Name": "Wood",  "Solid": true,  "Opaque": true,  "Hardness": 2.0, "AtlasIndexTop": 7, "AtlasIndexFront": 6, "AtlasIndexSide": 6 }
+]
