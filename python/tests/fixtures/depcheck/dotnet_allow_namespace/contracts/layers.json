@@ -1,0 +1,5 @@
+{
+  "dotnet": {
+    "Cubeglass.Voxel": { "forbidNamespaces": ["System.Threading"], "allowNamespaces": ["System.Threading.Tasks"], "allowedProjectReferences": [] }
+  }
+}

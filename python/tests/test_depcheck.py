@@ -50,6 +50,24 @@ def test_forbidden_system_io_namespace_in_voxel_is_reported(capsys: pytest.Captu
     assert "dotnet/src/Voxel/Bad.cs:1 forbidNamespaces" in lines
 
 
+def test_allowed_namespaces_exact_and_child_are_not_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = run_cli(FIXTURES / "dotnet_allow_namespace", capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_forbidden_sibling_namespace_is_still_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = run_cli(FIXTURES / "dotnet_allow_namespace_sibling", capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Mixed.cs:1 forbidNamespaces"]
+
+
+def test_missing_allow_list_keeps_forbidden_namespaces_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    code, lines = run_cli(FIXTURES / "dotnet_allow_namespace_missing", capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:1 forbidNamespaces"]
+
+
 def test_disallowed_project_reference_is_reported_with_line(capsys: pytest.CaptureFixture[str]) -> None:
     code, lines = run_cli(FIXTURES / "dotnet_reference", capsys)
     assert code == 1

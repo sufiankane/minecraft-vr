@@ -4,6 +4,7 @@
   "dotnet": { "Cubeglass.CoreMath": { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": [] },
               "Cubeglass.Voxel":     { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
+                                       "allowNamespaces": ["System.Threading.Tasks"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath"] },
               "Cubeglass.Mesh":      { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] },

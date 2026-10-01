@@ -13,6 +13,7 @@ __pycache__/
 # .NET
 bin/
 obj/
+dotnet/coverage/
 
 # Unity
 unity/**/Library/

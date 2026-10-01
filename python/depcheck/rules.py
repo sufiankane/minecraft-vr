@@ -8,6 +8,13 @@ Only the standard library is used, and all parsing is line-based and
 deterministic. Module directories named in ``layers.json`` but absent from the
 tree are skipped rather than treated as errors, so forward-looking entries such
 as ``handcore`` are safe before the module exists.
+
+A .NET project may declare ``allowNamespaces`` alongside
+``forbidNamespaces``: a namespace that matches an allowed entry (exact, or
+``entry + "."`` prefix, the same matching rule as the forbid list) is not a
+violation even when a forbid entry also matches. The allow list is the only way
+to carve an exception out of a forbidden namespace, and it is deliberately
+per-project.
 """
 
 from __future__ import annotations
@@ -54,6 +61,7 @@ class _CppModule:
 @dataclass(frozen=True)
 class _DotnetModule:
     forbid_namespaces: tuple[str, ...]
+    allow_namespaces: tuple[str, ...]
     allowed_project_references: tuple[str, ...]
 
 
@@ -97,6 +105,7 @@ def load_rules(root: Path) -> _Rules:
         project_rules = _as_object(value)
         dotnet[project] = _DotnetModule(
             forbid_namespaces=_as_string_tuple(project_rules.get("forbidNamespaces")),
+            allow_namespaces=_as_string_tuple(project_rules.get("allowNamespaces")),
             allowed_project_references=_as_string_tuple(project_rules.get("allowedProjectReferences")),
         )
 
@@ -129,18 +138,24 @@ def _check_cpp_file(root: Path, path: Path, forbid_includes: tuple[str, ...]) ->
     return violations
 
 
-def _namespace_is_forbidden(namespace: str, forbidden: tuple[str, ...]) -> bool:
-    return any(namespace == entry or namespace.startswith(f"{entry}.") for entry in forbidden)
+def _namespace_matches(namespace: str, entries: tuple[str, ...]) -> bool:
+    return any(namespace == entry or namespace.startswith(f"{entry}.") for entry in entries)
 
 
-def _check_cs_file(root: Path, path: Path, forbid_namespaces: tuple[str, ...]) -> list[Violation]:
+def _check_cs_file(
+    root: Path,
+    path: Path,
+    forbid_namespaces: tuple[str, ...],
+    allow_namespaces: tuple[str, ...],
+) -> list[Violation]:
     violations: list[Violation] = []
     relative = _relative(root, path)
     for line_number, line in enumerate(_read_lines(path), start=1):
         match = _USING_RE.match(line)
         if match is None:
             continue
-        if _namespace_is_forbidden(match.group(1), forbid_namespaces):
+        namespace = match.group(1)
+        if _namespace_matches(namespace, forbid_namespaces) and not _namespace_matches(namespace, allow_namespaces):
             violations.append(Violation(relative, line_number, RULE_FORBID_NAMESPACES))
     return violations
 
@@ -182,7 +197,9 @@ def _check_dotnet(root: Path, rules: dict[str, _DotnetModule]) -> list[Violation
             if not path.is_file() or _is_ignored(path, project_dir):
                 continue
             if path.suffix == ".cs":
-                violations.extend(_check_cs_file(root, path, module.forbid_namespaces))
+                violations.extend(
+                    _check_cs_file(root, path, module.forbid_namespaces, module.allow_namespaces)
+                )
             elif path.suffix == ".csproj":
                 violations.extend(_check_csproj_file(root, path, module.allowed_project_references))
     return violations
