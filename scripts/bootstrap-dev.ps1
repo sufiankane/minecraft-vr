@@ -241,21 +241,55 @@ function Install-WingetPackage {
 
 Update-SessionPath
 
+$pins = Get-Pins -Path $ToolchainsPath
+
+$requiredToolKeys = @(
+    'cmake', 'ninja', 'clang-format', 'clang-tidy', 'vs-buildtools',
+    'dotnet', 'vcpkg', 'python', 'unity', 'gh', 'node'
+)
+if ($pins.Count -eq 0) {
+    [Console]::Error.WriteLine("Pin table '$ToolchainsPath' yielded no pins. Refusing to report success.")
+    exit 1
+}
+$parsedKeys = @($pins | ForEach-Object { Get-ToolKey -Tool $_.Tool })
+$missingKeys = @($requiredToolKeys | Where-Object { $_ -notin $parsedKeys })
+if ($missingKeys.Count -gt 0) {
+    [Console]::Error.WriteLine("Pin table '$ToolchainsPath' is missing required rows: " + ($missingKeys -join ', '))
+    exit 1
+}
+
+$vcpkgPin = ($pins | Where-Object { (Get-ToolKey -Tool $_.Tool) -eq 'vcpkg' } | Select-Object -First 1).Required
+
 if (-not $Check) {
     foreach ($id in $WingetPackages) {
         Install-WingetPackage -Id $id
     }
 
+    $vcpkgNeedsBootstrap = $false
     if (-not (Test-Path (Join-Path $VcpkgDir '.git'))) {
         Write-Output "[install] cloning vcpkg to $VcpkgDir"
         & git clone $VcpkgUrl $VcpkgDir 2>&1
         if ($LASTEXITCODE -ne 0) { throw "vcpkg clone failed (exit $LASTEXITCODE)" }
+        $vcpkgNeedsBootstrap = $true
     }
     else {
         Write-Output "[skip] vcpkg already cloned at $VcpkgDir"
     }
 
-    if (-not (Test-Path (Join-Path $VcpkgDir 'vcpkg.exe'))) {
+    $currentHead = "$( & git -C $VcpkgDir rev-parse HEAD 2>&1 )".Trim()
+    if ($currentHead -ne $vcpkgPin) {
+        Write-Output "[checkout] vcpkg $currentHead -> baseline $vcpkgPin"
+        & git -C $VcpkgDir checkout --quiet $vcpkgPin 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "vcpkg checkout of baseline $vcpkgPin failed (exit $LASTEXITCODE)" }
+        $currentHead = "$( & git -C $VcpkgDir rev-parse HEAD 2>&1 )".Trim()
+        if ($currentHead -ne $vcpkgPin) { throw "vcpkg HEAD '$currentHead' does not match baseline '$vcpkgPin' after checkout" }
+        $vcpkgNeedsBootstrap = $true
+    }
+    else {
+        Write-Output "[skip] vcpkg already at baseline $vcpkgPin"
+    }
+
+    if ($vcpkgNeedsBootstrap -or -not (Test-Path (Join-Path $VcpkgDir 'vcpkg.exe'))) {
         Write-Output "[install] bootstrapping vcpkg"
         & (Join-Path $VcpkgDir 'bootstrap-vcpkg.bat') -disableMetrics 2>&1
         if ($LASTEXITCODE -ne 0) { throw "vcpkg bootstrap failed (exit $LASTEXITCODE)" }
@@ -270,8 +304,6 @@ if (-not $Check) {
     exit 0
 }
 
-$pins = Get-Pins -Path $ToolchainsPath
-
 $overrideKey = $null
 $overrideVersion = $null
 if (-not [string]::IsNullOrWhiteSpace($ExpectedOverride)) {
@@ -280,7 +312,7 @@ if (-not [string]::IsNullOrWhiteSpace($ExpectedOverride)) {
         $overrideVersion = $Matches[2]
     }
     else {
-        Write-Error "Invalid -ExpectedOverride '$ExpectedOverride'. Expected format '<tool>=<version>'."
+        [Console]::Error.WriteLine("Invalid -ExpectedOverride '$ExpectedOverride'. Expected format '<tool>=<version>'.")
         exit 1
     }
 }
