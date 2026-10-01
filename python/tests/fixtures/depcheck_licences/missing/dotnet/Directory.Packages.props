@@ -1,0 +1,8 @@
+<Project>
+
+  <ItemGroup>
+    <PackageVersion Include="NUnit" Version="1.0.0" />
+    <PackageVersion Include="coverlet.collector" Version="1.0.0" />
+  </ItemGroup>
+
+</Project>

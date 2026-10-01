@@ -1,0 +1,180 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpp-windows:
+    name: cpp-windows
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone vcpkg at the pinned baseline
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout eb2d3a3279fd019cb7733072d86900d0ad2a1aef
+
+      - name: Bootstrap vcpkg
+        run: "& \"$env:VCPKG_ROOT\bootstrap-vcpkg.bat\" -disableMetrics"
+
+      - name: Cache vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg/installed
+          key: vcpkg-installed-windows-${{ hashFiles('cpp/vcpkg.json') }}
+          restore-keys: vcpkg-installed-windows-
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+        working-directory: cpp
+
+      - name: Build
+        run: cmake --build --preset windows-msvc
+        working-directory: cpp
+
+      - name: Test
+        run: ctest --preset ci
+        working-directory: cpp
+
+      - name: clang-format (warnings as errors)
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp)$' })
+          if ($files.Count -eq 0) {
+            Write-Host "No C++ sources to check"
+            exit 0
+          }
+          clang-format --dry-run --Werror $files
+
+      - name: clang-tidy (module sources)
+        working-directory: cpp
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $files = @(git ls-files core-math/src | Where-Object { $_ -match '\.cpp$' })
+          if ($files.Count -eq 0) {
+            Write-Host "No module sources to lint"
+            exit 0
+          }
+          clang-tidy -p build/windows-msvc $files
+
+  cpp-linux-asan:
+    name: cpp-linux-asan
+    runs-on: ubuntu-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Clone and bootstrap vcpkg at the pinned baseline
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          git -C "$VCPKG_ROOT" checkout eb2d3a3279fd019cb7733072d86900d0ad2a1aef
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Configure
+        run: cmake --preset linux-asan
+        working-directory: cpp
+
+      - name: Build
+        run: cmake --build --preset linux-asan
+        working-directory: cpp
+
+      - name: Test
+        # Task 2 binds the "ci" test preset to configurePreset "windows-msvc",
+        # so the linux-asan build tree is driven by the linux-asan test preset.
+        run: ctest --preset linux-asan
+        working-directory: cpp
+
+  dotnet:
+    name: dotnet
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dotnet
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: dotnet/global.json
+
+      - name: Test
+        run: dotnet test Cubeglass.sln --configuration Release
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install development requirements
+        run: python -m pip install -r requirements-dev.txt
+
+      - name: Install the package (editable)
+        run: python -m pip install -e .
+
+      - name: ruff
+        run: python -m ruff check .
+
+      - name: mypy
+        run: python -m mypy calib depcheck
+
+      - name: pytest
+        run: python -m pytest
+
+  depcheck:
+    name: depcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: |
+          python -m pip install -r python/requirements-dev.txt
+          python -m pip install -e python
+
+      - name: Enforce dependency rules
+        run: python -m depcheck --root .
+
+  licences:
+    name: licences
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: |
+          python -m pip install -r python/requirements-dev.txt
+          python -m pip install -e python
+
+      - name: Enforce licence allowlist
+        run: python -m depcheck licences --root .

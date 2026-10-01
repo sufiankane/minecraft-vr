@@ -1,0 +1,6 @@
+{
+  "benchmark": "Apache-2.0",
+  "coverlet.collector": "MIT",
+  "gtest": "BSD-3-Clause",
+  "NUnit": "MIT"
+}

@@ -6,23 +6,45 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
+from depcheck.licences import check_licences
 from depcheck.rules import check_root
+
+_ROOT_HELP = "Repository root (default: current directory)."
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="depcheck",
-        description="Enforce Cubeglass inward-only dependency rules.",
+        description="Enforce Cubeglass dependency rules and licence allowlisting.",
     )
     parser.add_argument(
         "--root",
         type=Path,
         default=None,
-        help="Repository root holding contracts/layers.json (default: current directory).",
+        help=f"{_ROOT_HELP} Default command checks contracts/layers.json.",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+    licences_parser = subparsers.add_parser(
+        "licences",
+        help="Check declared dependencies against contracts/licence-allowlist.json.",
+    )
+    licences_parser.add_argument(
+        "--root",
+        dest="licences_root",
+        type=Path,
+        default=None,
+        help=_ROOT_HELP,
     )
     args = parser.parse_args(argv)
-    root: Path = args.root if args.root is not None else Path.cwd()
 
+    if args.command == "licences":
+        licences_root: Path = args.licences_root or args.root or Path.cwd()
+        missing = check_licences(licences_root)
+        for package in missing:
+            print(package)
+        return 1 if missing else 0
+
+    root: Path = args.root if args.root is not None else Path.cwd()
     violations = check_root(root)
     for violation in violations:
         print(violation)
