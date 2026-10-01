@@ -23,14 +23,19 @@ jobs:
       - name: clang-format must reject the mis-formatted fixture
         run: |
           set +e
-          clang-format --dry-run --Werror scripts/negative/fixtures/fail-format.cpp
+          output=$(clang-format --dry-run --Werror scripts/negative/fixtures/fail-format.cpp 2>&1)
           status=$?
           set -e
+          echo "$output"
           if [ "$status" -eq 0 ]; then
             echo "::error::clang-format accepted the mis-formatted fixture; the format gate is not enforcing."
             exit 1
           fi
-          echo "OK: clang-format rejected the fixture (exit $status) as expected."
+          if ! echo "$output" | grep -q "clang-format-violations"; then
+            echo "::error::clang-format exited $status but emitted no clang-format-violations diagnostic; this is a tool/gate error, not a rejection of the fixture."
+            exit 1
+          fi
+          echo "OK: clang-format rejected the fixture (exit $status) with the expected diagnostic."
 
   expect-red-test:
     name: expect-red-test
@@ -48,14 +53,19 @@ jobs:
       - name: pytest must reject the failing fixture
         run: |
           set +e
-          python -m pytest scripts/negative/fixtures/fail-test.py
+          output=$(python -m pytest scripts/negative/fixtures/fail-test.py 2>&1)
           status=$?
           set -e
+          echo "$output"
           if [ "$status" -eq 0 ]; then
             echo "::error::pytest passed the failing fixture; the test gate is not enforcing."
             exit 1
           fi
-          echo "OK: pytest rejected the fixture (exit $status) as expected."
+          if ! echo "$output" | grep -q "1 failed"; then
+            echo "::error::pytest exited $status but reported no failed test; this is a tool/collection error, not a rejection of the fixture."
+            exit 1
+          fi
+          echo "OK: pytest rejected the fixture (exit $status) with the expected diagnostic."
 
   expect-red-depcheck:
     name: expect-red-depcheck
@@ -75,12 +85,16 @@ jobs:
       - name: depcheck must reject the forbidden include fixture
         run: |
           set +e
-          output=$(python -m depcheck --root scripts/negative/depcheck-root)
+          output=$(python -m depcheck --root scripts/negative/depcheck-root 2>&1)
           status=$?
           set -e
+          echo "$output"
           if [ "$status" -eq 0 ]; then
             echo "::error::depcheck accepted the forbidden include; the dependency gate is not enforcing."
             exit 1
           fi
-          echo "$output"
-          echo "OK: depcheck rejected the fixture (exit $status) as expected."
+          if ! echo "$output" | grep -q "forbidIncludes"; then
+            echo "::error::depcheck exited $status but emitted no forbidIncludes violation; this is a tool/config error, not a rejection of the fixture."
+            exit 1
+          fi
+          echo "OK: depcheck rejected the fixture (exit $status) with the expected diagnostic."

@@ -34,25 +34,34 @@ demand from any branch.
 `cpp/core-math/forbidden-include.cpp`, which violates that rule by including
 `<thread>`. The real `python -m depcheck --root .` gate is untouched.
 
-Each job inverts the gate result explicitly. For example:
+Each job inverts the gate result explicitly and also asserts on the gate's
+diagnostic, so a crashed or misconfigured tool (which also exits non-zero) can
+never be mistaken for a rejection. For example:
 
 ```bash
 set +e
-clang-format --dry-run --Werror scripts/negative/fixtures/fail-format.cpp
+output=$(clang-format --dry-run --Werror scripts/negative/fixtures/fail-format.cpp 2>&1)
 status=$?
 set -e
 if [ "$status" -eq 0 ]; then
   echo "::error::clang-format accepted the mis-formatted fixture; the format gate is not enforcing."
   exit 1
 fi
-echo "OK: clang-format rejected the fixture (exit $status) as expected."
+if ! echo "$output" | grep -q "clang-format-violations"; then
+  echo "::error::clang-format exited $status but emitted no diagnostic; treating as a tool error, not a rejection."
+  exit 1
+fi
 ```
 
 If a gate unexpectedly *passes* its bad fixture, the job exits `1` and the
 workflow run turns red — that is the signal that the gate has stopped
-enforcing. If the gate fails as expected, the job exits `0` (the job is green)
-with an `OK:` line, and the `expect-red-depcheck` job also prints the
-`path:line rule` violation it observed.
+enforcing. If the gate fails but without its expected diagnostic signature
+(e.g. a missing tool or import/config error), the job also exits `1`, because a
+non-zero exit alone does not prove a rejection. The required signatures are
+`clang-format-violations`, `1 failed`, and `forbidIncludes` respectively. When
+both conditions hold, the job exits `0` (the job is green) with an `OK:` line,
+and the `expect-red-depcheck` job also prints the `path:line rule` violation it
+observed.
 
 ## How to run
 
