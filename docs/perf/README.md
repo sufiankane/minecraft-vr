@@ -13,8 +13,9 @@ later stages introduce.
   two jobs:
   - `bench-cpp` builds the Google Benchmark target `cg_core_math_benchmarks`
     from the `benchmarks` CMake preset and uploads `benchmark_results.json`.
-  - `bench-dotnet` runs the BenchmarkDotNet console project
-    `dotnet/benchmarks/CoreMath.Benchmarks` and uploads
+  - `bench-dotnet` runs the BenchmarkDotNet console projects
+    `dotnet/benchmarks/CoreMath.Benchmarks` and
+    `dotnet/benchmarks/Voxel.Benchmarks`, and uploads
     `BenchmarkDotNet.Artifacts/`.
 - Both jobs upload their output as GitHub Actions artefacts. Download the
   artefacts from a workflow run to compare numbers; nothing is committed

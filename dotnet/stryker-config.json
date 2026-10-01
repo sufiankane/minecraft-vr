@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/stryker-mutator/stryker-net/master/src/Stryker.Core/Stryker.Core/Config/stryker-config-schema.json",
+  "stryker-config": {
+    "project": "src/Voxel/Cubeglass.Voxel.csproj",
+    "test-projects": [
+      "tests/Voxel.Tests/Cubeglass.Voxel.Tests.csproj"
+    ],
+    "mutate": [
+      "**/*.cs",
+      "!**/AssemblyMarker.cs",
+      "!**/IsExternalInit.cs"
+    ],
+    "thresholds": {
+      "break": 70,
+      "low": 70,
+      "high": 90
+    },
+    "reporters": [
+      "json",
+      "cleartext"
+    ],
+    "ignore-methods": []
+  }
+}

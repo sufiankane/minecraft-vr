@@ -105,6 +105,44 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
+        public void ParseRejectsAMissingName()
+        {
+            const string MissingName =
+                "{\"Id\":0,\"Solid\":false,\"Opaque\":false,\"Hardness\":0,\"AtlasIndexTop\":0,\"AtlasIndexFront\":0,\"AtlasIndexSide\":0}";
+
+            Assert.Throws<FormatException>(() => BlockRegistry.Parse("[" + MissingName + "]"));
+        }
+
+        [Test]
+        public void ParseRejectsAnEmptyName()
+        {
+            const string EmptyName =
+                "{\"Id\":0,\"Name\":\"\",\"Solid\":false,\"Opaque\":false,\"Hardness\":0,\"AtlasIndexTop\":0,\"AtlasIndexFront\":0,\"AtlasIndexSide\":0}";
+
+            Assert.Throws<FormatException>(() => BlockRegistry.Parse("[" + EmptyName + "]"));
+        }
+
+        [Test]
+        public void ParseRejectsTheReservedSentinelId()
+        {
+            const string ReservedId =
+                "{\"Id\":65535,\"Name\":\"Reserved\",\"Solid\":true,\"Opaque\":true,\"Hardness\":1,\"AtlasIndexTop\":1,\"AtlasIndexFront\":1,\"AtlasIndexSide\":1}";
+
+            Assert.Throws<FormatException>(() => BlockRegistry.Parse("[" + ReservedId + "]"));
+        }
+
+        [Test]
+        public void ParseAcceptsTheHighestNonReservedId()
+        {
+            const string HighestId =
+                "{\"Id\":65534,\"Name\":\"Highest\",\"Solid\":true,\"Opaque\":true,\"Hardness\":1,\"AtlasIndexTop\":1,\"AtlasIndexFront\":1,\"AtlasIndexSide\":1}";
+
+            BlockRegistry registry = BlockRegistry.Parse("[" + AirBlock + "," + HighestId + "]");
+
+            Assert.That(registry.Get(new BlockId(65534)).Name, Is.EqualTo("Highest"));
+        }
+
+        [Test]
         public void GetThrowsForAnUnknownBlockId()
         {
             BlockRegistry registry = BlockRegistry.Parse("[" + AirBlock + "]");

@@ -37,9 +37,11 @@ namespace Cubeglass.Voxel
         /// payload (ADR-0006).
         /// </summary>
         /// <remarks>
-        /// Every local cell of <paramref name="delta"/> must lie in
-        /// <c>[0, ChunkMath.ChunkSize)</c> per axis, and no edit may use the
-        /// reserved <c>0xFFFF</c> no-edit sentinel as a block id.
+        /// The <see cref="ChunkDelta"/> constructor rejects every local cell
+        /// outside <c>[0, ChunkMath.ChunkSize)</c>, so the encoder indexes the
+        /// flat 4096-cell grid directly and needs no range guard of its own.
+        /// No edit may use the reserved <c>0xFFFF</c> no-edit sentinel as a
+        /// block id.
         /// </remarks>
         /// <exception cref="ArgumentNullException"><paramref name="delta"/> is null.</exception>
         /// <exception cref="ArgumentException">

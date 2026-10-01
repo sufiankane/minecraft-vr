@@ -14,6 +14,8 @@ __pycache__/
 bin/
 obj/
 dotnet/coverage/
+dotnet/StrykerOutput/
+dotnet/BenchmarkDotNet.Artifacts/
 
 # Unity
 unity/**/Library/
