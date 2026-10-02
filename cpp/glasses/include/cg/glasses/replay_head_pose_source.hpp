@@ -103,7 +103,9 @@ class ReplayHeadPoseSource final : public IHeadPoseSource {
     std::uint32_t next_seq_ = 1;
 
     // Writer-thread playback state.
-    bool has_published_ = false;
+    // `Recenter` may be called from a reader thread while the writer emits, so
+    // the "a sample exists" signal is an acquire/release atomic.
+    std::atomic<bool> has_published_{false};
     bool has_previous_ = false;
     double previous_yaw_deg_ = 0.0;
     double previous_pitch_deg_ = 0.0;

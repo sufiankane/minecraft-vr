@@ -325,14 +325,18 @@ TEST(VitureFault, StartPoseFailureDestroysTheDeviceThenRetrySucceeds) {
 }
 
 /// A yaw step across the +/-180 degree seam must not make the prediction snap:
-/// the rate is derived from the unwrapped difference.
+/// the rate is derived from the unwrapped difference. The pair genuinely
+/// crosses the seam (179.9 -> -179.9, i.e. +0.2 unwrapped vs -359.8 wrapped),
+/// and the prediction is 2.5 sample periods, because an integer number of
+/// periods would alias the wrapped 360-degree error away modulo a full turn.
 TEST(VitureFault, PredictionCrossesTheYawSeamWithoutASnap) {
     FakeVitureApi api;
     ManualHostClock clock;
     constexpr std::int64_t kSdkNs = 1'000'000'000;
     constexpr std::int64_t kPeriodNs = 10'000'000;
-    api.samples = {CgSample(1, kSdkNs, CG_TRACK_STABLE, 179.0),
-                   CgSample(2, kSdkNs + kPeriodNs, CG_TRACK_STABLE, 179.5)};
+    constexpr std::int64_t kPredictNs = 25'000'000; // 2.5 periods.
+    api.samples = {CgSample(1, kSdkNs, CG_TRACK_STABLE, 179.9),
+                   CgSample(2, kSdkNs + kPeriodNs, CG_TRACK_STABLE, -179.9)};
     // The gate pins the host instants of the two polls, so the mapped
     // inter-sample delta is exactly one period.
     api.SetPollGate(true);
@@ -346,15 +350,18 @@ TEST(VitureFault, PredictionCrossesTheYawSeamWithoutASnap) {
     api.AllowOnePoll();
     HeadSample newest = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, newest, 2U));
-    ASSERT_NEAR(YawDegrees(newest.pose), 179.5, 0.01);
+    ASSERT_NEAR(YawDegrees(newest.pose), -179.9, 0.01);
 
     HeadSample predicted = PlaceholderSample();
-    ASSERT_TRUE(source.TryGetLatest(predicted, Duration{50'000'000}));
+    ASSERT_TRUE(source.TryGetLatest(predicted, Duration{kPredictNs}));
     const core_math::Quat delta = predicted.pose.rotation * newest.pose.rotation.Inverse();
     const double delta_yaw_deg = 2.0 * std::atan2(delta.y(), delta.w()) * kRadiansToDegrees;
-    // 0.5 degrees per 10 ms is 50 deg/s, so 50 ms continues past the seam by
-    // 2.5 degrees; a wrapped rate would read the step as roughly -360 degrees.
-    EXPECT_NEAR(delta_yaw_deg, 2.5, 0.05) << "predicted yaw snapped at the seam";
+    // +0.2 degrees per 10 ms is 20 deg/s: 25 ms continues the heading across
+    // the seam to -179.4 (delta +0.5). A wrapped rate (-35980 deg/s) would add
+    // -899.5 degrees, which is 180.5 modulo a full turn, so the pose visibly
+    // snaps instead of continuing.
+    EXPECT_NEAR(delta_yaw_deg, 0.5, 0.05) << "predicted yaw snapped at the seam";
+    EXPECT_NEAR(YawDegrees(predicted.pose), -179.4, 0.05) << "the prediction did not continue past the seam";
     source.Stop();
 }
 

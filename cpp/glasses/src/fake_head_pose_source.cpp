@@ -124,7 +124,7 @@ bool FakeHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const n
 }
 
 Result<void> FakeHeadPoseSource::Recenter() {
-    if (!has_published_) {
+    if (!has_published_.load(std::memory_order_acquire)) {
         // There is no pose to make the origin; a never-applied offset would be
         // silently wrong.
         return Err<void>(Status{StatusCode::NotReady, "fake: no sample to recentre"});
@@ -175,7 +175,7 @@ void FakeHeadPoseSource::EmitOne() noexcept {
     HeadSample sample{clock_->Now(), core_math::Pose{core_math::Vec3{0.0, 0.0, 0.0}, RawRotation()}, StateAt(index),
                       next_seq_++};
     slot_.Publish(sample);
-    has_published_ = true;
+    has_published_.store(true, std::memory_order_release);
     clock_->Advance(period);
 }
 

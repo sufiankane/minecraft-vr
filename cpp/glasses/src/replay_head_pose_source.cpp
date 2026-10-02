@@ -113,7 +113,7 @@ ReplayHeadPoseSource::ReplayHeadPoseSource(std::filesystem::path csv, ManualCloc
 Result<void> ReplayHeadPoseSource::Load() {
     rows_.clear();
     next_index_ = 0;
-    has_published_ = false;
+    has_published_.store(false, std::memory_order_relaxed);
     has_previous_ = false;
     loaded_ = false;
     error_message_.clear();
@@ -236,7 +236,7 @@ void ReplayHeadPoseSource::PublishNext() noexcept {
     UpdateRate(row);
     const HeadSample sample{row.host_time_ns, row.pose, row.state, next_seq_++};
     slot_.Publish(sample);
-    has_published_ = true;
+    has_published_.store(true, std::memory_order_release);
 }
 
 void ReplayHeadPoseSource::PublishAll() noexcept {
@@ -276,7 +276,7 @@ bool ReplayHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
 }
 
 Result<void> ReplayHeadPoseSource::Recenter() {
-    if (!has_published_) {
+    if (!has_published_.load(std::memory_order_acquire)) {
         return Err<void>(Status{StatusCode::NotReady, "replay: no sample to recentre"});
     }
     yaw_offset_deg_.store(-latest_yaw_deg_.load(std::memory_order_relaxed), std::memory_order_relaxed);
