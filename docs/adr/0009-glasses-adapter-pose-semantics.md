@@ -123,7 +123,12 @@ unchanged and even. The retry is bounded (`PoseSlot::kMaxReadAttempts`, 64):
 `TryRead` returns false before the first publish and on exhaustion, and never
 returns an unvalidated sample (R39). A transient false is allowed under
 pathological writer pressure; the caller keeps its previous frame and the next
-call normally succeeds. `Publish` and `TryRead` are `noexcept`, take no lock,
+call normally succeeds. `PoseSlot::SetTestPublishHook` is a test-only seam
+that runs inside `Publish` between the odd version store and the payload
+stores; `thread_safety_tests.cpp` uses it to hold one publish mid-flight so
+all 64 read attempts observe the odd version and `TryRead` returns false
+deterministically, rather than relying on saturated-writer timing.
+`Publish` and `TryRead` are `noexcept`, take no lock,
 allocate nothing and have a bounded number of steps. `HeadSample` is asserted
 trivially copyable, 8-byte sized and 8-byte aligned, and the atomic accesses
 are asserted lock-free at compile time.
@@ -283,13 +288,22 @@ is provisional until then). This section is filled in before
   recentre, predict zero/cap/direction, restart ordering) plus the
   `Status`/`Result` mapping table, `PoseSlot` behaviour and fake script tests.
   The concurrent slot case tolerates transient false reads and asserts zero
-  torn and zero out-of-order samples; it passes under `--gtest_repeat=100`
-  against a tight writer.
+  torn and zero out-of-order samples; its writer yields between publishes, and
+  the bounded-retry exhaustion path is pinned deterministically by the test
+  hook above rather than by saturated-writer timing.
 - `cpp/tests/glasses/viture_loader_tests.cpp` pins the loader error paths: a
   missing library is `Unsupported` with the path in the message, and an empty
   path is `InvalidArgument`. The `IVitureApi` seam and `FakeVitureApi` are
   exercised by the Task 2b fault/contract suites under the same `glasses`
   ctest entry.
+- `cpp/tests/glasses/thread_safety_tests.cpp` stresses the slot (a saturated
+  writer publishing 200k samples against 8 readers) and `VitureHeadPoseSource`
+  over `FakeVitureApi` (one producer, four readers, a manual host clock
+  advanced by a feeder thread), asserting finite unit poses, per-reader
+  non-decreasing sequence and time, zero torn and zero out-of-order samples,
+  and stop totality under concurrent readers. It is built and run under TSan
+  on Linux CI by the `linux-tsan` preset inside the `cpp-linux-asan` job (R33:
+  no new required check).
 - `ctest --preset ci` registers the suite as `glasses`.
 - `python -m depcheck --root .` enforces the `glasses` layer's ONNX Runtime ban.
 

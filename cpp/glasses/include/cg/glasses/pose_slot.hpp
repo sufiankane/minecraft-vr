@@ -25,7 +25,9 @@ namespace cg::glasses {
 /// `false`, the R39 late-latch contract: the caller keeps its previous frame
 /// and the next call normally succeeds. `TryRead` never returns a torn or
 /// unvalidated sample. It returns false before the first publish; after that,
-/// false is only the bounded-retry exhaustion case.
+/// false is only the bounded-retry exhaustion case. The test-only
+/// `SetTestPublishHook` seam (see its comment) makes that case deterministic
+/// for `cpp/tests/glasses/thread_safety_tests.cpp`.
 ///
 /// `Publish` and `TryRead` take no lock, allocate nothing, throw nothing and
 /// have a bounded number of steps. `HeadSample` is asserted trivially copyable,
@@ -48,6 +50,9 @@ class PoseSlot {
         const std::uint64_t begin = sequence_.load(std::memory_order_relaxed);
         sequence_.store(begin + 1, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_release);
+        if (test_publish_hook_ != nullptr) {
+            test_publish_hook_(test_publish_context_);
+        }
         for (std::size_t word = 0; word < kWordCount; ++word) {
             std::atomic_ref<std::uint64_t>(payload_[word]).store(words[word], std::memory_order_relaxed);
         }
@@ -82,6 +87,18 @@ class PoseSlot {
         return false;
     }
 
+    /// Test-only publish seam. When armed, `Publish` calls `hook(context)`
+    /// after storing the odd version counter (and the release fence) and before
+    /// writing the payload, so a test can hold one publish mid-flight and pin
+    /// the bounded-retry exhaustion path deterministically. Production leaves
+    /// it unset and pays one predictable null check. Not thread-safe: arm the
+    /// hook while no publish is in flight and clear it afterwards.
+    using TestPublishHook = void (*)(void *) noexcept;
+    static void SetTestPublishHook(TestPublishHook hook, void *context) noexcept {
+        test_publish_hook_ = hook;
+        test_publish_context_ = context;
+    }
+
   private:
     static_assert(std::is_trivially_copyable_v<HeadSample>, "the seqlock payload must be trivially copyable");
     static_assert(sizeof(HeadSample) % sizeof(std::uint64_t) == 0, "the seqlock payload must be 8-byte sized");
@@ -90,6 +107,11 @@ class PoseSlot {
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "the version counter must be lock-free");
 
     static constexpr std::size_t kWordCount = sizeof(HeadSample) / sizeof(std::uint64_t);
+
+    // Test-only publish seam; null unless `SetTestPublishHook` armed it (see
+    // the public comment). The writer only reads these.
+    inline static TestPublishHook test_publish_hook_ = nullptr;
+    inline static void *test_publish_context_ = nullptr;
 
     mutable std::uint64_t payload_[kWordCount]{};
     std::atomic<std::uint64_t> sequence_{0};

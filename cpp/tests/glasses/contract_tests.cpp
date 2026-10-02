@@ -16,6 +16,7 @@
 #include "cg/core_math/quat.hpp"
 #include "cg/glasses/host_clock.hpp"
 #include "cg/glasses/pose_slot.hpp"
+#include "cg/glasses/replay_head_pose_source.hpp"
 #include "cg/glasses/viture_head_pose_source.hpp"
 #include "fake_viture_api.hpp"
 
@@ -359,9 +360,9 @@ TEST(PoseSlot, ConcurrentReadersNeverSeeTornOrOutOfOrderSamples) {
                 core_math::Pose{core_math::Vec3{static_cast<double>(i), 0.0, 0.0}, core_math::Quat::kIdentity},
                 TrackState::Stable, i};
             slot.Publish(sample);
-            // A real polling writer blocks between samples. Pacing keeps the
-            // readers out of the transient bounded-retry exhaustion state
-            // (which must yield false, never a torn sample).
+            // The writer yields between samples, so this case stays in the
+            // validated-copy regime. Deterministic retry exhaustion (R39:
+            // false, never a torn sample) is pinned by thread_safety_tests.cpp.
             std::this_thread::yield();
         }
         writer_done.store(true, std::memory_order_release);
@@ -610,8 +611,30 @@ SourceUnderTest MakeVitureSource() {
     return uut;
 }
 
+void ExpectReplayLoaded(const Result<void> &loaded) { EXPECT_TRUE(loaded.ok()) << loaded.status().message(); }
+
+SourceUnderTest MakeReplaySource() {
+    auto clock = std::make_shared<ManualClock>();
+    auto source = std::make_unique<ReplayHeadPoseSource>(CG_POSE_REPLAY_FIXTURE, *clock);
+    ExpectReplayLoaded(source->Load());
+    SourceUnderTest uut;
+    uut.clock = clock.get();
+    uut.advance = [raw = source.get(), keeper = clock](std::uint32_t count) {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            raw->PublishNext();
+        }
+    };
+    uut.source = std::move(source);
+    return uut;
+}
+
 [[maybe_unused]] const bool kFakeFactoryRegistered = [] {
     AddContractFactory(ContractFactory{"fake", [] { return MakeFakeSource(FakeScript::YawSweep(45.0)); }});
+    return true;
+}();
+
+[[maybe_unused]] const bool kReplayFactoryRegistered = [] {
+    AddContractFactory(ContractFactory{"replay", [] { return MakeReplaySource(); }});
     return true;
 }();
 

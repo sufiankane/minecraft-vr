@@ -113,6 +113,24 @@ jobs:
         run: ctest --preset linux-asan
         working-directory: cpp
 
+      - name: Lower ASLR entropy for TSan
+        # GCC's TSan runtime cannot map its shadow memory when vm.mmap_rnd_bits
+        # is 32, the Ubuntu runner default; 28 is the documented value. R33:
+        # TSan runs inside this job so branch protection keeps its six checks.
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Configure (TSan)
+        run: cmake --preset linux-tsan
+        working-directory: cpp
+
+      - name: Build (TSan)
+        run: cmake --build --preset linux-tsan
+        working-directory: cpp
+
+      - name: Test (TSan)
+        run: ctest --preset linux-tsan --output-on-failure
+        working-directory: cpp
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
