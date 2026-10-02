@@ -152,23 +152,28 @@ void PredictZeroReturnsTheNewestSampleVerbatim(SourceUnderTest &uut) {
     ASSERT_TRUE(uut.source->Start().ok());
     ASSERT_TRUE(uut.advance) << "the contract suite needs a sample driver";
     uut.advance(1);
-    HeadSample baseline = PlaceholderSample();
-    ASSERT_TRUE(uut.source->TryGetLatest(baseline, Duration{0}));
+    HeadSample newest = PlaceholderSample();
+    ASSERT_TRUE(uut.source->TryGetLatest(newest, Duration{0}));
     HeadSample predicted = PlaceholderSample();
     ASSERT_TRUE(uut.source->TryGetLatest(predicted, Duration{50'000'000}));
+    // A prediction never publishes: it carries the pre-predict sample's seq
+    // and state, with only the pose and time extrapolated.
+    EXPECT_EQ(predicted.seq, newest.seq);
+    EXPECT_EQ(predicted.state, newest.state);
+    EXPECT_EQ(predicted.time, newest.time + 50'000'000);
     HeadSample verbatim = PlaceholderSample();
     ASSERT_TRUE(uut.source->TryGetLatest(verbatim, Duration{0}));
 
-    EXPECT_EQ(verbatim.seq, baseline.seq);
-    EXPECT_EQ(verbatim.time, baseline.time);
-    EXPECT_EQ(verbatim.state, baseline.state);
-    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.w(), baseline.pose.rotation.w());
-    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.x(), baseline.pose.rotation.x());
-    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.y(), baseline.pose.rotation.y());
-    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.z(), baseline.pose.rotation.z());
-    EXPECT_DOUBLE_EQ(verbatim.pose.position.x, baseline.pose.position.x);
-    EXPECT_DOUBLE_EQ(verbatim.pose.position.y, baseline.pose.position.y);
-    EXPECT_DOUBLE_EQ(verbatim.pose.position.z, baseline.pose.position.z);
+    EXPECT_EQ(verbatim.seq, newest.seq);
+    EXPECT_EQ(verbatim.time, newest.time);
+    EXPECT_EQ(verbatim.state, newest.state);
+    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.w(), newest.pose.rotation.w());
+    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.x(), newest.pose.rotation.x());
+    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.y(), newest.pose.rotation.y());
+    EXPECT_DOUBLE_EQ(verbatim.pose.rotation.z(), newest.pose.rotation.z());
+    EXPECT_DOUBLE_EQ(verbatim.pose.position.x, newest.pose.position.x);
+    EXPECT_DOUBLE_EQ(verbatim.pose.position.y, newest.pose.position.y);
+    EXPECT_DOUBLE_EQ(verbatim.pose.position.z, newest.pose.position.z);
     uut.source->Stop();
 }
 
@@ -341,6 +346,7 @@ TEST(PoseSlot, ConcurrentReadersNeverSeeTornOrOutOfOrderSamples) {
     std::atomic<bool> writer_done{false};
     std::atomic<int> torn_count{0};
     std::atomic<int> order_violations{0};
+    std::atomic<std::uint64_t> false_count{0};
 
     std::thread writer([&slot, &writer_done] {
         for (std::uint32_t i = 1; i <= kSamples; ++i) {
@@ -349,17 +355,26 @@ TEST(PoseSlot, ConcurrentReadersNeverSeeTornOrOutOfOrderSamples) {
                 core_math::Pose{core_math::Vec3{static_cast<double>(i), 0.0, 0.0}, core_math::Quat::kIdentity},
                 TrackState::Stable, i};
             slot.Publish(sample);
+            // A real polling writer blocks between samples. Pacing keeps the
+            // readers out of the transient bounded-retry exhaustion state
+            // (which must yield false, never a torn sample).
+            std::this_thread::yield();
         }
         writer_done.store(true, std::memory_order_release);
     });
 
-    const auto reader = [&slot, &writer_done, &torn_count, &order_violations] {
+    const auto reader = [&slot, &writer_done, &torn_count, &order_violations,
+                         &false_count](std::atomic<std::uint64_t> *valid_count) {
         std::uint32_t last_seq = 0;
         while (!writer_done.load(std::memory_order_acquire)) {
             HeadSample sample = PlaceholderSample();
             if (!slot.TryRead(sample)) {
+                // Transient exhaustion is allowed (R39); a false read must be
+                // retried by the caller, which keeps its previous frame.
+                ++false_count;
                 continue;
             }
+            ++*valid_count;
             const bool torn = sample.time != static_cast<std::int64_t>(sample.seq) * 1000 ||
                               sample.pose.position.x != static_cast<double>(sample.seq);
             if (torn) {
@@ -370,14 +385,18 @@ TEST(PoseSlot, ConcurrentReadersNeverSeeTornOrOutOfOrderSamples) {
             last_seq = sample.seq;
         }
     };
-    std::thread first(reader);
-    std::thread second(reader);
+    std::atomic<std::uint64_t> first_valid{0};
+    std::atomic<std::uint64_t> second_valid{0};
+    std::thread first(reader, &first_valid);
+    std::thread second(reader, &second_valid);
 
     writer.join();
     first.join();
     second.join();
     EXPECT_EQ(torn_count.load(), 0);
     EXPECT_EQ(order_violations.load(), 0);
+    EXPECT_NE(first_valid.load(), 0U);
+    EXPECT_NE(second_valid.load(), 0U);
 }
 
 TEST(FakeSource, StaticHoldsIdentityAtTheFixedRate) {

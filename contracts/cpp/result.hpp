@@ -73,9 +73,9 @@ class Status {
 /// friends) construction, copies and moves allocate nothing.
 template <typename T> class Result {
   public:
-    Result(T value) : value_(std::move(value)) {}
+    Result(T value) noexcept(std::is_nothrow_move_constructible_v<T>) : value_(std::move(value)) {}
 
-    Result(Status status) : status_(status) {}
+    Result(Status status) noexcept : status_(status) {}
 
     /// True when a value is held. No allocation.
     [[nodiscard]] bool ok() const noexcept { return value_.has_value(); }

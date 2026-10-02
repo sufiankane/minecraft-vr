@@ -65,8 +65,12 @@ Two dossier unknowns live in this area and are **not** answered here. Per
 - **Mutex-protected double buffer for the pose slot.** Rejected: readers would
   block behind the writer; the render path must not take a lock.
 - **Seqlock with an unbounded reader retry loop.** Rejected: a reader could
-  spin forever if the writer is preempted mid-publish; the retry is bounded and
-  a documented fallback copy is returned instead.
+  spin forever if the writer is preempted mid-publish; the retry is bounded
+  (64).
+- **Fallback to a previous payload copy after the bounded retries.** Rejected
+  (R39): a second, unvalidated copy can still tear under a writer that never
+  lets up, and a torn pose is worse than a missed frame. `TryRead` returns
+  false instead; the caller keeps its previous frame.
 - **Recentre by rewriting the slot's newest sample.** Rejected: a reader-side
   transform keeps `Publish` single-purpose and makes recentring observable
   immediately without a new sample (and without violating "no sample after
@@ -110,17 +114,19 @@ precondition-checked accessor like `std::optional`. `Ok(value)`, `Ok()` and
 ### Thread and slot model
 
 `PoseSlot` is a single-writer/many-reader wait-free slot with seqlock
-semantics holding two complete copies, each behind its own even/odd sequence
-counter: the newest payload and the previous payload. `Publish` snapshots the
-old newest into the previous copy, then writes the new newest; `TryRead` copies
-the newest and accepts it only when its counter is unchanged and even. If the
-writer overtakes the copy, the reader spends the same bounded budget
-(`PoseSlot::kMaxReadAttempts`, 64) on the previous copy, which the in-flight
-publish does not touch. Only if both budgets are exhausted does it return the
-last previous copy unvalidated, documented as best-effort. `Publish` and
-`TryRead` are `noexcept`, take no lock and allocate nothing. `HeadSample` is
-asserted trivially copyable and the counters are asserted lock-free at compile
-time.
+semantics and exactly one payload buffer. The payload is copied word-wise
+through relaxed `std::atomic_ref<std::uint64_t>` accesses, so every payload
+access is an atomic operation and the implementation is clean under TSan with
+no annotations. The writer bumps an even/odd version counter around the payload
+stores; a reader copies the payload and accepts it only when the version is
+unchanged and even. The retry is bounded (`PoseSlot::kMaxReadAttempts`, 64):
+`TryRead` returns false before the first publish and on exhaustion, and never
+returns an unvalidated sample (R39). A transient false is allowed under
+pathological writer pressure; the caller keeps its previous frame and the next
+call normally succeeds. `Publish` and `TryRead` are `noexcept`, take no lock,
+allocate nothing and have a bounded number of steps. `HeadSample` is asserted
+trivially copyable, 8-byte sized and 8-byte aligned, and the atomic accesses
+are asserted lock-free at compile time.
 
 The fake is driven by `ManualClock`: `AdvanceSamples(n)` emits the next `n`
 scripted samples on that clock, starting at sequence 1 with the sample time
@@ -178,10 +184,10 @@ is provisional until then). This section is filled in before
   so the contract suite runs everywhere.
 - Good: the additive vocabulary is recorded once; `cg_types.h` and section 5.2
   are untouched.
-- Bad: the seqlock's payload access is not a formally race-free C++ data race;
-  the unvalidated last-resort return after both 64-attempt budgets are
-  exhausted is best-effort rather than atomic (unreachable for a writer that
-  blocks between samples), and the slot relies on a single writer.
+- Bad: a reader can observe a transient false under a writer that saturates the
+  slot; the late-latch caller keeps its previous frame (R39). The slot relies on
+  a single writer, and the version-validated seqlock is a lock-free protocol
+  rather than a single atomic snapshot.
 - Bad: prediction is linear in yaw/pitch and frozen after 100 ms, so fast
   reversals inside one frame are not modelled; a real predictor is a later
   stage concern.
@@ -195,9 +201,11 @@ is provisional until then). This section is filled in before
   sample, strictly increasing sequence and time, finite unit quaternions,
   recentre, predict zero/cap/direction, restart ordering) plus the
   `Status`/`Result` mapping table, `PoseSlot` behaviour and fake script tests.
+  The concurrent slot case tolerates transient false reads and asserts zero
+  torn and zero out-of-order samples; it passes under `--gtest_repeat=100`
+  against a tight writer.
 - `ctest --preset ci` registers the suite as `glasses`.
-- `python -m depcheck --root .` enforces the `cg-glasses`/`glasses` layer's
-  ONNX Runtime ban.
+- `python -m depcheck --root .` enforces the `glasses` layer's ONNX Runtime ban.
 
 ## Links
 
@@ -207,4 +215,6 @@ is provisional until then). This section is filled in before
   [ADR-0004](0004-coordinate-unit-time-conventions.md),
   [ADR-0008](0008-gameplay-contracts-and-tuning.md).
 - SDD ruling R34 (additive contract vocabulary).
+- SDD ruling R39 (a pose slot read that exhausts its bounded retries returns
+  false; the caller keeps its previous frame, never a torn sample).
 - Escalation: `docs/questions/S5-HIL.md` (U-01, U-08; pending hardware).

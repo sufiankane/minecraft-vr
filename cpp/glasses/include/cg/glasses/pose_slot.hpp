@@ -13,23 +13,27 @@ namespace cg::glasses {
 /// Single-writer / many-reader wait-free slot with seqlock semantics.
 ///
 /// The writer is the polling thread; `TryRead` is called by any number of
-/// readers. Two complete copies are kept, each behind its own even/odd
-/// sequence counter: `payload_` (the newest sample) and `previous_` (the copy
-/// published one step earlier). `Publish` snapshots the old newest into the
-/// previous copy, then writes the new newest. `TryRead` copies the newest and
-/// accepts it only when its counter is unchanged and even; if `Publish` keeps
-/// overtaking the copy, the reader spends the same bounded budget
-/// (`kMaxReadAttempts`) on the previous copy, which the in-flight publish does
-/// not touch. Only if both budgets are exhausted is the last previous copy
-/// returned unvalidated: that is the documented best-effort case, reachable
-/// only against a writer that never lets up for that many attempts (real
-/// polling threads block between samples). The validated paths never tear.
+/// readers. The payload is copied word-wise through relaxed
+/// `std::atomic_ref<std::uint64_t>` accesses, so every payload access is an
+/// atomic operation and the implementation is TSan-clean by construction (no
+/// annotations needed). The writer bumps an even/odd version counter around
+/// the payload stores; a reader copies the payload and accepts it only when
+/// the version is unchanged and even.
 ///
-/// `Publish` and `TryRead` take no lock, allocate nothing and are `noexcept`.
-/// `TryRead` returns false until the first `Publish` has completed.
+/// A reader that cannot obtain a validated copy within `kMaxReadAttempts`
+/// attempts (a transient state under a writer that never lets up) returns
+/// `false`, the R39 late-latch contract: the caller keeps its previous frame
+/// and the next call normally succeeds. `TryRead` never returns a torn or
+/// unvalidated sample. It returns false before the first publish; after that,
+/// false is only the bounded-retry exhaustion case.
+///
+/// `Publish` and `TryRead` take no lock, allocate nothing, throw nothing and
+/// have a bounded number of steps. `HeadSample` is asserted trivially copyable,
+/// 8-byte sized and 8-byte aligned, and the atomic accesses are asserted
+/// lock-free.
 class PoseSlot {
   public:
-    /// Bounded reader retry count per copy before the fallback is returned.
+    /// Bounded reader retry count before `TryRead` returns false.
     static constexpr int kMaxReadAttempts = 64;
 
     PoseSlot() noexcept = default;
@@ -38,62 +42,57 @@ class PoseSlot {
 
     /// Publishes `sample` as the newest value. Single writer only.
     void Publish(const HeadSample &sample) noexcept {
-        const std::uint64_t previous_begin = previous_sequence_.load(std::memory_order_relaxed);
-        previous_sequence_.store(previous_begin + 1, std::memory_order_relaxed);
-        std::atomic_thread_fence(std::memory_order_release);
-        std::memcpy(previous_, payload_, sizeof(HeadSample));
-        std::atomic_thread_fence(std::memory_order_release);
-        previous_sequence_.store(previous_begin + 2, std::memory_order_release);
+        std::uint64_t words[kWordCount];
+        std::memcpy(words, &sample, sizeof(HeadSample));
 
         const std::uint64_t begin = sequence_.load(std::memory_order_relaxed);
         sequence_.store(begin + 1, std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_release);
-        std::memcpy(payload_, &sample, sizeof(HeadSample));
+        for (std::size_t word = 0; word < kWordCount; ++word) {
+            std::atomic_ref<std::uint64_t>(payload_[word]).store(words[word], std::memory_order_relaxed);
+        }
         std::atomic_thread_fence(std::memory_order_release);
         sequence_.store(begin + 2, std::memory_order_release);
         published_.store(true, std::memory_order_release);
     }
 
-    /// Copies the newest fully published sample into `out`. Returns false
-    /// before the first publish. Wait-free apart from the bounded retries.
+    /// Copies the newest published sample into `out` when a consistent copy is
+    /// available. Returns false before the first publish and on bounded-retry
+    /// exhaustion; a returned sample has always passed the version validation.
     [[nodiscard]] bool TryRead(HeadSample &out) const noexcept {
         if (!published_.load(std::memory_order_acquire)) {
             return false;
         }
-        if (TryReadCopy(sequence_, payload_, out)) {
-            return true;
-        }
-        if (TryReadCopy(previous_sequence_, previous_, out)) {
-            return true;
-        }
-        std::memcpy(&out, previous_, sizeof(HeadSample));
-        return true;
-    }
-
-  private:
-    static_assert(std::is_trivially_copyable_v<HeadSample>, "the seqlock payload must be trivially copyable");
-    static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "the seqlock counter must be lock-free");
-
-    [[nodiscard]] bool TryReadCopy(const std::atomic<std::uint64_t> &sequence, const std::byte *buffer,
-                                   HeadSample &out) const noexcept {
         for (int attempt = 0; attempt < kMaxReadAttempts; ++attempt) {
-            const std::uint64_t begin = sequence.load(std::memory_order_acquire);
+            const std::uint64_t begin = sequence_.load(std::memory_order_acquire);
             if ((begin & 1U) != 0U) {
                 continue;
             }
-            std::memcpy(&out, buffer, sizeof(HeadSample));
-            std::atomic_thread_fence(std::memory_order_acquire);
-            if (sequence.load(std::memory_order_relaxed) == begin) {
-                return true;
+            std::uint64_t words[kWordCount];
+            for (std::size_t word = 0; word < kWordCount; ++word) {
+                words[word] = std::atomic_ref<std::uint64_t>(payload_[word]).load(std::memory_order_relaxed);
             }
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (sequence_.load(std::memory_order_relaxed) != begin) {
+                continue;
+            }
+            std::memcpy(&out, words, sizeof(HeadSample));
+            return true;
         }
         return false;
     }
 
-    std::byte payload_[sizeof(HeadSample)]{};
-    std::byte previous_[sizeof(HeadSample)]{};
+  private:
+    static_assert(std::is_trivially_copyable_v<HeadSample>, "the seqlock payload must be trivially copyable");
+    static_assert(sizeof(HeadSample) % sizeof(std::uint64_t) == 0, "the seqlock payload must be 8-byte sized");
+    static_assert(alignof(HeadSample) <= alignof(std::uint64_t), "the seqlock payload must be 8-byte aligned");
+    static_assert(std::atomic_ref<std::uint64_t>::is_always_lock_free, "the payload words must be lock-free");
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "the version counter must be lock-free");
+
+    static constexpr std::size_t kWordCount = sizeof(HeadSample) / sizeof(std::uint64_t);
+
+    mutable std::uint64_t payload_[kWordCount]{};
     std::atomic<std::uint64_t> sequence_{0};
-    std::atomic<std::uint64_t> previous_sequence_{0};
     std::atomic<bool> published_{false};
 };
 

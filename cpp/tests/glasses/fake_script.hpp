@@ -13,9 +13,10 @@
 namespace cg::glasses::test {
 
 /// One implementation under contract test, plus the deterministic controls the
-/// suite needs. `advance(count)` publishes (fake, replay) or waits for
-/// `count` further samples (free-running sources); it is empty when a source
-/// cannot be driven, in which case the suite only exercises the static rules.
+/// suite needs. Every factory the suite drives must provide `advance(count)`:
+/// it publishes the next `count` samples (fake, replay) or waits for them
+/// (free-running sources). `clock` is the manual clock the source reads, when
+/// it has one.
 struct SourceUnderTest {
     std::unique_ptr<IHeadPoseSource> source;
     ManualClock *clock = nullptr;
