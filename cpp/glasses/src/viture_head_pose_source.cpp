@@ -7,6 +7,7 @@
 
 #include "cg/core_math/convert.hpp"
 #include "cg/core_math/time.hpp"
+#include "yaw_unwrap.hpp"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -65,8 +66,10 @@ Result<void> VitureHeadPoseSource::Start() {
     if (!created.ok()) {
         return created;
     }
+    device_alive_.store(true, std::memory_order_release);
     const Result<void> started = api_.StartPose();
     if (!started.ok()) {
+        device_alive_.store(false, std::memory_order_release);
         api_.DestroyDevice();
         return started;
     }
@@ -79,6 +82,7 @@ Result<void> VitureHeadPoseSource::Start() {
         thread_ = std::jthread([this](std::stop_token stop) { PollLoop(stop); });
     } catch (...) {
         running_.store(false, std::memory_order_release);
+        device_alive_.store(false, std::memory_order_release);
         api_.DestroyDevice();
         return Err<void>(Status{StatusCode::Internal, "viture: could not start the polling thread"});
     }
@@ -95,6 +99,7 @@ void VitureHeadPoseSource::Stop() noexcept {
     api_.RequestStop();
     thread_.request_stop();
     thread_.join();
+    device_alive_.store(false, std::memory_order_release);
     api_.DestroyDevice();
     running_.store(false, std::memory_order_release);
     {
@@ -109,6 +114,12 @@ Result<void> VitureHeadPoseSource::Recenter() {
     std::unique_lock<std::mutex> lock(recentre_mutex_);
     if (!running_.load(std::memory_order_acquire)) {
         return Err<void>(Status{StatusCode::NotReady, "viture: source is not running"});
+    }
+    if (!has_published_.load(std::memory_order_acquire)) {
+        return Err<void>(Status{StatusCode::NotReady, "viture: no pose to recentre"});
+    }
+    if (!device_alive_.load(std::memory_order_acquire)) {
+        return Err<void>(Status{StatusCode::NotReady, "viture: device is not alive"});
     }
     recentre_requested_.store(true, std::memory_order_release);
     recentre_cv_.wait(lock, [this] { return recentre_done_ || !running_.load(std::memory_order_acquire); });
@@ -185,9 +196,19 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
             const cg_head_sample &sdk = *polled;
             const double sdk_seconds = core_math::ToSeconds(sdk.host_time);
             mapper_.AddSample(sdk_seconds, now);
+            HostTime mapped = mapper_.Map(sdk_seconds);
+            if (last_published_.has_value() && mapped < last_published_->time) {
+                // U-01 assumption: the SDK stamp is monotonic within a session.
+                // If a device recreate restarted it (or a stale window maps the
+                // new base into the past), re-seed the mapper from this sample
+                // so the published time cannot regress.
+                mapper_ = core_math::ClockMapper{};
+                mapper_.AddSample(sdk_seconds, now);
+                mapped = mapper_.Map(sdk_seconds);
+            }
             const float sdk_pose[7] = {sdk.pose.p.x, sdk.pose.p.y, sdk.pose.p.z, sdk.pose.q.w,
                                        sdk.pose.q.x, sdk.pose.q.y, sdk.pose.q.z};
-            HeadSample sample{mapper_.Map(sdk_seconds), core_math::PoseFromSdk(sdk_pose), MapState(sdk.state), ++seq_};
+            HeadSample sample{mapped, core_math::PoseFromSdk(sdk_pose), MapState(sdk.state), ++seq_};
             UpdateRate(sample);
             // Diagnostics-only stamp: stored before the slot publish, so a
             // reader that sees this sample cannot observe an older stamp.
@@ -195,6 +216,7 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
             has_sdk_seconds_.store(true, std::memory_order_release);
             slot_.Publish(sample);
             last_published_ = sample;
+            has_published_.store(true, std::memory_order_release);
             attempts = 0;
             backoff = kInitialBackoff;
             last_success_ns_ = now;
@@ -205,6 +227,7 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
         PublishQuiet(now);
         if (attempts < kMaxReconnectAttempts) {
             ++attempts;
+            device_alive_.store(false, std::memory_order_release);
             api_.DestroyDevice();
             if (!WaitBackoff(backoff, stop)) {
                 break;
@@ -214,8 +237,10 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
             if (!created.ok()) {
                 continue;
             }
+            device_alive_.store(true, std::memory_order_release);
             const Result<void> started = api_.StartPose();
             if (!started.ok()) {
+                device_alive_.store(false, std::memory_order_release);
                 api_.DestroyDevice();
                 continue;
             }
@@ -252,7 +277,7 @@ void VitureHeadPoseSource::ServiceRecentre(std::stop_token stop) noexcept {
 
 void VitureHeadPoseSource::HandleRecentre() noexcept {
     Result<void> result = Err<void>(Status{StatusCode::NotReady, "viture: no pose to recentre"});
-    if (last_published_.has_value()) {
+    if (last_published_.has_value() && device_alive_.load(std::memory_order_acquire)) {
         const HeadSample &newest = *last_published_;
         const float pose[7] = {
             static_cast<float>(newest.pose.position.x),   static_cast<float>(newest.pose.position.y),
@@ -332,7 +357,10 @@ void VitureHeadPoseSource::UpdateRate(const HeadSample &sample) noexcept {
     if (have_previous_ && sample.time > previous_time_) {
         const double dt_s = core_math::ToSeconds(sample.time - previous_time_);
         if (dt_s > 0.0) {
-            yaw_rate_deg_per_s_.store((yaw_deg - previous_yaw_deg_) / dt_s, std::memory_order_relaxed);
+            // A heading that crossed the +/-180 degree seam would otherwise
+            // read as a ~360 degree jump and make the predicted yaw snap.
+            const double delta_yaw_deg = detail::UnwrapYawDeltaDegrees(yaw_deg - previous_yaw_deg_);
+            yaw_rate_deg_per_s_.store(delta_yaw_deg / dt_s, std::memory_order_relaxed);
             pitch_rate_deg_per_s_.store((pitch_deg - previous_pitch_deg_) / dt_s, std::memory_order_relaxed);
         }
     }

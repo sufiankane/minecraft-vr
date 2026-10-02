@@ -42,11 +42,14 @@ namespace cg::glasses {
 ///
 /// `TryGetLatest` copies the wait-free slot and applies the same prediction and
 /// recentre rules as `FakeHeadPoseSource`: a positive `predict` extrapolates
-/// yaw and pitch linearly from the last row-to-row rate, capped at 100 ms, and
-/// leaves the position unchanged; `Recenter` records the latest row's yaw as an
-/// inverse-yaw offset applied at read time (pitch and roll untouched). One
-/// writer (`PublishNext`/`PublishAll`) and any number of readers; `Load` must
-/// not run concurrently with `Start` or publishing.
+/// yaw and pitch linearly from the last row-to-row rate (the yaw delta is
+/// unwrapped across the +/-180 degree seam), capped at 100 ms, and composes
+/// that delta onto the recorded rotation so recorded roll survives; the
+/// position is unchanged. `Recenter` records the latest row's yaw as an
+/// inverse-yaw offset applied at read time (pitch and roll untouched) and is
+/// `NotReady` before the first published row. One writer
+/// (`PublishNext`/`PublishAll`) and any number of readers; `Load` must not run
+/// concurrently with `Start` or publishing.
 class ReplayHeadPoseSource final : public IHeadPoseSource {
   public:
     ReplayHeadPoseSource(std::filesystem::path csv, ManualClock &clock);
@@ -100,6 +103,7 @@ class ReplayHeadPoseSource final : public IHeadPoseSource {
     std::uint32_t next_seq_ = 1;
 
     // Writer-thread playback state.
+    bool has_published_ = false;
     bool has_previous_ = false;
     double previous_yaw_deg_ = 0.0;
     double previous_pitch_deg_ = 0.0;
@@ -107,7 +111,6 @@ class ReplayHeadPoseSource final : public IHeadPoseSource {
 
     // Reader-visible state (atomics, like `FakeHeadPoseSource`).
     std::atomic<double> latest_yaw_deg_{0.0};
-    std::atomic<double> latest_pitch_deg_{0.0};
     std::atomic<double> yaw_rate_deg_per_s_{0.0};
     std::atomic<double> pitch_rate_deg_per_s_{0.0};
     std::atomic<double> yaw_offset_deg_{0.0};

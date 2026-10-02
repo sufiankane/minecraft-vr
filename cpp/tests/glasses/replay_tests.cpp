@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -54,6 +56,14 @@ double YawDegrees(const Pose &pose) noexcept {
 double PitchDegrees(const Pose &pose) noexcept {
     const Vec3 forward = Forward(pose);
     return std::asin(std::clamp(forward.y, -1.0, 1.0)) * kRadiansToDegrees;
+}
+
+/// Roll of a `yaw * pitch * roll` rotation: `atan2(R(1,0), R(1,1))`, where row
+/// 1 of the rotation matrix is the world-Y component of the rotated X/Y axes.
+double RollDegrees(const Pose &pose) noexcept {
+    const Vec3 x_axis = pose.rotation.Rotate(Vec3{1.0, 0.0, 0.0});
+    const Vec3 y_axis = pose.rotation.Rotate(Vec3{0.0, 1.0, 0.0});
+    return std::atan2(x_axis.y, y_axis.y) * kRadiansToDegrees;
 }
 
 std::int64_t ExpectedHostTimeNs(std::uint64_t index) {
@@ -378,6 +388,50 @@ TEST(ReplaySource, PredictExtrapolatesTheCsvYawRate) {
     EXPECT_EQ(predicted.time, newest.time + 50'000'000);
     EXPECT_NEAR(YawDegrees(predicted.pose), 2.75, 1e-6);
     EXPECT_NEAR(PitchDegrees(predicted.pose), 3.0, 1e-6);
+    source.Stop();
+}
+
+TEST(ReplaySource, PredictComposesTheDeltaOnTheRecordedRolledRotation) {
+    // Two rows that differ only in yaw, over a recorded rotation that carries a
+    // 20 degree roll. Rebuilding the pose from absolute yaw/pitch would drop
+    // that roll; the adapter must compose the delta onto the recorded rotation.
+    const Quat row1 = Quat::FromAxisAngle(Vec3{0.0, 1.0, 0.0}, 10.0 * kPi / 180.0) *
+                      Quat::FromAxisAngle(Vec3{1.0, 0.0, 0.0}, 5.0 * kPi / 180.0) *
+                      Quat::FromAxisAngle(Vec3{0.0, 0.0, 1.0}, 20.0 * kPi / 180.0);
+    const Quat row2 = Quat::FromAxisAngle(Vec3{0.0, 1.0, 0.0}, 11.0 * kPi / 180.0) *
+                      Quat::FromAxisAngle(Vec3{1.0, 0.0, 0.0}, 5.0 * kPi / 180.0) *
+                      Quat::FromAxisAngle(Vec3{0.0, 0.0, 1.0}, 20.0 * kPi / 180.0);
+    std::ostringstream csv;
+    csv << std::setprecision(17) << kHeader;
+    csv << "0,0.0,0,0,0," << row1.w() << "," << row1.x() << "," << row1.y() << "," << row1.z() << ",stable\n";
+    csv << "10000000,0.01,0,0,0," << row2.w() << "," << row2.x() << "," << row2.y() << "," << row2.z() << ",stable\n";
+
+    const TempCsv file("rolled_predict", csv.str());
+    ManualClock clock;
+    ReplayHeadPoseSource source(file.path, clock);
+    ExpectLoadOk(source);
+    ASSERT_TRUE(source.Start().ok());
+    source.PublishNext();
+    source.PublishNext();
+
+    HeadSample newest = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(newest, Duration{0}));
+    EXPECT_NEAR(RollDegrees(newest.pose), 20.0, 1e-6);
+    EXPECT_NEAR(YawDegrees(newest.pose), 11.0, 1e-6);
+    EXPECT_NEAR(PitchDegrees(newest.pose), 5.0, 1e-6);
+
+    HeadSample predicted = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(predicted, Duration{50'000'000}));
+    // The row-to-row yaw rate is 100 deg/s, so 50 ms adds 5 degrees of world
+    // yaw on top of the recorded rotation; pitch and roll are unchanged.
+    const Quat expected = Quat::FromAxisAngle(Vec3{0.0, 1.0, 0.0}, 5.0 * kPi / 180.0) * newest.pose.rotation;
+    EXPECT_NEAR(predicted.pose.rotation.w(), expected.w(), 1e-9);
+    EXPECT_NEAR(predicted.pose.rotation.x(), expected.x(), 1e-9);
+    EXPECT_NEAR(predicted.pose.rotation.y(), expected.y(), 1e-9);
+    EXPECT_NEAR(predicted.pose.rotation.z(), expected.z(), 1e-9);
+    EXPECT_NEAR(RollDegrees(predicted.pose), 20.0, 1e-6) << "the recorded roll was dropped";
+    EXPECT_NEAR(PitchDegrees(predicted.pose), 5.0, 1e-6);
+    EXPECT_EQ(predicted.time, newest.time + 50'000'000);
     source.Stop();
 }
 

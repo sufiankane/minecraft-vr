@@ -45,7 +45,9 @@ namespace cg::glasses {
 /// call the API): it passes the newest pose to `ResetOriginCarina` and arms an
 /// inverse-yaw read-time correction for samples published before the reset, so
 /// the newest sample reads back recentred as soon as `Recenter` returns, while
-/// later samples come from the already-recentred SDK stream.
+/// later samples come from the already-recentred SDK stream. It is `NotReady`
+/// before the first sample and while no device is alive (during a backoff or a
+/// failed recreate); the destroyed-device state never calls the seam.
 class VitureHeadPoseSource final : public IHeadPoseSource {
   public:
     /// Runs on the polling thread right after it is named (Windows
@@ -78,6 +80,12 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     void Stop() noexcept override;
     [[nodiscard]] bool TryGetLatest(HeadSample &out, Duration predict) const noexcept override;
     Result<void> Recenter() override;
+
+    /// True while the polling thread is alive (between a successful `Start`
+    /// and the join in `Stop`). `VitureDisplayControl` takes this as its
+    /// is-running predicate: display calls are refused while a poll could be
+    /// in flight, so configure the display before `Start` or after `Stop`.
+    [[nodiscard]] bool Running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     /// Diagnostics only (HIL recordings), NOT part of `IHeadPoseSource`: the
     /// SDK seconds stamp of the newest published sample, or `std::nullopt`
@@ -117,6 +125,12 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::atomic<bool> recentre_requested_{false};
     bool recentre_done_ = false;
     Result<void> recentre_result_{};
+
+    // Device lifetime (create success sets it, before every destroy it is
+    // cleared) and "a pose was published" (readable by `Recenter` from any
+    // caller thread, so both are atomics).
+    std::atomic<bool> device_alive_{false};
+    std::atomic<bool> has_published_{false};
 
     // Polling-thread state (never touched by readers).
     std::optional<HeadSample> last_published_{};

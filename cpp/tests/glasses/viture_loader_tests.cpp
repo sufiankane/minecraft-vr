@@ -90,6 +90,8 @@ TEST(FakeVitureApi, ScriptFeedPublishesTask1PatternSamples) {
     FakeVitureApi api;
     ASSERT_TRUE(api.FeedScript(FakeScript::Static(), 100.0).ok());
     ASSERT_NE(api.script_clock(), nullptr);
+    ASSERT_TRUE(api.CreateDevice().ok());
+    ASSERT_TRUE(api.StartPose().ok());
 
     const Result<cg_head_sample> first = api.PollPose();
     ASSERT_TRUE(first.ok());

@@ -5,6 +5,8 @@
 #include <gtest/gtest.h>
 
 #include "cg/glasses/display_control.hpp"
+#include "cg/glasses/host_clock.hpp"
+#include "cg/glasses/viture_head_pose_source.hpp"
 #include "fake_display_control.hpp"
 #include "fake_viture_api.hpp"
 
@@ -89,6 +91,48 @@ TEST(VitureDisplayControl, StopIsIdempotentAndLatchesWithoutCallingTheSeam) {
     EXPECT_EQ(control.Get().status().code(), StatusCode::NotReady);
     EXPECT_EQ(api.set_display_mode_calls.load(), 0U);
     EXPECT_EQ(api.get_refresh_hz_calls.load(), 0U);
+}
+
+TEST(VitureDisplayControl, RefusesWhileTheSourceIsRunningWithoutCallingTheSeam) {
+    FakeVitureApi api;
+    bool running = true;
+    VitureDisplayControl control(api, [&running] { return running; });
+
+    EXPECT_EQ(control.Set(DisplayMode{120, true}).status().code(), StatusCode::NotReady);
+    EXPECT_EQ(control.Get().status().code(), StatusCode::NotReady);
+    EXPECT_EQ(api.set_display_mode_calls.load(), 0U);
+    EXPECT_EQ(api.get_refresh_hz_calls.load(), 0U);
+
+    running = false; // The source stopped: configuring is legal again.
+    ASSERT_TRUE(control.Set(DisplayMode{120, true}).ok());
+    api.refresh_result = Ok(std::uint32_t{120}); // The seam is authoritative for Get.
+    const Result<DisplayMode> mode = control.Get();
+    ASSERT_TRUE(mode.ok());
+    EXPECT_EQ((*mode).refresh_hz, 120U);
+    EXPECT_EQ(api.set_display_mode_calls.load(), 1U);
+    EXPECT_EQ(api.get_refresh_hz_calls.load(), 1U);
+}
+
+TEST(VitureDisplayControl, WiredToTheVitureSourceRejectsWhileRunningAndAcceptsAfterStop) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    VitureHeadPoseSource source(api, clock);
+    VitureDisplayControl control(api, [&source] { return source.Running(); });
+
+    // Before Start the source is not running: configure the display.
+    ASSERT_TRUE(control.Set(DisplayMode{90, false}).ok());
+    ASSERT_TRUE(source.Start().ok());
+    EXPECT_TRUE(source.Running());
+
+    EXPECT_EQ(control.Set(DisplayMode{120, true}).status().code(), StatusCode::NotReady);
+    EXPECT_EQ(control.Get().status().code(), StatusCode::NotReady);
+    EXPECT_EQ(api.set_display_mode_calls.load(), 1U); // Only the pre-Start set reached the seam.
+    EXPECT_EQ(api.get_refresh_hz_calls.load(), 0U);
+
+    source.Stop();
+    EXPECT_FALSE(source.Running());
+    ASSERT_TRUE(control.Set(DisplayMode{72, true}).ok());
+    EXPECT_EQ(api.set_display_mode_calls.load(), 2U);
 }
 
 TEST(FakeDisplayControl, RoundTripsStateAndInjectsFailures) {
