@@ -334,6 +334,48 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void BandEdgesAreInclusiveForEngagementAndRelease()
+        {
+            var pinch = new GestureRecognizer();
+            Assert.That(
+                Step(pinch, ExactPinchRatio(GestureRecognizer.PinchClosedRatio)).Pinching,
+                Is.True,
+                "ratio exactly 0.5 is the inclusive pinch engage edge");
+            Assert.That(
+                Step(pinch, ExactPinchRatio(GestureRecognizer.PinchOpenRatio)).Pinching,
+                Is.False,
+                "ratio exactly 0.7 is the inclusive pinch release edge");
+
+            var fist = new GestureRecognizer();
+            Assert.That(
+                Step(fist, ExactFistRatio(GestureRecognizer.FistClosedRatio)).Fist,
+                Is.True,
+                "ratio exactly 0.4 is the inclusive fist engage edge");
+            Assert.That(
+                Step(fist, ExactFistRatio(GestureRecognizer.FistOpenRatio)).Fist,
+                Is.False,
+                "ratio exactly 0.6 is the inclusive fist release edge");
+        }
+
+        [Test]
+        public void PinchStateCarriesAcrossAHandSwitchMidBand()
+        {
+            var recognizer = new GestureRecognizer();
+            Assert.That(Step(recognizer, MockHands.Left(MockHands.Pinch(1.5f))).Pinching, Is.True);
+
+            GestureOutput switched = Step(recognizer, MockHands.Both(null, MockHands.Pinch(0.5f)));
+
+            Assert.That(
+                switched.Pinching,
+                Is.True,
+                "the latched pinch carries across the left-to-right switch inside the band");
+            Assert.That(switched.PinchStrength, Is.EqualTo(0.5f).Within(1e-4f));
+
+            GestureOutput released = Step(recognizer, MockHands.Both(null, MockHands.Open()));
+            Assert.That(released.Pinching, Is.False, "the carried latch still releases through the open edge");
+        }
+
+        [Test]
         public void TrackedFramesWithoutAHandBehaveLikeLoss()
         {
             var recognizer = new GestureRecognizer();
@@ -473,6 +515,28 @@ namespace Cubeglass.Gameplay.Tests
                 middleTip: tip,
                 ringTip: tip,
                 littleTip: tip);
+        }
+
+        // Ratio exactly `ratio`: the middle tip is one metre from the wrist so
+        // the pinch scale divides by exactly 1.0.
+        private static HandFrame ExactPinchRatio(float ratio)
+        {
+            return MockHands.Override(
+                MockHands.Open(),
+                wrist: new Vector3f(0f, 0f, 0f),
+                thumbTip: new Vector3f(ratio, 0f, 0f),
+                indexTip: new Vector3f(0f, 0f, 0f),
+                middleTip: new Vector3f(0f, 0f, -1f),
+                ringTip: new Vector3f(0f, 0f, 0f),
+                littleTip: new Vector3f(0f, 0f, 0f));
+        }
+
+        // Ratio exactly `ratio`: CurledFingers places the four tips on the z
+        // axis at ratio * NominalHandScale, so the denominator floors at the
+        // nominal 0.12 m scale and the reach divides exactly.
+        private static HandFrame ExactFistRatio(float ratio)
+        {
+            return CurledFingers(ratio);
         }
 
         private static void AssertSame(GestureOutput expected, GestureOutput actual, int step)

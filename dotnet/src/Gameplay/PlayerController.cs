@@ -170,7 +170,7 @@ namespace Cubeglass.Gameplay
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(player.Position.X, start, player.Position.Z);
-                player.OnGround = velocity <= 0.0;
+                player.OnGround = displacement <= 0.0;
                 return 0.0;
             }
 

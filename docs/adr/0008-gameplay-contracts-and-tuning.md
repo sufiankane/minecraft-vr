@@ -152,7 +152,7 @@ constants.
 | Break time | `seconds = max(0.05, hardness)` from `BlockDefinition.Hardness` (stone 1.5 s, wood 2.0 s) | Task 2 (R30) |
 | Break repeat | none in S4: hold accumulates to one edit at completion; release, target change or a >200 ms tracking loss resets progress | Task 2 |
 | Place repeat | none in S4: `Secondary == Pressed` edge only | Task 2 |
-| Hotbar | 9 slots; default Stone, Dirt, Grass, Sand, Wood in slots 0..4 and air in 5..8; cycling wraps at both ends | `Hotbar` |
+| Hotbar | 9 slots; default Stone, Dirt, Grass, Sand, Wood (ADR-0006 ids 1..5) in slots 0..4 and air in 5..8; cycling wraps at both ends | `Hotbar` |
 | Pinch hysteresis band | latched band 0.5/0.7: engage `ratio <= 0.5` at the closed edge, release `ratio >= 0.7` at the open edge (R32) | Task 3 |
 | Fist hysteresis band | latched band 0.4/0.6: engage `ratio <= 0.4` at the closed edge, release `ratio >= 0.6` at the open edge (R32) | Task 3 |
 | Palette flick window | 250 ms | Task 3 |
