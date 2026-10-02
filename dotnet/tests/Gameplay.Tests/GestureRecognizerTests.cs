@@ -237,12 +237,18 @@ namespace Cubeglass.Gameplay.Tests
             Step(recognizer, MockHands.Pinch(1.5f));
             Step(recognizer, MockHands.Open());
 
-            GestureOutput held = Step(recognizer, MockHands.Untracked());
-            Assert.That(held.Pinching, Is.False, "a released pinch stays released while held");
+            GestureOutput atPointOne = Step(recognizer, MockHands.Untracked());
+            GestureOutput atPointTwo = Step(recognizer, MockHands.Untracked());
+            Assert.That(atPointOne.Pinching, Is.False, "a released pinch stays released while held");
+            Assert.That(atPointTwo.PaletteFlick, Is.False);
+            Assert.That(recognizer.TrackingLost, Is.False, "0.2 s of loss is still a hold, not a clear");
 
             GestureOutput flick = Step(recognizer, MockHands.Pinch(1.5f));
 
-            Assert.That(flick.PaletteFlick, Is.True, "a 100 ms loss does not consume the flick window");
+            Assert.That(
+                flick.PaletteFlick,
+                Is.True,
+                "a 200 ms loss does not consume the 250 ms flick window: the frozen timer is only 0.1 s");
         }
 
         [Test]

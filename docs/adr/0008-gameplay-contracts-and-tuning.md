@@ -153,8 +153,8 @@ constants.
 | Break repeat | none in S4: hold accumulates to one edit at completion; release, target change or a >200 ms tracking loss resets progress | Task 2 |
 | Place repeat | none in S4: `Secondary == Pressed` edge only | Task 2 |
 | Hotbar | 9 slots; default Stone, Dirt, Grass, Sand, Wood in slots 0..4 and air in 5..8; cycling wraps at both ends | `Hotbar` |
-| Pinch hysteresis | enter 0.7, exit 0.5 | Task 3 |
-| Fist hysteresis | enter 0.6, exit 0.4 | Task 3 |
+| Pinch hysteresis band | latched band 0.5/0.7: engage `ratio <= 0.5` at the closed edge, release `ratio >= 0.7` at the open edge (R32) | Task 3 |
+| Fist hysteresis band | latched band 0.4/0.6: engage `ratio <= 0.4` at the closed edge, release `ratio >= 0.6` at the open edge (R32) | Task 3 |
 | Palette flick window | 250 ms | Task 3 |
 | Tracking-loss timeout | 200 ms; longer cancels in-progress break/place | section 5.11, Tasks 2/3 |
 
@@ -246,7 +246,9 @@ tracking-loss frame when `Tracked == false` or when both hands are absent.
 Loss at or below 200 ms holds the last outputs (`Pinching`, `Fist`,
 `PinchStrength`) and freezes every timer; the first frame strictly past
 200 ms clears all outputs and timers once, and recovery evaluates from the
-cleared state. Negative, NaN or infinite `dt` throws
+cleared state. The additive `GestureRecognizer.TrackingLost` property
+(mirroring `InteractionService.TrackingLost`) reports whether the most
+recent frame is past the window. Negative, NaN or infinite `dt` throws
 `ArgumentOutOfRangeException`; `dt == 0` still evaluates the pose without
 advancing a timer.
 
