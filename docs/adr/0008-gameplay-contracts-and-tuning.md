@@ -153,8 +153,8 @@ constants.
 | Break repeat | none in S4: hold accumulates to one edit at completion; release, target change or a >200 ms tracking loss resets progress | Task 2 |
 | Place repeat | none in S4: `Secondary == Pressed` edge only | Task 2 |
 | Hotbar | 9 slots; default Stone, Dirt, Grass, Sand, Wood in slots 0..4 and air in 5..8; cycling wraps at both ends | `Hotbar` |
-| Pinch hysteresis | enter 0.7, exit 0.5 | Task 3 |
-| Fist hysteresis | enter 0.6, exit 0.4 | Task 3 |
+| Pinch hysteresis band | latched band 0.5/0.7: engage `ratio <= 0.5` at the closed edge, release `ratio >= 0.7` at the open edge (R32) | Task 3 |
+| Fist hysteresis band | latched band 0.4/0.6: engage `ratio <= 0.4` at the closed edge, release `ratio >= 0.6` at the open edge (R32) | Task 3 |
 | Palette flick window | 250 ms | Task 3 |
 | Tracking-loss timeout | 200 ms; longer cancels in-progress break/place | section 5.11, Tasks 2/3 |
 
@@ -237,6 +237,50 @@ Edits are clockless in S4: the service issues
 ticks arrive with a later journaling stage (S7); until then `Tick` is always 0
 and is not interpreted by `IWorld.Apply`.
 
+### Gesture recogniser (Task 3)
+
+`GestureRecognizer` is a pure, allocation-free hysteresis state machine over
+`HandsInput`. It selects one hand per frame: `Left` when present, otherwise
+`Right`, and the latched state carries across a hand switch. A frame is a
+tracking-loss frame when `Tracked == false` or when both hands are absent.
+Loss at or below 200 ms holds the last outputs (`Pinching`, `Fist`,
+`PinchStrength`) and freezes every timer; the first frame strictly past
+200 ms clears all outputs and timers once, and recovery evaluates from the
+cleared state. The additive `GestureRecognizer.TrackingLost` property
+(mirroring `InteractionService.TrackingLost`) reports whether the most
+recent frame is past the window. Negative, NaN or infinite `dt` throws
+`ArgumentOutOfRangeException`; `dt == 0` still evaluates the pose without
+advancing a timer.
+
+The ADR-0008 table pins two edges per gesture as ratios of a measure that is
+small when the hand is closed. The state engages when the measure falls to
+the **closed** edge and releases when it rises to the **open** edge; between
+the edges the previous state holds. That latched band is the only reading of
+the pair under which boundary oscillation cannot toggle the output without
+crossing the opposite edge (reading it as "engage at the open edge, release
+at the closed edge" toggles on every frame inside the band and makes light
+gestures unholdable).
+
+- **Pinch**: `ratio = |ThumbTip - IndexTip| / |Wrist - MiddleTip|`. A zero or
+  non-finite scale holds the state. Engage `ratio <= 0.5`, release
+  `ratio >= 0.7`. While engaged
+  `PinchStrength = clamp((0.7 - ratio) / 0.2, 0, 1)`, otherwise 0. The pair
+  is the `[0.5, 0.7]` band; the strength map spans it.
+- **Fist**: `ratio = max(|IndexTip - Wrist|, |MiddleTip - Wrist|,
+  |RingTip - Wrist|, |LittleTip - Wrist|) / max(|Wrist - MiddleTip|,
+  NominalHandScale)` with `NominalHandScale = 0.12 m`. Engage
+  `ratio <= 0.4`, release `ratio >= 0.6` (the `[0.4, 0.6]` band). The thumb
+  tip is excluded because its pose is independent (a natural fist can leave
+  it clear) and it already drives pinch; the denominator is floored by the
+  nominal hand length so the curled middle finger of a fist cannot collapse
+  the measure being tested. S13 replaces the nominal floor with the per-user
+  calibrated hand length.
+- **Palette flick**: a pinch release arms a 250 ms window (inclusive); a
+  re-pinch inside it reports `PaletteFlick = true` on exactly that frame and
+  the frame also reports the new pinch. The window freezes during a
+  tracking-loss hold and is cleared by a tracking-loss clear. Pinch, fist and
+  flick hysteresis are independent.
+
 ### Hotbar
 
 `Hotbar` has `SlotCount = 9`, `SelectedIndex` (get), `Selected` (the
@@ -294,6 +338,12 @@ part of S4.
   the air-slot skip, hotbar cycling, recentre, the 200 ms tracking-loss
   boundary, `Tick == 0`, determinism, zero allocation and an FsCheck property
   over random input sequences).
+- `dotnet/tests/Gameplay.Tests/GestureRecognizerTests.cs` with `MockHands.cs`
+  pins the Task 3 conventions above: the pinch and fist band edges and their
+  `PinchStrength` map, the oscillation rule, the one-frame 250 ms flick
+  (inside, boundary, outside and frozen during short loss), the 200 ms loss
+  hold/clear and recovery, left-then-right hand selection, degenerate joints,
+  translation invariance, determinism and zero allocation.
 - `python -m depcheck --root .` keeps `Cubeglass.Gameplay` free of
   `UnityEngine`, `UnityEditor`, `System.IO` and `System.Threading` and limited
   to the CoreMath + Voxel references.
