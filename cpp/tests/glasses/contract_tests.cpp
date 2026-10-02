@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -13,7 +14,10 @@
 #include <gtest/gtest.h>
 
 #include "cg/core_math/quat.hpp"
+#include "cg/glasses/host_clock.hpp"
 #include "cg/glasses/pose_slot.hpp"
+#include "cg/glasses/viture_head_pose_source.hpp"
+#include "fake_viture_api.hpp"
 
 namespace cg::glasses::test {
 
@@ -524,8 +528,95 @@ TEST(FakeSource, InvalidRateIsRejectedWithoutPublishing) {
     EXPECT_FALSE(uut.source->TryGetLatest(sample, Duration{0}));
 }
 
+/// Owns a `VitureHeadPoseSource` together with the fake API and the manual
+/// host clock it reads, in an order that keeps the fakes alive until after the
+/// source has stopped. `advance` releases exactly one gated poll per step, so
+/// the slot is quiescent between reads (free-running sources would race the
+/// multi-read contract cases).
+class VitureHarnessSource final : public IHeadPoseSource {
+  public:
+    VitureHarnessSource(std::shared_ptr<test::FakeVitureApi> api, std::shared_ptr<ManualHostClock> clock)
+        : api_(std::move(api)), clock_(std::move(clock)), source_(*api_, *clock_) {}
+
+    ~VitureHarnessSource() override { source_.Stop(); }
+
+    Result<void> Start() override {
+        const Result<void> result = source_.Start();
+        if (result.ok()) {
+            stopped_.store(false, std::memory_order_relaxed);
+        }
+        return result;
+    }
+
+    void Stop() noexcept override {
+        source_.Stop();
+        stopped_.store(true, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool TryGetLatest(HeadSample &out, Duration predict) const noexcept override {
+        return source_.TryGetLatest(out, predict);
+    }
+
+    Result<void> Recenter() override {
+        // The polling thread must make progress for the reset to be handled;
+        // opening the gate lets one poll through while the reset is in flight.
+        api_->SetPollGate(false);
+        const Result<void> result = source_.Recenter();
+        api_->SetPollGate(true);
+        return result;
+    }
+
+    [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_relaxed); }
+    void AllowOnePoll() noexcept { api_->AllowOnePoll(); }
+
+  private:
+    std::shared_ptr<test::FakeVitureApi> api_;
+    std::shared_ptr<ManualHostClock> clock_;
+    VitureHeadPoseSource source_;
+    std::atomic<bool> stopped_{true};
+};
+
+SourceUnderTest MakeVitureSource() {
+    auto api = std::make_shared<test::FakeVitureApi>();
+    auto clock = std::make_shared<ManualHostClock>();
+    static_cast<void>(api->FeedScript(FakeScript::YawSweep(10.0), 100.0));
+    api->SetPollGate(true);
+    auto harness = std::make_unique<VitureHarnessSource>(api, clock);
+    auto last_seq = std::make_shared<std::atomic<std::uint32_t>>(0);
+
+    ManualHostClock *clock_raw = clock.get();
+    VitureHarnessSource *raw = harness.get();
+    SourceUnderTest uut;
+    uut.advance = [raw, clock_raw, last_seq](std::uint32_t count) {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            if (raw->stopped()) {
+                return;
+            }
+            clock_raw->Advance(Duration{kSamplePeriodNs});
+            raw->AllowOnePoll();
+            const std::uint32_t target = last_seq->load() + 1;
+            HeadSample sample = PlaceholderSample();
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (std::chrono::steady_clock::now() < deadline) {
+                if (raw->TryGetLatest(sample, Duration{0}) && sample.seq >= target) {
+                    last_seq->store(sample.seq);
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+    };
+    uut.source = std::move(harness);
+    return uut;
+}
+
 [[maybe_unused]] const bool kFakeFactoryRegistered = [] {
     AddContractFactory(ContractFactory{"fake", [] { return MakeFakeSource(FakeScript::YawSweep(45.0)); }});
+    return true;
+}();
+
+[[maybe_unused]] const bool kVitureFactoryRegistered = [] {
+    AddContractFactory(ContractFactory{"viture-fake", [] { return MakeVitureSource(); }});
     return true;
 }();
 
