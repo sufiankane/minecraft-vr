@@ -1,0 +1,29 @@
+{
+  "name": "recentre",
+  "description": "RecenterPressed on the edge sets yaw to zero and is recorded for that update only; later frames keep the heading.",
+  "seed": 20261002,
+  "dt": 0.05,
+  "steps": 5,
+  "player": { "position": [8.0, 1.0, 8.0], "yaw": 1.25, "pitch": 0.0, "hotbarIndex": 0 },
+  "blocks": [
+    { "from": [0, 0, 0], "to": [15, 0, 15], "block": 1 }
+  ],
+  "hashBounds": { "min": [0, 0, 0], "max": [15, 5, 15] },
+  "frames": [
+    { "time": 0.0, "quality": "Good" },
+    { "time": 0.1, "recenter": true, "quality": "Good" },
+    { "time": 0.15, "quality": "Good" }
+  ],
+  "modelEdits": [],
+  "observations": [
+    { "step": 1, "yaw": 1.25, "recentered": false, "edited": false },
+    { "step": 2, "yaw": 0.0, "recentered": true, "edited": false },
+    { "step": 3, "yaw": 0.0, "recentered": false, "edited": false }
+  ],
+  "expected": {
+    "worldHash": "0xCF5916F26DDD5725",
+    "yaw": 0.0,
+    "pitch": 0.0,
+    "hotbarIndex": 0
+  }
+}

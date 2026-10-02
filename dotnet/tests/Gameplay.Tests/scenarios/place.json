@@ -1,0 +1,33 @@
+{
+  "name": "place",
+  "description": "Two placement edges: slot 0 Stone on the first face, then a hotbar cycle and slot 1 Dirt on a second face; Held never repeats.",
+  "seed": 20261002,
+  "dt": 0.1,
+  "steps": 6,
+  "player": { "position": [8.0, 1.0, 8.0], "yaw": 0.0, "pitch": 0.0, "hotbarIndex": 0 },
+  "blocks": [
+    { "from": [0, 0, 0], "to": [15, 0, 15], "block": 1 }
+  ],
+  "hashBounds": { "min": [0, 0, 0], "max": [15, 5, 15] },
+  "frames": [
+    { "time": 0.0, "secondary": "Pressed", "pointer": { "origin": [2.5, 2.0, 2.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" },
+    { "time": 0.1, "secondary": "Held", "pointer": { "origin": [2.5, 2.0, 2.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" },
+    { "time": 0.3, "hotbarDelta": 1, "quality": "Good" },
+    { "time": 0.4, "secondary": "Pressed", "pointer": { "origin": [4.5, 2.0, 2.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" },
+    { "time": 0.5, "quality": "Good" }
+  ],
+  "modelEdits": [
+    { "cell": [2, 1, 2], "expected": 0, "new": 1 },
+    { "cell": [4, 1, 2], "expected": 0, "new": 2 }
+  ],
+  "observations": [
+    { "step": 0, "edited": true, "target": [2, 0, 2], "state": "Placing" },
+    { "step": 1, "edited": false, "target": [2, 1, 2] },
+    { "step": 3, "edited": false, "hotbarIndex": 1 },
+    { "step": 4, "edited": true, "target": [4, 0, 2], "state": "Placing" }
+  ],
+  "expected": {
+    "worldHash": "0x667D0DB9CB118EC8",
+    "hotbarIndex": 1
+  }
+}
