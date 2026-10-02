@@ -216,6 +216,13 @@ TEST(ShmStress, HeadReadsStayConsistentUnderEightReaders) {
             break;
         }
     }
+    // The guaranteed post-writer reads must see fresh data; refresh the
+    // heartbeat after the last publish. Head staleness still returns CG_OK
+    // (with state Lost), but hands staleness returns CG_ERR_NOT_READY, so both
+    // paths refresh to keep the post-read floor consistent.
+    if (cg_test_writer_set_heartbeat(now_ns()) != CG_OK) {
+        published = false;
+    }
     finished.store(true, std::memory_order_release);
     for (std::thread &reader : readers) {
         reader.join();
@@ -235,7 +242,10 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
     ASSERT_EQ(cg_test_writer_create(), CG_OK);
     void *handle = nullptr;
     ASSERT_EQ(cg_bridge_open(&handle), CG_OK);
-    // A far-future heartbeat keeps the header fresh for the whole test.
+    // A far-future heartbeat keeps the mid-run reads fresh for the first
+    // second of the run; the heartbeat is refreshed after the last publish so
+    // the guaranteed post-writer read never sees stale hands (stale hands
+    // return CG_ERR_NOT_READY, not a sample).
     ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 1'000'000'000), CG_OK);
 
     constexpr int kReaders = 4;
@@ -293,6 +303,11 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
             published = false;
             break;
         }
+    }
+    // Same post-publish heartbeat refresh as the head test: the guaranteed
+    // post-writer read must not be rejected as stale.
+    if (cg_test_writer_set_heartbeat(now_ns()) != CG_OK) {
+        published = false;
     }
     finished.store(true, std::memory_order_release);
     for (std::thread &reader : readers) {
