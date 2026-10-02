@@ -8,10 +8,22 @@
 #include "cg_unity_bridge.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
 #include <gtest/gtest.h>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace cg::bridge {
 namespace {
@@ -47,6 +59,82 @@ cg_hand_frame MakeHands(std::uint32_t sequence) {
     frame.hands[1].confidence = 0.5f;
     return frame;
 }
+
+/// A second writable view of the test writer's region. Only the open-header
+/// tests need it: no bridge or test-writer API can leave the region
+/// uninitialised while the writer is open, so the corruption is injected
+/// through a raw mapping behind the writer's back.
+class RawRegionView {
+  public:
+    RawRegionView() = default;
+    RawRegionView(const RawRegionView &) = delete;
+    RawRegionView &operator=(const RawRegionView &) = delete;
+    ~RawRegionView() { Close(); }
+
+    bool Open() noexcept {
+#if defined(_WIN32)
+        mapping_ = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, L"Local\\cubeglass.v1.state");
+        if (mapping_ == nullptr) {
+            return false;
+        }
+        base_ = static_cast<std::uint8_t *>(MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0, 0, 0));
+        if (base_ == nullptr) {
+            CloseHandle(mapping_);
+            mapping_ = nullptr;
+            return false;
+        }
+#elif defined(__unix__) || defined(__APPLE__)
+        fd_ = shm_open("/cubeglass.v1.state", O_RDWR | O_CLOEXEC, 0);
+        if (fd_ < 0) {
+            return false;
+        }
+        void *view = mmap(nullptr, sizeof(std::uint64_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        if (view == MAP_FAILED) {
+            close(fd_);
+            fd_ = -1;
+            return false;
+        }
+        base_ = static_cast<std::uint8_t *>(view);
+#endif
+        return base_ != nullptr;
+    }
+
+    void ZeroMagic() const noexcept { std::memset(base_, 0, sizeof(std::uint64_t)); }
+
+    void SetAbiVersion(std::uint32_t version) const noexcept {
+        auto *abi = reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version));
+        std::memcpy(abi, &version, sizeof(version));
+    }
+
+  private:
+    void Close() noexcept {
+#if defined(_WIN32)
+        if (base_ != nullptr) {
+            UnmapViewOfFile(base_);
+        }
+        if (mapping_ != nullptr) {
+            CloseHandle(mapping_);
+        }
+        mapping_ = nullptr;
+#elif defined(__unix__) || defined(__APPLE__)
+        if (base_ != nullptr) {
+            munmap(base_, sizeof(std::uint64_t));
+        }
+        if (fd_ >= 0) {
+            close(fd_);
+        }
+        fd_ = -1;
+#endif
+        base_ = nullptr;
+    }
+
+    std::uint8_t *base_ = nullptr;
+#if defined(_WIN32)
+    HANDLE mapping_ = nullptr;
+#elif defined(__unix__) || defined(__APPLE__)
+    int fd_ = -1;
+#endif
+};
 
 class ShmReaderTest : public ::testing::Test {
   protected:
@@ -104,23 +192,75 @@ TEST_F(ShmReaderTest, ReadBeforeFirstPublishIsNotReady) {
     EXPECT_EQ(cg_bridge_read_hands(handle_, &hands), CG_ERR_NOT_READY);
 }
 
-TEST_F(ShmReaderTest, StaleHeartbeatForcesTrackLostAndFreshHeartbeatKeepsState) {
+TEST_F(ShmReaderTest, FreshHeartbeatKeepsStateAndStaleHeartbeatForcesTrackLost) {
     OpenBridge();
 
     const cg_head_sample head = MakeHead(5, CG_TRACK_STABLE);
-    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns()), CG_OK);
+    // Far-future heartbeat: fresh no matter how long the test runs.
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 1'000'000'000), CG_OK);
     ASSERT_EQ(cg_test_writer_publish_head(&head), CG_OK);
 
     cg_head_sample fresh{};
     ASSERT_EQ(cg_bridge_read_head(handle_, &fresh), CG_OK);
     EXPECT_EQ(fresh.state, CG_TRACK_STABLE);
+    EXPECT_EQ(fresh.sequence, 5U);
 
-    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() - kStaleAfterNs - 100'000'000), CG_OK);
+    // Far-past heartbeat: stale well beyond the 250 ms rule.
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() - kStaleAfterNs - 1'000'000'000), CG_OK);
     cg_head_sample stale{};
     ASSERT_EQ(cg_bridge_read_head(handle_, &stale), CG_OK);
     EXPECT_EQ(stale.state, CG_TRACK_LOST);
     EXPECT_EQ(stale.sequence, 5U);
     EXPECT_EQ(stale.host_time, head.host_time);
+}
+
+TEST_F(ShmReaderTest, StaleHandsReportNotReadyInsteadOfASample) {
+    OpenBridge();
+
+    const cg_hand_frame hands = MakeHands(6);
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 1'000'000'000), CG_OK);
+    ASSERT_EQ(cg_test_writer_publish_hands(&hands), CG_OK);
+
+    cg_hand_frame read{};
+    ASSERT_EQ(cg_bridge_read_hands(handle_, &read), CG_OK);
+    EXPECT_EQ(std::memcmp(&read, &hands, sizeof(hands)), 0);
+
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() - kStaleAfterNs - 1'000'000'000), CG_OK);
+    EXPECT_EQ(cg_bridge_read_hands(handle_, &read), CG_ERR_NOT_READY);
+}
+
+TEST_F(ShmReaderTest, SendCommandRejectsZeroAndUint32MaxWithoutWriting) {
+    OpenBridge();
+
+    ASSERT_EQ(cg_bridge_send_command(handle_, 4), CG_OK);
+    EXPECT_EQ(cg_bridge_send_command(handle_, 0), CG_ERR_INVALID_ARG);
+    EXPECT_EQ(cg_bridge_send_command(handle_, UINT32_MAX), CG_ERR_INVALID_ARG);
+
+    std::uint32_t command = 0;
+    std::uint32_t ack = 0;
+    ASSERT_EQ(cg_test_writer_read_command(&command, &ack), CG_OK);
+    EXPECT_EQ(command, 5U); // the rejected sends left the word untouched
+    EXPECT_EQ(ack, 0U);
+}
+
+TEST_F(ShmReaderTest, UninitialisedHeaderReportsNotReadyAfterTheInitWindow) {
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+    view.ZeroMagic();
+
+    void *handle = nullptr;
+    EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_NOT_READY);
+    EXPECT_EQ(handle, nullptr); // the out parameter is written only on CG_OK
+}
+
+TEST_F(ShmReaderTest, IncompatibleHeaderReportsUnsupportedAfterTheInitWindow) {
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+    view.SetAbiVersion(kShmAbiVersion + 1);
+
+    void *handle = nullptr;
+    EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(handle, nullptr);
 }
 
 TEST_F(ShmReaderTest, SendCommandReachesWriterAndAckIsWriterSideOnly) {

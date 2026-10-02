@@ -203,18 +203,47 @@ release/acquire ordering (`std::atomic` in the slot structs). Because the
 writer stores `seq_b` after the payload, the literal `seq_b == seq_a` check
 alone can accept a torn copy (the previous even value still sits in `seq_b`
 while a new publish is in flight, ABA), so the reader additionally re-reads the
-monotonic `seq_a` and accepts only when it is unchanged. A reader that
-has no valid sample reports `CG_ERR_NOT_READY`; a reader whose
-`now - heartbeat_ns` exceeds `kStaleAfterNs` (250 ms) reports
-`CG_TRACK_LOST`/`CG_ERR_NOT_READY` rather than stale data. The writer updates
-the heartbeat at least every 100 ms (5.6).
+monotonic `seq_a` and accepts only when it is unchanged.
 
-The bridge DLL also exports a **test-only native writer** (`cg_bridge_test_writer_*`,
-header `cg/bridge/test_writer.h`). Rationale: the production writer is the S12
-hand service and needs the VITURE device, so S6 C++ stress tests and Task 2 C#
-EditMode tests script samples through the same memory layout with no hardware.
-The test writer is documented as test-only in its header and is not referenced
-by the production bridge functions.
+Staleness uses the same 250 ms heartbeat rule for both slots, exclusive at the
+boundary: `cg::bridge::is_stale(now, heartbeat)` is
+`now - heartbeat > kStaleAfterNs`, so exactly 250 ms is still fresh. A stale
+head read keeps the sample and forces `state = CG_TRACK_LOST`; a stale hand
+read has no per-hand tracking state, so it reports `CG_ERR_NOT_READY` and
+returns no frame — the hand equivalent of "lost", so stale joints can never
+reach a consumer. A reader with no valid sample (never published) also reports
+`CG_ERR_NOT_READY`. The writer updates the heartbeat at least every 100 ms
+(5.6).
+
+`cg_bridge_open` validates the region before returning a handle:
+
+- Minimum region: the region must cover the end of the hand slot,
+  `kMinimumRegionSize` (848 bytes), or the open fails with
+  `CG_ERR_UNSUPPORTED`. POSIX checks the exact `fstat` size; a Windows
+  pagefile-backed section is page-granular, so Windows checks the mapped
+  view's region size (`VirtualQuery`) and the guard is exact only to page
+  granularity.
+- Header init race: a writer stores the magic, ABI and header size one by
+  one, so a reader that opens mid-initialisation would otherwise fail hard.
+  Open retries the header check for a bounded 50 ms window. If the header is
+  still invalid after the window, a zero magic reports `CG_ERR_NOT_READY`
+  (the region exists but the writer has not initialised it), while any other
+  invalid header reports `CG_ERR_UNSUPPORTED` (a foreign or incompatible
+  region).
+- Command encoding: `cg_bridge_send_command(h, cmd)` stores `cmd + 1` at
+  header byte 32 because 0 is the reserved idle word; `cmd == 0` and
+  `cmd == UINT32_MAX` (which would wrap to idle) are rejected with
+  `CG_ERR_INVALID_ARG`. Repeat sends may store the same word: commands have no
+  monotonicity or sequence requirement, and the command/ack words are not part
+  of the slot seqlocks.
+
+The bridge DLL also exports a **test-only native writer** (`cg_test_writer_*`,
+header `cg/bridge/test_writer.h`; the exported symbols drop the `bridge`
+infix). Rationale: the production writer is the S12 hand service and needs the
+VITURE device, so S6 C++ stress tests and Task 2 C# EditMode tests script
+samples through the same memory layout with no hardware. The test writer is
+documented as test-only in its header and is not referenced by the production
+bridge functions.
 
 ## Consequences
 
@@ -236,10 +265,16 @@ by the production bridge functions.
 
 - `cpp/tests/bridge/layout_tests.cpp` pins every 5.6 offset, the command/ack
   offsets, the payload sizes including compiler padding, the little-endian
-  `CGSHM001` bytes and `CG_ABI_VERSION == 2`; it is registered as the
+  `CGSHM001` bytes, `CG_ABI_VERSION == 2` and the exclusive 250 ms staleness
+  boundary through `cg::bridge::is_stale`; it is registered as the
   `bridge_layout` ctest entry.
 - `contracts/cg_unity_bridge.h` is a verbatim copy of 5.12; Task 1b's reader
   and Task 2's C# wrapper are tested against the test-only writer.
+- `cpp/tests/bridge/shm_reader_tests.cpp` covers the `UINT32_MAX` command
+  rejection, the stale-hand `CG_ERR_NOT_READY` rule and the init-race
+  outcomes (zero magic → `CG_ERR_NOT_READY`, incompatible header →
+  `CG_ERR_UNSUPPORTED`); `shm_stress_tests.cpp` keeps a far-future heartbeat
+  for the hand stress because staleness now applies to both slots.
 - `python -m depcheck --root .` enforces the `bridge` layer's ONNX Runtime ban
   from `contracts/layers.json`.
 - The C# P/Invoke wrapper uses blittable, explicitly laid-out structs

@@ -8,8 +8,10 @@
 // `seq_b = seq_a + 1`, then store `seq_a = seq_a + 1`. Reader protocol: read
 // `seq_a` (retry while odd), copy the payload, read `seq_b`, and accept only
 // when `seq_b == seq_a`. All counter operations use release/acquire ordering.
-// A reader treats the data as stale when `now - heartbeat_ns > kStaleAfterNs`
-// and reports `CG_TRACK_LOST` instead of the built-in tracking state.
+// A reader treats the data as stale when `now - heartbeat_ns > kStaleAfterNs`:
+// a stale head read keeps the sample but reports `CG_TRACK_LOST` instead of
+// the built-in tracking state, and a stale hand read reports
+// `CG_ERR_NOT_READY` (a lost hand frame is no frame).
 
 #include <atomic>
 #include <cstddef>
@@ -44,6 +46,14 @@ inline constexpr std::size_t kHandSlotOffset = 256;
 
 /// A sample whose writer heartbeat is older than this is stale (250 ms).
 inline constexpr std::int64_t kStaleAfterNs = 250'000'000;
+
+/// The 5.6 staleness rule, exclusive at the boundary: data is stale only when
+/// `now - heartbeat` is strictly greater than 250 ms, so exactly 250 ms is
+/// still fresh. `now` and `heartbeat` are nanoseconds from the same monotonic
+/// clock (`std::chrono::steady_clock`).
+inline bool is_stale(std::int64_t now, std::int64_t heartbeat) noexcept {
+    return now - heartbeat > kStaleAfterNs;
+}
 
 /// Fixed 64-byte region header. Bytes 32..39 were reserved in 5.6; ADR-0010
 /// (R43) extends the reserved window with a command word and its ack, which

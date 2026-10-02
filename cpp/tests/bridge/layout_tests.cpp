@@ -125,6 +125,14 @@ TEST(ShmLayout, ProtocolConstantsMatchDossier56) {
     EXPECT_STREQ(kStateName, "Local\\cubeglass.v1.state");
 }
 
+TEST(ShmLayout, StaleRuleIsStrictlyAfterThe250MsBoundary) {
+    constexpr cg_time_ns now = 10'000'000'000;
+    EXPECT_FALSE(is_stale(now, now));                        // fresh
+    EXPECT_FALSE(is_stale(now, now - kStaleAfterNs));        // exactly 250 ms: still fresh
+    EXPECT_TRUE(is_stale(now, now - kStaleAfterNs - 1));     // one nanosecond past the boundary
+    EXPECT_FALSE(is_stale(now, now + kStaleAfterNs));        // future heartbeat: fresh
+}
+
 TEST(ShmLayout, PayloadSizesDocumentTheCompilerPadding) {
     EXPECT_EQ(sizeof(cg_head_sample), 48U);
     EXPECT_EQ(sizeof(cg_hand), 272U);
