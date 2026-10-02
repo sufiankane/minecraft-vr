@@ -16,6 +16,7 @@
 #include "cg/core_math/quat.hpp"
 #include "cg/glasses/host_clock.hpp"
 #include "cg/glasses/pose_slot.hpp"
+#include "cg/glasses/replay_head_pose_source.hpp"
 #include "cg/glasses/viture_head_pose_source.hpp"
 #include "fake_viture_api.hpp"
 
@@ -610,8 +611,30 @@ SourceUnderTest MakeVitureSource() {
     return uut;
 }
 
+void ExpectReplayLoaded(const Result<void> &loaded) { EXPECT_TRUE(loaded.ok()) << loaded.status().message(); }
+
+SourceUnderTest MakeReplaySource() {
+    auto clock = std::make_shared<ManualClock>();
+    auto source = std::make_unique<ReplayHeadPoseSource>(CG_POSE_REPLAY_FIXTURE, *clock);
+    ExpectReplayLoaded(source->Load());
+    SourceUnderTest uut;
+    uut.clock = clock.get();
+    uut.advance = [raw = source.get(), keeper = clock](std::uint32_t count) {
+        for (std::uint32_t i = 0; i < count; ++i) {
+            raw->PublishNext();
+        }
+    };
+    uut.source = std::move(source);
+    return uut;
+}
+
 [[maybe_unused]] const bool kFakeFactoryRegistered = [] {
     AddContractFactory(ContractFactory{"fake", [] { return MakeFakeSource(FakeScript::YawSweep(45.0)); }});
+    return true;
+}();
+
+[[maybe_unused]] const bool kReplayFactoryRegistered = [] {
+    AddContractFactory(ContractFactory{"replay", [] { return MakeReplaySource(); }});
     return true;
 }();
 
