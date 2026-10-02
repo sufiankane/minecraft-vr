@@ -10,13 +10,14 @@
 //
 //   host_time_ns,sdk_time_s,px,py,pz,qw,qx,qy,qz,status
 //
-// `host_time_ns` is the sample's mapped host-timeline instant. `sdk_time_s` is
-// that same instant in seconds, NOT the raw SDK timestamp: the
-// IHeadPoseSource contract exposes only the mapped host time, so no source in
-// this repository can hand the probe the SDK's own seconds. The column exists
-// so the file round-trips through ReplayHeadPoseSource (which parses and
-// validates it but does not publish it). A future source that exposes the raw
-// stamp would record it here instead of the host-derived value.
+// `host_time_ns` is the sample's mapped host-timeline instant. `sdk_time_s`
+// is per mode: `--source viture` records the true SDK seconds stamp from the
+// diagnostics-only `VitureHeadPoseSource::LastSdkSeconds()` accessor (added
+// for HIL latency analysis), falling back to host-derived seconds with a
+// warning until the first stamp is available; `--source fake` and
+// `--source replay` record host-derived seconds because those sources carry
+// no SDK stamp. The column round-trips through ReplayHeadPoseSource, which
+// parses and validates it but does not publish it.
 //
 // `--source fake` couples the fake's ManualClock to the steady host clock and
 // emits at the requested rate, so the measured jitter is the probe's own
@@ -40,6 +41,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -158,9 +160,12 @@ void PrintUsage(std::FILE *stream) {
                "\n"
                "csv columns: host_time_ns,sdk_time_s,px,py,pz,qw,qx,qy,qz,status\n"
                "  host_time_ns  mapped host-timeline sample time, integer nanoseconds\n"
-               "  sdk_time_s    the same host time in seconds; the IHeadPoseSource\n"
-               "                contract does not expose the raw SDK stamp, so this\n"
-               "                column is host-derived and NOT the SDK's seconds\n"
+               "  sdk_time_s    viture: the sample's true SDK seconds stamp\n"
+               "                (VitureHeadPoseSource::LastSdkSeconds, for HIL\n"
+               "                latency analysis); host-derived seconds until the\n"
+               "                first stamp is available, with a warning.\n"
+               "                fake|replay: host-derived seconds (those sources\n"
+               "                carry no SDK stamp)\n"
                "  px,py,pz      position (meters); qw,qx,qy,qz rotation quaternion\n"
                "  status        stable, unstable or lost\n"
                "\n"
@@ -289,9 +294,11 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string &
 
 struct SampleLog {
     std::vector<HeadSample> samples;
+    std::vector<double> sdk_seconds; // per-sample sdk_time_s column value
     std::uint64_t polls = 0;
     std::uint64_t failed_polls = 0;
     bool dataset_exhausted = false;
+    bool warned_missing_sdk = false;
 };
 
 HeadSample PlaceholderSample() noexcept {
@@ -318,9 +325,13 @@ void PrintSampleLine(const char *label, const HeadSample &sample) {
                 sample.pose.rotation.x(), sample.pose.rotation.y(), sample.pose.rotation.z());
 }
 
-/// Reads the newest sample; when it is new, records it and honors
-/// `--print-every`. Returns true when a new sample was recorded.
-bool TryRecordNewest(IHeadPoseSource &source, const Options &options, SampleLog &log) {
+/// Reads the newest sample; when it is new, records it (with its
+/// `sdk_time_s` column value) and honors `--print-every`. `stamp_source` is
+/// the viture source when its diagnostics accessor should supply the true SDK
+/// stamp; it is null for fake and replay, which carry no SDK stamp. Returns
+/// true when a new sample was recorded.
+bool TryRecordNewest(IHeadPoseSource &source, const Options &options, SampleLog &log,
+                     const VitureHeadPoseSource *stamp_source = nullptr) {
     HeadSample sample = PlaceholderSample();
     ++log.polls;
     if (!source.TryGetLatest(sample, Duration{0})) {
@@ -330,7 +341,21 @@ bool TryRecordNewest(IHeadPoseSource &source, const Options &options, SampleLog 
     if (!log.samples.empty() && sample.seq == log.samples.back().seq) {
         return false;
     }
+
+    double sdk_seconds = ToSeconds(sample.time);
+    if (stamp_source != nullptr) {
+        const std::optional<double> stamp = stamp_source->LastSdkSeconds();
+        if (stamp.has_value()) {
+            sdk_seconds = *stamp;
+        } else if (!log.warned_missing_sdk) {
+            std::fprintf(stderr,
+                         "warning: the viture source has no SDK stamp yet; writing host-derived seconds for now\n");
+            log.warned_missing_sdk = true;
+        }
+    }
+
     log.samples.push_back(sample);
+    log.sdk_seconds.push_back(sdk_seconds);
     if (options.print_every != 0 && log.samples.size() % static_cast<std::size_t>(options.print_every) == 0) {
         std::printf("progress: ");
         PrintSampleLine("sample", sample);
@@ -406,7 +431,7 @@ void PrintReport(const Options &options, const SampleLog &log) {
     PrintSampleLine("last ", last);
 }
 
-bool WriteCsv(const std::string &path, const std::vector<HeadSample> &samples, std::string &error) {
+bool WriteCsv(const std::string &path, const SampleLog &log, std::string &error) {
     std::ofstream file(path, std::ios::binary);
     if (!file.is_open()) {
         error = "cannot open output CSV: " + path;
@@ -415,8 +440,9 @@ bool WriteCsv(const std::string &path, const std::vector<HeadSample> &samples, s
     file << "host_time_ns,sdk_time_s,px,py,pz,qw,qx,qy,qz,status\n";
     file.setf(std::ios::fixed, std::ios::floatfield);
     file.precision(9);
-    for (const HeadSample &sample : samples) {
-        file << sample.time << ',' << ToSeconds(sample.time) << ',' << sample.pose.position.x << ','
+    for (std::size_t index = 0; index < log.samples.size(); ++index) {
+        const HeadSample &sample = log.samples[index];
+        file << sample.time << ',' << log.sdk_seconds[index] << ',' << sample.pose.position.x << ','
              << sample.pose.position.y << ',' << sample.pose.position.z << ',' << sample.pose.rotation.w() << ','
              << sample.pose.rotation.x() << ',' << sample.pose.rotation.y() << ',' << sample.pose.rotation.z() << ','
              << StateName(sample.state) << '\n';
@@ -426,7 +452,7 @@ bool WriteCsv(const std::string &path, const std::vector<HeadSample> &samples, s
         error = "failed while writing output CSV: " + path;
         return false;
     }
-    std::printf("csv: wrote %zu samples to %s\n", samples.size(), path.c_str());
+    std::printf("csv: wrote %zu samples to %s\n", log.samples.size(), path.c_str());
     return true;
 }
 
@@ -445,9 +471,13 @@ int Finish(const Options &options, const SampleLog &log) {
         return 1;
     }
     PrintReport(options, log);
+    if (options.source != SourceKind::Viture) {
+        std::printf("sdk_time_s: host-derived seconds (the %s source carries no SDK stamp)\n",
+                    SourceName(options.source));
+    }
     if (!options.out.empty()) {
         std::string error;
-        if (!WriteCsv(options.out, log.samples, error)) {
+        if (!WriteCsv(options.out, log, error)) {
             std::fprintf(stderr, "cg-pose-probe: %s\n", error.c_str());
             return 1;
         }
@@ -607,7 +637,7 @@ int RunViture(const Options &options, SampleLog &log) {
         if (TimeLimitReached(elapsed_ns, options.seconds)) {
             break;
         }
-        TryRecordNewest(source, options, log);
+        TryRecordNewest(source, options, log, &source);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     source.Stop();

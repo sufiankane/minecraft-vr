@@ -119,6 +119,13 @@ Result<void> VitureHeadPoseSource::Recenter() {
     return recentre_result_;
 }
 
+std::optional<double> VitureHeadPoseSource::LastSdkSeconds() const noexcept {
+    if (!has_sdk_seconds_.load(std::memory_order_acquire)) {
+        return std::nullopt;
+    }
+    return last_sdk_seconds_.load(std::memory_order_relaxed);
+}
+
 bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const noexcept {
     HeadSample newest{0, core_math::Pose{core_math::Vec3{0.0, 0.0, 0.0}, core_math::Quat::kIdentity},
                       TrackState::Stable, 0};
@@ -182,6 +189,10 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
                                        sdk.pose.q.x, sdk.pose.q.y, sdk.pose.q.z};
             HeadSample sample{mapper_.Map(sdk_seconds), core_math::PoseFromSdk(sdk_pose), MapState(sdk.state), ++seq_};
             UpdateRate(sample);
+            // Diagnostics-only stamp: stored before the slot publish, so a
+            // reader that sees this sample cannot observe an older stamp.
+            last_sdk_seconds_.store(sdk_seconds, std::memory_order_relaxed);
+            has_sdk_seconds_.store(true, std::memory_order_release);
             slot_.Publish(sample);
             last_published_ = sample;
             attempts = 0;

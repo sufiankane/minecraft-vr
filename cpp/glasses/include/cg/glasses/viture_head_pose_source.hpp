@@ -79,6 +79,16 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     [[nodiscard]] bool TryGetLatest(HeadSample &out, Duration predict) const noexcept override;
     Result<void> Recenter() override;
 
+    /// Diagnostics only (HIL recordings), NOT part of `IHeadPoseSource`: the
+    /// SDK seconds stamp of the newest published sample, or `std::nullopt`
+    /// before the first successful poll. The polling thread stores it just
+    /// before the matching `PoseSlot::Publish`, so a reader that observes a
+    /// sample can rely on the stamp being at least as new. Lock-free (the
+    /// `std::atomic<double>` is lock-free on every supported platform), no
+    /// allocation, no exceptions. Quiet `Unstable`/`Lost` synthetics carry the
+    /// last real stamp forward rather than clearing it.
+    [[nodiscard]] std::optional<double> LastSdkSeconds() const noexcept;
+
   private:
     void PollLoop(std::stop_token stop) noexcept;
     void SetupThread() noexcept;
@@ -125,6 +135,12 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::atomic<double> yaw_offset_deg_{0.0};
     std::atomic<std::uint32_t> recentre_until_seq_{0};
     mutable std::atomic<bool> recentre_hold_{false};
+
+    // Diagnostics-only SDK stamp (see `LastSdkSeconds`). Written by the polling
+    // thread before the matching publish; `has_sdk_seconds_` is the release
+    // flag that makes it readable.
+    std::atomic<double> last_sdk_seconds_{0.0};
+    std::atomic<bool> has_sdk_seconds_{false};
 };
 
 } // namespace cg::glasses

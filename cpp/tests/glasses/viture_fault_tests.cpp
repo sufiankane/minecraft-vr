@@ -342,5 +342,39 @@ TEST(VitureFault, ThreadSetupHookRunsOnThePollingThread) {
     source.Stop();
 }
 
+/// `LastSdkSeconds` is the diagnostics accessor the probe records: empty
+/// before the first publish, then the SDK seconds stamp of the newest
+/// published sample. The poll gate makes the two stamps deterministic.
+TEST(VitureFault, LastSdkSecondsTracksNewestPublishedSample) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    constexpr std::int64_t kFirstSdkNs = 5'000'000'000;
+    constexpr std::int64_t kSecondSdkNs = 5'100'000'000;
+    api.samples = {CgSample(1, kFirstSdkNs, CG_TRACK_STABLE, 0.0), CgSample(2, kSecondSdkNs, CG_TRACK_STABLE, 1.0)};
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_FALSE(source.LastSdkSeconds().has_value()) << "the stamp must be empty before the first publish";
+
+    api.SetPollGate(true);
+    ASSERT_TRUE(source.Start().ok());
+    api.AllowOnePoll();
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+    ASSERT_TRUE(source.LastSdkSeconds().has_value());
+    EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kFirstSdkNs));
+
+    api.AllowOnePoll();
+    HeadSample second = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, second, 2U));
+    ASSERT_TRUE(source.LastSdkSeconds().has_value());
+    EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kSecondSdkNs));
+
+    source.Stop();
+    // Stop is total and keeps the newest sample readable, so the stamp stays too.
+    ASSERT_TRUE(source.TryGetLatest(second, Duration{0}));
+    ASSERT_TRUE(source.LastSdkSeconds().has_value());
+    EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kSecondSdkNs));
+}
+
 } // namespace
 } // namespace cg::glasses::test
