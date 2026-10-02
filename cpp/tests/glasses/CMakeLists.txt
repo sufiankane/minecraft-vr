@@ -3,6 +3,7 @@ add_executable(
     contract_tests.cpp
     display_control_tests.cpp
     replay_tests.cpp
+    thread_safety_tests.cpp
     viture_fault_tests.cpp
     viture_loader_tests.cpp
 )
