@@ -128,6 +128,30 @@ namespace Cubeglass.Unity.Input
             yawDegrees = degrees;
         }
 
+        /// <summary>Sets the base orientation in internal degrees (keeps position).</summary>
+        public void SetOrientation(float yaw, float pitch, float roll)
+        {
+            yawDegrees = yaw;
+            pitchDegrees = pitch;
+            rollDegrees = roll;
+        }
+
+        /// <summary>
+        /// Returns the script to the internal forward pose: base yaw/pitch/roll
+        /// zero at the current position and zero angular rates.
+        /// </summary>
+        public void Recenter()
+        {
+            SetOrientation(0f, 0f, 0f);
+            SetRates(0f, 0f, 0f);
+        }
+
+        /// <summary>The scripted position in the internal frame.</summary>
+        public Vector3 Position
+        {
+            get { return positionMeters; }
+        }
+
         /// <summary>Sets the constant per-axis angular rate in degrees per second.</summary>
         public void SetRates(float yawPerSecond, float pitchPerSecond, float rollPerSecond)
         {
