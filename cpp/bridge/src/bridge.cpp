@@ -87,7 +87,15 @@ std::int64_t now_ns() noexcept {
 
 bool header_is_valid(const BridgeHandle &handle) noexcept {
     const auto *header = reinterpret_cast<const ShmHeader *>(handle.base);
-    return header->magic == kShmMagic && header->abi_version == kShmAbiVersion && header->header_size == kHeaderSize;
+    // The open retry can observe the header while the writer is still storing
+    // its fields, so validate through atomic loads (paired with a writer that
+    // publishes the fields).
+    const bool magic = std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_acquire) == kShmMagic;
+    const bool abi =
+        std::atomic_ref<const std::uint32_t>(header->abi_version).load(std::memory_order_acquire) == kShmAbiVersion;
+    const bool size =
+        std::atomic_ref<const std::uint32_t>(header->header_size).load(std::memory_order_acquire) == kHeaderSize;
+    return magic && abi && size;
 }
 
 /// Copies a seqlock payload word-wise through relaxed atomic accesses. The
@@ -296,8 +304,10 @@ cg_status cg_bridge_open(void **out_handle) {
             // A zero magic means the region exists but has not been
             // initialised (or its writer died mid-init): the soft NotReady.
             // Anything else is a foreign or incompatible region.
+            const auto *header = reinterpret_cast<const cg::bridge::ShmHeader *>(handle->base);
             const bool magic_present =
-                reinterpret_cast<const cg::bridge::ShmHeader *>(handle->base)->magic == cg::bridge::kShmMagic;
+                std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_relaxed) ==
+                cg::bridge::kShmMagic;
             cg_bridge_close(handle);
             return magic_present ? CG_ERR_UNSUPPORTED : CG_ERR_NOT_READY;
         }

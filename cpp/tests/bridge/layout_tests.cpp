@@ -127,10 +127,10 @@ TEST(ShmLayout, ProtocolConstantsMatchDossier56) {
 
 TEST(ShmLayout, StaleRuleIsStrictlyAfterThe250MsBoundary) {
     constexpr cg_time_ns now = 10'000'000'000;
-    EXPECT_FALSE(is_stale(now, now));                        // fresh
-    EXPECT_FALSE(is_stale(now, now - kStaleAfterNs));        // exactly 250 ms: still fresh
-    EXPECT_TRUE(is_stale(now, now - kStaleAfterNs - 1));     // one nanosecond past the boundary
-    EXPECT_FALSE(is_stale(now, now + kStaleAfterNs));        // future heartbeat: fresh
+    EXPECT_FALSE(is_stale(now, now));                    // fresh
+    EXPECT_FALSE(is_stale(now, now - kStaleAfterNs));    // exactly 250 ms: still fresh
+    EXPECT_TRUE(is_stale(now, now - kStaleAfterNs - 1)); // one nanosecond past the boundary
+    EXPECT_FALSE(is_stale(now, now + kStaleAfterNs));    // future heartbeat: fresh
 }
 
 TEST(ShmLayout, PayloadSizesDocumentTheCompilerPadding) {

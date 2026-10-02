@@ -51,9 +51,7 @@ inline constexpr std::int64_t kStaleAfterNs = 250'000'000;
 /// `now - heartbeat` is strictly greater than 250 ms, so exactly 250 ms is
 /// still fresh. `now` and `heartbeat` are nanoseconds from the same monotonic
 /// clock (`std::chrono::steady_clock`).
-inline bool is_stale(std::int64_t now, std::int64_t heartbeat) noexcept {
-    return now - heartbeat > kStaleAfterNs;
-}
+inline bool is_stale(std::int64_t now, std::int64_t heartbeat) noexcept { return now - heartbeat > kStaleAfterNs; }
 
 /// Fixed 64-byte region header. Bytes 32..39 were reserved in 5.6; ADR-0010
 /// (R43) extends the reserved window with a command word and its ack, which

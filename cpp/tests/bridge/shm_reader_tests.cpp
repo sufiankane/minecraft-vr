@@ -7,10 +7,12 @@
 #include "cg/bridge/test_writer.h"
 #include "cg_unity_bridge.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -88,7 +90,7 @@ class RawRegionView {
         if (fd_ < 0) {
             return false;
         }
-        void *view = mmap(nullptr, sizeof(std::uint64_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
+        void *view = mmap(nullptr, kHeaderSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd_, 0);
         if (view == MAP_FAILED) {
             close(fd_);
             fd_ = -1;
@@ -100,6 +102,18 @@ class RawRegionView {
     }
 
     void ZeroMagic() const noexcept { std::memset(base_, 0, sizeof(std::uint64_t)); }
+
+    /// Stores the three header fields the open validation checks, with the
+    /// release semantics the bridge's atomic validation pairs with. Used to
+    /// complete a region the open retry is already watching.
+    void InitialiseHeader() const noexcept {
+        std::atomic_ref<std::uint64_t>(*reinterpret_cast<std::uint64_t *>(base_))
+            .store(kShmMagic, std::memory_order_release);
+        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version)))
+            .store(kShmAbiVersion, std::memory_order_release);
+        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, header_size)))
+            .store(kHeaderSize, std::memory_order_release);
+    }
 
     void SetAbiVersion(std::uint32_t version) const noexcept {
         auto *abi = reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version));
@@ -118,7 +132,7 @@ class RawRegionView {
         mapping_ = nullptr;
 #elif defined(__unix__) || defined(__APPLE__)
         if (base_ != nullptr) {
-            munmap(base_, sizeof(std::uint64_t));
+            munmap(base_, kHeaderSize);
         }
         if (fd_ >= 0) {
             close(fd_);
@@ -261,6 +275,32 @@ TEST_F(ShmReaderTest, IncompatibleHeaderReportsUnsupportedAfterTheInitWindow) {
     void *handle = nullptr;
     EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
     EXPECT_EQ(handle, nullptr);
+}
+
+TEST_F(ShmReaderTest, OpenRecoversWhenTheHeaderInitialisesWithinTheRetryWindow) {
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+    view.ZeroMagic();
+
+    // The helper thread is created (and warm) before the open starts, then
+    // completes the header a short delay into the bounded retry window.
+    std::atomic<bool> start{false};
+    std::thread initialiser([&view, &start] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        view.InitialiseHeader();
+    });
+
+    start.store(true, std::memory_order_release);
+    void *handle = nullptr;
+    const cg_status status = cg_bridge_open(&handle);
+    initialiser.join();
+
+    EXPECT_EQ(status, CG_OK);
+    EXPECT_NE(handle, nullptr);
+    cg_bridge_close(handle);
 }
 
 TEST_F(ShmReaderTest, SendCommandReachesWriterAndAckIsWriterSideOnly) {
