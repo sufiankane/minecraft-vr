@@ -11,11 +11,15 @@ namespace Cubeglass.Mesh
     /// The five stream fields are exactly the section 5.10 declaration;
     /// <see cref="VertexCount"/>, <see cref="IndexCount"/>, <see cref="Min"/>,
     /// <see cref="Max"/> and <see cref="Release"/> are additive and recorded
-    /// in ADR-0007. The streams are windows over private arrays owned by the
-    /// origin <see cref="MeshBufferPool"/>: Task 1 allocates fresh arrays per
-    /// build (no pooling yet), Task 4 adds capacity buckets and the zero
-    /// allocation gate. <see cref="Release"/> returns every buffer exactly
-    /// once; a second call throws.
+    /// in ADR-0007. The streams are windows over full-capacity arrays owned by
+    /// the origin <see cref="MeshBufferPool"/>, which also pools the
+    /// <see cref="MeshData"/> wrapper itself so a steady-state build allocates
+    /// nothing. <see cref="Release"/> returns every buffer exactly once, then
+    /// the wrapper; a second call throws. Buffers are returned before the
+    /// public windows are cleared, so a throwing return cannot strand the
+    /// buffers behind defaulted fields. Using a mesh after
+    /// <see cref="Release"/> (or calling <see cref="Release"/> twice) is
+    /// invalid; the wrapper may already have been re-issued to another build.
     /// </remarks>
     public sealed class MeshData
     {
@@ -32,15 +36,41 @@ namespace Cubeglass.Mesh
 #pragma warning restore CA1051
 
         private readonly MeshBufferPool _pool;
-        private readonly Vector3f[] _positions;
-        private readonly Vector3f[] _normals;
-        private readonly Vector2f[] _uvs;
-        private readonly byte[] _ao;
-        private readonly int[] _indices;
-        private bool _released;
+        private Vector3f[] _positions = Array.Empty<Vector3f>();
+        private Vector3f[] _normals = Array.Empty<Vector3f>();
+        private Vector2f[] _uvs = Array.Empty<Vector2f>();
+        private byte[] _ao = Array.Empty<byte>();
+        private int[] _indices = Array.Empty<int>();
+        private bool _released = true;
 
-        internal MeshData(
-            MeshBufferPool pool,
+        internal MeshData(MeshBufferPool pool)
+        {
+            _pool = pool;
+        }
+
+        /// <summary>The number of vertices in every vertex stream.</summary>
+        public int VertexCount { get; private set; }
+
+        /// <summary>The number of indices, six per emitted quad.</summary>
+        public int IndexCount { get; private set; }
+
+        /// <summary>
+        /// The inclusive minimum of every position, or the origin for an empty
+        /// mesh.
+        /// </summary>
+        public Vector3f Min { get; private set; }
+
+        /// <summary>
+        /// The inclusive maximum of every position, or the origin for an empty
+        /// mesh.
+        /// </summary>
+        public Vector3f Max { get; private set; }
+
+        /// <summary>
+        /// Wraps freshly built, pool-owned arrays as the five public windows.
+        /// Called by the meshers before the mesh is returned to the caller.
+        /// </summary>
+        internal void Initialize(
             Vector3f[] positions,
             Vector3f[] normals,
             Vector2f[] uvs,
@@ -51,7 +81,6 @@ namespace Cubeglass.Mesh
             Vector3f min,
             Vector3f max)
         {
-            _pool = pool;
             _positions = positions;
             _normals = normals;
             _uvs = uvs;
@@ -68,28 +97,12 @@ namespace Cubeglass.Mesh
             IndexCount = indexCount;
             Min = min;
             Max = max;
+            _released = false;
         }
 
-        /// <summary>The number of vertices in every vertex stream.</summary>
-        public int VertexCount { get; }
-
-        /// <summary>The number of indices, six per emitted quad.</summary>
-        public int IndexCount { get; }
-
         /// <summary>
-        /// The inclusive minimum of every position, or the origin for an empty
-        /// mesh.
-        /// </summary>
-        public Vector3f Min { get; }
-
-        /// <summary>
-        /// The inclusive maximum of every position, or the origin for an empty
-        /// mesh.
-        /// </summary>
-        public Vector3f Max { get; }
-
-        /// <summary>
-        /// Returns every buffer to its origin pool. Call exactly once.
+        /// Returns every buffer to its origin pool, then the wrapper. Call
+        /// exactly once.
         /// </summary>
         /// <exception cref="InvalidOperationException">
         /// <see cref="Release"/> was already called.
@@ -101,18 +114,19 @@ namespace Cubeglass.Mesh
                 throw new InvalidOperationException("MeshData.Release() may be called only once.");
             }
 
+            _pool.Return(_positions);
+            _pool.Return(_normals);
+            _pool.Return(_uvs);
+            _pool.Return(_ao);
+            _pool.Return(_indices);
+
             _released = true;
             Positions = default;
             Normals = default;
             Uvs = default;
             Ao = default;
             Indices = default;
-
-            _pool.Return(_positions);
-            _pool.Return(_normals);
-            _pool.Return(_uvs);
-            _pool.Return(_ao);
-            _pool.Return(_indices);
+            _pool.ReturnMeshData(this);
         }
     }
 }
