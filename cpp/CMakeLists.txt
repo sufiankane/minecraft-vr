@@ -21,6 +21,7 @@ enable_testing()
 find_package(GTest CONFIG REQUIRED)
 
 add_subdirectory(core-math)
+add_subdirectory(glasses)
 add_subdirectory(tests)
 
 if(CG_BUILD_BENCHMARKS)
