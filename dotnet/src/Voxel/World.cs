@@ -73,6 +73,40 @@ namespace Cubeglass.Voxel
         }
 
         /// <summary>
+        /// Builds a read-only view of the loaded chunks around
+        /// <paramref name="coord"/> for border meshing (ADR-0007). Chunks that
+        /// are not loaded are absent from the view and read as
+        /// <see cref="BlockId.Air"/>.
+        /// </summary>
+        public NeighbourSnapshot CreateNeighbourSnapshot(ChunkCoord coord)
+        {
+            var neighbours = new ChunkSnapshot?[NeighbourSnapshot.DirectionCount];
+
+            for (int dz = -1; dz <= 1; dz++)
+            {
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        if (dx == 0 && dy == 0 && dz == 0)
+                        {
+                            continue;
+                        }
+
+                        var neighbourCoord = new ChunkCoord(coord.X + dx, coord.Y + dy, coord.Z + dz);
+                        if (_chunks.TryGetValue(neighbourCoord, out Chunk? chunk))
+                        {
+                            var direction = new Int3(dx, dy, dz);
+                            neighbours[NeighbourSnapshot.Index(direction)] = chunk.Snapshot();
+                        }
+                    }
+                }
+            }
+
+            return new NeighbourSnapshot(coord, neighbours);
+        }
+
+        /// <summary>
         /// Loads <paramref name="chunk"/>, replacing any chunk with the same
         /// coordinate, for tests and S7 streaming.
         /// </summary>

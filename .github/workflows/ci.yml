@@ -166,23 +166,32 @@ jobs:
         working-directory: .
         run: python -m pip install -e python
 
-      - name: Test with coverage
+      - name: Build solution
+        run: dotnet build Cubeglass.sln --configuration Release
+
+      - name: Test CoreMath with coverage
         run: >-
-          dotnet test Cubeglass.sln --configuration Release
-          --collect:"XPlat Code Coverage" --results-directory ./coverage
+          dotnet test tests/CoreMath.Tests/Cubeglass.CoreMath.Tests.csproj
+          --configuration Release --collect:"XPlat Code Coverage"
+          --results-directory ./coverage/coremath
+
+      - name: Test Voxel with coverage
+        run: >-
+          dotnet test tests/Voxel.Tests/Cubeglass.Voxel.Tests.csproj
+          --configuration Release --collect:"XPlat Code Coverage"
+          --results-directory ./coverage/voxel
+
+      - name: Test Mesh with coverage
+        run: >-
+          dotnet test tests/Mesh.Tests/Cubeglass.Mesh.Tests.csproj
+          --configuration Release --collect:"XPlat Code Coverage"
+          --results-directory ./coverage/mesh
 
       - name: Enforce CoreMath coverage floor
         run: |
-          report=""
-          for candidate in coverage/*/coverage.cobertura.xml; do
-            [ -f "$candidate" ] || continue
-            if grep -q '<source>[^<]*src/CoreMath/</source>' "$candidate"; then
-              report="$candidate"
-              break
-            fi
-          done
+          report=$(find coverage/coremath -name 'coverage.cobertura.xml' | head -n 1)
           test -n "$report" || {
-            echo "ERROR: no coverage report rooted at src/CoreMath/ was found under coverage/*/coverage.cobertura.xml" >&2
+            echo "ERROR: no coverage.cobertura.xml was found under coverage/coremath" >&2
             exit 1
           }
           echo "Enforcing floor against ${report}"
@@ -190,16 +199,9 @@ jobs:
 
       - name: Enforce Voxel coverage floor
         run: |
-          report=""
-          for candidate in coverage/*/coverage.cobertura.xml; do
-            [ -f "$candidate" ] || continue
-            if grep -q '<package name="Cubeglass.Voxel"' "$candidate"; then
-              report="$candidate"
-              break
-            fi
-          done
+          report=$(find coverage/voxel -name 'coverage.cobertura.xml' | head -n 1)
           test -n "$report" || {
-            echo "ERROR: no coverage report containing the Cubeglass.Voxel package was found under coverage/*/coverage.cobertura.xml" >&2
+            echo "ERROR: no coverage.cobertura.xml was found under coverage/voxel" >&2
             exit 1
           }
           echo "Enforcing floor against ${report}"
