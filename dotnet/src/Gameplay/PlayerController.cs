@@ -116,18 +116,18 @@ namespace Cubeglass.Gameplay
 
             double displacementY = 0.5 * (velocityY0 + velocityY) * dt;
 
-            MoveX(player, world, velocityX, dt, ref velocityX);
-            MoveZ(player, world, velocityZ, dt, ref velocityZ);
-            MoveY(player, world, velocityY, displacementY, ref velocityY);
+            velocityX = MoveX(player, world, velocityX, dt);
+            velocityZ = MoveZ(player, world, velocityZ, dt);
+            velocityY = MoveY(player, world, velocityY, displacementY);
 
             player.Velocity = new Vec3(velocityX, velocityY, velocityZ);
         }
 
-        private static void MoveX(PlayerState player, IWorld world, double velocity, double dt, ref double resolvedVelocity)
+        private static double MoveX(PlayerState player, IWorld world, double velocity, double dt)
         {
             if (velocity == 0.0)
             {
-                return;
+                return 0.0;
             }
 
             double start = player.Position.X;
@@ -137,15 +137,17 @@ namespace Cubeglass.Gameplay
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(start, player.Position.Y, player.Position.Z);
-                resolvedVelocity = 0.0;
+                return 0.0;
             }
+
+            return velocity;
         }
 
-        private static void MoveZ(PlayerState player, IWorld world, double velocity, double dt, ref double resolvedVelocity)
+        private static double MoveZ(PlayerState player, IWorld world, double velocity, double dt)
         {
             if (velocity == 0.0)
             {
-                return;
+                return 0.0;
             }
 
             double start = player.Position.Z;
@@ -155,29 +157,25 @@ namespace Cubeglass.Gameplay
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(player.Position.X, player.Position.Y, start);
-                resolvedVelocity = 0.0;
+                return 0.0;
             }
+
+            return velocity;
         }
 
-        private static void MoveY(PlayerState player, IWorld world, double velocity, double displacement, ref double resolvedVelocity)
+        private static double MoveY(PlayerState player, IWorld world, double velocity, double displacement)
         {
-            if (displacement == 0.0 && velocity == 0.0)
-            {
-                return;
-            }
-
             double start = player.Position.Y;
             player.Position = new Vec3(player.Position.X, start + displacement, player.Position.Z);
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(player.Position.X, start, player.Position.Z);
                 player.OnGround = velocity <= 0.0;
-                resolvedVelocity = 0.0;
+                return 0.0;
             }
-            else
-            {
-                player.OnGround = false;
-            }
+
+            player.OnGround = false;
+            return velocity;
         }
 
         private static void ClampPitch(PlayerState player)
