@@ -1,7 +1,8 @@
 {
   "cpp": { "core-math": { "forbidIncludes": ["windows.h", "onnxruntime", "xr_", "viture", "thread", "fstream", "filesystem", "mutex"] },
            "handcore":  { "forbidIncludes": ["windows.h", "onnxruntime", "xr_", "viture", "thread", "fstream", "filesystem", "mutex"] },
-           "glasses":   { "forbidIncludes": ["onnxruntime"] } },
+           "glasses":   { "forbidIncludes": ["onnxruntime"] },
+           "bridge":    { "forbidIncludes": ["onnxruntime"] } },
   "dotnet": { "Cubeglass.CoreMath": { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": [] },
               "Cubeglass.Voxel":     { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
