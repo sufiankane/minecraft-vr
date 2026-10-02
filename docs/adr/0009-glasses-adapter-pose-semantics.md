@@ -139,6 +139,39 @@ increasing across a restart. The suite these rules are pinned by is
 factories; Viture-over-`FakeVitureApi` and replay register their own factories
 in Tasks 2 and 3.
 
+### Viture SDK seam and loader (S5 Task 2a)
+
+Every vendor call goes through `IVitureApi`
+(`cpp/glasses/include/cg/glasses/viture_api.hpp`): `CreateDevice`,
+`DestroyDevice`, `StartPose`, `PollPose` (blocking, capped at
+`kViturePollTimeoutNs` = 100 ms), `ResetOriginCarina`, `SetDisplayMode`,
+`GetRefreshHz`, `SdkVersion` and `RequestStop`. One polling thread owns the
+session; `RequestStop` is the only cross-thread call, is thread-safe and
+`noexcept`, and must make a blocked `PollPose` return promptly with `Timeout`;
+`StartPose` clears it. Time enters the wrapper as an injected
+`IHostClock` (`SteadyHostClock` in production, `ManualHostClock` in tests). No
+translation unit includes a vendor header; tests drive `FakeVitureApi`
+(`cpp/tests/glasses/fake_viture_api.hpp`), which scripts a `Result` per call,
+counts calls and blocks a long poll until `RequestStop`.
+
+`LoadVitureApi(dll_path)` (`cpp/glasses/src/viture_loader.cpp`) is the only TU
+that opens the vendor library (`LoadLibraryW`/`GetProcAddress` on Windows,
+`dlopen`/`dlsym` on POSIX). An empty path is `InvalidArgument`; a library that
+cannot be opened, or an unresolved entry point, is `Unsupported` with the path
+or symbol name in the message (the message is interned because `Status` is
+non-owning). The returned API owns the library handle.
+
+**Vendor symbol binding (pending HIL).** The exact exported symbol names, the
+calling convention and the blocking behaviour of the VITURE SDK are not covered
+by dossier facts F-01..F-10; F-02/F-04 describe the Carina poll and recentre
+calls in prose only, and the display-mode surface is U-08. The function-pointer
+table in `viture_loader.cpp` therefore uses documented placeholder names and
+contract-shaped signatures. Until the HIL run answers this, loading the real
+library fails with `Unsupported` naming the first unresolved placeholder; the
+table and its thin adapter are rewritten in that single TU when the answers
+exist. The loader is tested on the error paths only (missing library, empty
+path), which is all that is testable without the vendor DLL.
+
 ### Recentre
 
 `Recenter` means "make the current heading yaw zero" (FR-08, F-04). Yaw is the
@@ -204,6 +237,11 @@ is provisional until then). This section is filled in before
   The concurrent slot case tolerates transient false reads and asserts zero
   torn and zero out-of-order samples; it passes under `--gtest_repeat=100`
   against a tight writer.
+- `cpp/tests/glasses/viture_loader_tests.cpp` pins the loader error paths: a
+  missing library is `Unsupported` with the path in the message, and an empty
+  path is `InvalidArgument`. The `IVitureApi` seam and `FakeVitureApi` are
+  exercised by the Task 2b fault/contract suites under the same `glasses`
+  ctest entry.
 - `ctest --preset ci` registers the suite as `glasses`.
 - `python -m depcheck --root .` enforces the `glasses` layer's ONNX Runtime ban.
 
