@@ -40,10 +40,11 @@ namespace Cubeglass.Gameplay
     ///   <term>Idle -> Placing</term>
     ///   <description>
     ///   <see cref="InputFrame.Secondary"/> is
-    ///   <see cref="ButtonState.Pressed"/> (an edge) and the placement command
-    ///   was accepted. A rejected placement (no solid target, no
-    ///   <see cref="Cubeglass.Voxel.VoxelCollision.CanPlace"/> or a mismatched
-    ///   expectation) stays <see cref="Idle"/>.
+    ///   <see cref="ButtonState.Pressed"/> (an edge), the selected hotbar slot
+    ///   holds a non-air block and the placement command was accepted. A
+    ///   selected air slot is skipped; a rejected placement (no solid target,
+    ///   no <see cref="Cubeglass.Voxel.VoxelCollision.CanPlace"/> or a
+    ///   mismatched expectation) stays <see cref="Idle"/>.
     ///   </description>
     /// </item>
     /// <item>

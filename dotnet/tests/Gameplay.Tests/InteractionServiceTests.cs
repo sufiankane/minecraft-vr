@@ -390,6 +390,27 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void AirSlotPlacementIsIgnoredWithoutAnEditOrChunkChange()
+        {
+            InteractionService service = NewService();
+            World world = FloorWorld();
+            PlayerState player = Player(8, 1, 8, hotbar: 5);
+            int chunkChanges = 0;
+            world.ChunkChanged += _ => chunkChanges++;
+            ulong before = Hash(world);
+
+            InteractionResult result = service.Update(
+                Frame(secondary: ButtonState.Pressed, pointer: Down(new Int3(2, 0, 2))), world, player, Dt);
+
+            Assert.That(result.Target.GetValueOrDefault(), Is.EqualTo(new Int3(2, 0, 2)));
+            Assert.That(result.Edited, Is.False, "an air-slot placement issues no command");
+            Assert.That(service.State, Is.EqualTo(InteractionState.Idle));
+            Assert.That(world.Get(new Int3(2, 1, 2)), Is.EqualTo(BlockId.Air));
+            Assert.That(chunkChanges, Is.EqualTo(0), "no Air -> Air Apply means no ChunkChanged");
+            Assert.That(Hash(world), Is.EqualTo(before));
+        }
+
+        [Test]
         public void HotbarDeltaCyclesAndWrapsOnThePlayerState()
         {
             InteractionService service = NewService();
@@ -803,7 +824,7 @@ namespace Cubeglass.Gameplay.Tests
                     throw new InvalidOperationException($"the world changed without Edited at step {step}");
                 }
 
-                if (result.Edited && !changed && !IsAirPlacementNoOp(script[step], player.HotbarIndex))
+                if (result.Edited && !changed)
                 {
                     throw new InvalidOperationException($"Edited was reported with no world change at step {step}");
                 }
@@ -859,31 +880,6 @@ namespace Cubeglass.Gameplay.Tests
                     return new PointerRay(new Vec3(double.NaN, 0, 0), new Vec3(0, -1, 0));
                 default:
                     return new PointerRay(new Vec3(4.5, 3.0, 4.5), new Vec3(0, 1, 0));
-            }
-        }
-
-        private static bool IsAirPlacementNoOp(int value, int hotbarIndex)
-        {
-            bool secondaryPressed = ((value >> 5) & 1) == 0;
-            return secondaryPressed && DefaultHotbarBlock(hotbarIndex) == BlockId.Air;
-        }
-
-        private static BlockId DefaultHotbarBlock(int index)
-        {
-            switch (Hotbar.WrapIndex(index))
-            {
-                case 0:
-                    return new BlockId(1);
-                case 1:
-                    return new BlockId(2);
-                case 2:
-                    return new BlockId(3);
-                case 3:
-                    return new BlockId(4);
-                case 4:
-                    return new BlockId(5);
-                default:
-                    return BlockId.Air;
             }
         }
 

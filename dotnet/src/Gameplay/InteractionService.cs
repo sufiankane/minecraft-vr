@@ -33,8 +33,11 @@ namespace Cubeglass.Gameplay
     /// <see cref="InputFrame.Secondary"/> applies
     /// <c>EditCommand(cell + normal, expected: Air, new: hotbar.Selected)</c>
     /// when <see cref="VoxelCollision.CanPlace"/> accepts the cell against the
-    /// player body. A rejected placement (no solid target, overlap, unloaded
-    /// cell or a mismatched expectation) produces no edit and leaves the state
+    /// player body. A selected Air slot is ignored: it would apply an
+    /// <c>Air -> Air</c> no-op, so no command is issued at all. Any rejected
+    /// placement (no solid target, no
+    /// <see cref="VoxelCollision.CanPlace"/> or a mismatched expectation)
+    /// produces no edit and leaves the state
     /// <see cref="InteractionState.Idle"/>.
     /// </para>
     /// <para>
@@ -178,11 +181,12 @@ namespace Cubeglass.Gameplay
             }
 
             bool placed = false;
-            if (hit.HasValue && input.Secondary == ButtonState.Pressed)
+            BlockId selected = _hotbar.Selected;
+            if (hit.HasValue && input.Secondary == ButtonState.Pressed && selected != BlockId.Air)
             {
                 Int3 placeCell = target!.Value + hit.Value.Normal;
                 if (VoxelCollision.CanPlace(world, placeCell, player.Body)
-                    && world.Apply(new EditCommand(placeCell, BlockId.Air, _hotbar.Selected, 0)) == EditResult.Applied)
+                    && world.Apply(new EditCommand(placeCell, BlockId.Air, selected, 0)) == EditResult.Applied)
                 {
                     edited = true;
                     placed = true;

@@ -31,6 +31,11 @@ namespace Cubeglass.Gameplay.Tests
     /// <c>expected.worldHash</c>. JSON parsing (System.Text.Json) lives here in
     /// the test project; <c>Cubeglass.Gameplay</c> stays JSON-free (ADR-0008).
     /// </para>
+    /// <para>
+    /// The optional <c>seed</c> field is provenance only: the S4 scenarios are
+    /// deterministic scripted replays and use no random number generator. It
+    /// is validated as an integer when present.
+    /// </para>
     /// </remarks>
     internal static class ScenarioRunner
     {
@@ -134,6 +139,17 @@ namespace Cubeglass.Gameplay.Tests
 
             scenario.StepPhysics = root.TryGetProperty("stepPhysics", out JsonElement physics)
                 && physics.GetBoolean();
+
+            if (root.TryGetProperty("seed", out JsonElement seed))
+            {
+                int seedValue = 0;
+                if (seed.ValueKind != JsonValueKind.Number || !seed.TryGetInt32(out seedValue))
+                {
+                    Assert.Fail($"{context}: seed must be an integer");
+                }
+
+                scenario.Seed = seedValue;
+            }
 
             JsonElement player = Require(root, "player", context);
             scenario.Player.Position = Vec3From(Require(player, "position", context), context);
@@ -603,6 +619,7 @@ namespace Cubeglass.Gameplay.Tests
         private sealed class ScenarioData
         {
             internal string Name = string.Empty;
+            internal int? Seed;
             internal double Dt;
             internal int Steps;
             internal bool StepPhysics;

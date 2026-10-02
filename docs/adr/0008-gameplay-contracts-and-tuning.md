@@ -147,6 +147,8 @@ constants.
 | Turn snap | degrees/second applied to yaw; keyboard-only in S4 (pointer/mouse later) | `InputFrame.TurnSnap` |
 | Pitch clamp | +/-89 degrees (1.5533430342749532 rad) | `PlayerController.MaxPitchRadians` |
 | Reach | 5.0 m | Task 2 target selection |
+| View-ray eye height | 0.9 m above the feet centre (`PlayerState.BodyHeight`) | Task 2 fallback targeting |
+| Edit tick | 0 (clockless S4; S7 supplies ticks) | Task 2 `EditCommand.Tick` |
 | Break time | `seconds = max(0.05, hardness)` from `BlockDefinition.Hardness` (stone 1.5 s, wood 2.0 s) | Task 2 (R30) |
 | Break repeat | none in S4: hold accumulates to one edit at completion; release, target change or a >200 ms tracking loss resets progress | Task 2 |
 | Place repeat | none in S4: `Secondary == Pressed` edge only | Task 2 |
@@ -214,6 +216,27 @@ In S4 the interaction service handles `InputFrame.RecenterPressed` by setting
 its state; wiring the VITURE `reset_origin_carina` path is S5. `PlayerController`
 does not consume the recentre flag.
 
+### Interaction targeting and edits (Task 2)
+
+The interaction service targets the cell hit by the frame's `Pointer` when it
+is present and finite; otherwise it casts the view ray. The view-ray origin is
+the eye at `PlayerState.Position + (0, 0.9, 0)` — the recorded `BodyHeight`
+above the feet centre, because the dossier defines no separate eye height — and
+its unit direction follows ADR-0004's right-handed, Y-up axes with the same
+forward convention as `PlayerController`:
+
+    direction = (-sin(yaw) * cos(pitch), sin(pitch), -cos(yaw) * cos(pitch))
+
+so yaw 0 at pitch 0 faces -Z, positive yaw turns toward -X, positive pitch
+looks up, and pitch is clamped to +/-89 degrees
+(`PlayerController.MaxPitchRadians`) before the ray is built. Both the pointer
+and the view ray are limited to the 5.0 m reach.
+
+Edits are clockless in S4: the service issues
+`EditCommand(cell, expected, new, tick: 0)` for breaks and placements. Logical
+ticks arrive with a later journaling stage (S7); until then `Tick` is always 0
+and is not interpreted by `IWorld.Apply`.
+
 ### Hotbar
 
 `Hotbar` has `SlotCount = 9`, `SelectedIndex` (get), `Selected` (the
@@ -264,6 +287,13 @@ part of S4.
   `dt` edge rules, null rejection and zero allocation over 100,000 steps.
 - `TestWorlds.cs` builds its fixtures through the public `IWorld.Apply` path so
   the tests do not depend on Voxel internals.
+- `dotnet/tests/Gameplay.Tests/InteractionServiceTests.cs` and the JSON
+  scenarios under `dotnet/tests/Gameplay.Tests/scenarios/` pin the Task 2
+  conventions above (pointer-preferred/view-ray-fallback targeting with the
+  pitch clamp, hold-to-break timing and resets, placement legality including
+  the air-slot skip, hotbar cycling, recentre, the 200 ms tracking-loss
+  boundary, `Tick == 0`, determinism, zero allocation and an FsCheck property
+  over random input sequences).
 - `python -m depcheck --root .` keeps `Cubeglass.Gameplay` free of
   `UnityEngine`, `UnityEditor`, `System.IO` and `System.Threading` and limited
   to the CoreMath + Voxel references.
