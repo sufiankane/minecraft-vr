@@ -1,0 +1,32 @@
+{
+  "name": "break",
+  "description": "Stone hardness 1.5 s at dt 0.1: Pressed arms nothing, the 15th Held frame applies the break, the next frame retargets the floor.",
+  "seed": 20261002,
+  "dt": 0.1,
+  "steps": 17,
+  "player": { "position": [8.0, 1.0, 8.0], "yaw": 0.0, "pitch": 0.0, "hotbarIndex": 0 },
+  "blocks": [
+    { "from": [0, 0, 0], "to": [15, 0, 15], "block": 1 },
+    { "cell": [2, 1, 4], "block": 1 }
+  ],
+  "hashBounds": { "min": [0, 0, 0], "max": [15, 5, 15] },
+  "frames": [
+    { "time": 0.0, "primary": "Pressed", "pointer": { "origin": [2.5, 3.0, 4.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" },
+    { "time": 0.1, "primary": "Held", "pointer": { "origin": [2.5, 3.0, 4.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" }
+  ],
+  "modelEdits": [
+    { "cell": [2, 1, 4], "expected": 1, "new": 0 }
+  ],
+  "observations": [
+    { "step": 0, "edited": false, "breakInProgress": false, "breakProgress": 0.0, "target": [2, 1, 4], "state": "Idle" },
+    { "step": 1, "edited": false, "breakInProgress": true, "breakProgress": 0.066667, "target": [2, 1, 4], "state": "Breaking" },
+    { "step": 14, "edited": false, "breakProgress": 0.933333, "target": [2, 1, 4] },
+    { "step": 15, "edited": true, "breakInProgress": true, "breakProgress": 1.0, "target": [2, 1, 4], "state": "Breaking" },
+    { "step": 16, "edited": false, "target": [2, 0, 4], "breakProgress": 0.066667 }
+  ],
+  "expected": {
+    "worldHash": "0xCF5916F26DDD5725",
+    "yaw": 0.0,
+    "hotbarIndex": 0
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "walk",
+  "description": "Hold forward: the player crosses the floor, the view ray picks the wall and no edit happens.",
+  "seed": 20261002,
+  "dt": 0.02,
+  "steps": 60,
+  "stepPhysics": true,
+  "player": { "position": [8.0, 1.0, 8.0], "yaw": 0.0, "pitch": 0.0, "hotbarIndex": 0 },
+  "blocks": [
+    { "from": [0, 0, 0], "to": [15, 0, 15], "block": 1 },
+    { "cell": [8, 1, 0], "block": 1 },
+    { "cell": [8, 2, 0], "block": 1 }
+  ],
+  "hashBounds": { "min": [0, 0, 0], "max": [15, 5, 15] },
+  "frames": [
+    { "time": 0.0, "move": [0.0, 1.0], "quality": "Good" }
+  ],
+  "modelEdits": [],
+  "observations": [
+    { "step": 0, "edited": false, "target": null },
+    { "step": 59, "edited": false, "breakInProgress": false, "target": [8, 1, 0], "position": [8.0, 1.0, 2.6] }
+  ],
+  "expected": {
+    "worldHash": "0xD3EAA06F7F47B435",
+    "yaw": 0.0,
+    "pitch": 0.0,
+    "hotbarIndex": 0,
+    "position": [8.0, 1.0, 2.6]
+  }
+}

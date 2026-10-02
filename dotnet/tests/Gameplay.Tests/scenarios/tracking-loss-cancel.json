@@ -1,0 +1,32 @@
+{
+  "name": "tracking-loss-cancel",
+  "description": "Dirt breaks in 0.5 s: loss of 0.2 s preserves progress, the first frame past 200 ms cancels without an edit, sustained loss stays inert and recovery re-arms.",
+  "seed": 20261002,
+  "dt": 0.1,
+  "steps": 11,
+  "player": { "position": [8.0, 1.0, 8.0], "yaw": 0.0, "pitch": 0.0, "hotbarIndex": 0 },
+  "blocks": [
+    { "from": [0, 0, 0], "to": [15, 0, 15], "block": 1 },
+    { "cell": [2, 1, 4], "block": 2 }
+  ],
+  "hashBounds": { "min": [0, 0, 0], "max": [15, 5, 15] },
+  "frames": [
+    { "time": 0.0, "primary": "Held", "pointer": { "origin": [2.5, 3.0, 4.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" },
+    { "time": 0.2, "primary": "Held", "pointer": { "origin": [2.5, 3.0, 4.5], "direction": [0.0, -1.0, 0.0] }, "quality": "None" },
+    { "time": 0.6, "primary": "Held", "pointer": { "origin": [2.5, 3.0, 4.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" }
+  ],
+  "modelEdits": [
+    { "cell": [2, 1, 4], "expected": 2, "new": 0 }
+  ],
+  "observations": [
+    { "step": 1, "edited": false, "breakProgress": 0.4, "target": [2, 1, 4] },
+    { "step": 3, "edited": false, "breakProgress": 0.8, "target": [2, 1, 4] },
+    { "step": 4, "edited": false, "breakInProgress": false, "breakProgress": 0.0, "target": null, "state": "Idle", "worldHash": "0xF469A9411EA3B4FB" },
+    { "step": 5, "edited": false, "target": null, "state": "Idle" },
+    { "step": 10, "edited": true, "breakInProgress": true, "breakProgress": 1.0, "target": [2, 1, 4] }
+  ],
+  "expected": {
+    "worldHash": "0xCF5916F26DDD5725",
+    "hotbarIndex": 0
+  }
+}

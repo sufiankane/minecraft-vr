@@ -1,0 +1,25 @@
+{
+  "name": "place-inside-player",
+  "description": "A placement face under the player's feet would put the block inside the player AABB: rejected, no edit, state stays Idle.",
+  "seed": 20261002,
+  "dt": 0.1,
+  "steps": 3,
+  "player": { "position": [8.0, 1.0, 8.0], "yaw": 0.0, "pitch": 0.0, "hotbarIndex": 0 },
+  "blocks": [
+    { "from": [0, 0, 0], "to": [15, 0, 15], "block": 1 }
+  ],
+  "hashBounds": { "min": [0, 0, 0], "max": [15, 5, 15] },
+  "frames": [
+    { "time": 0.0, "secondary": "Pressed", "pointer": { "origin": [8.5, 2.0, 8.5], "direction": [0.0, -1.0, 0.0] }, "quality": "Good" },
+    { "time": 0.2, "quality": "Good" }
+  ],
+  "modelEdits": [],
+  "observations": [
+    { "step": 0, "edited": false, "target": [8, 0, 8], "state": "Idle", "worldHash": "0xCF5916F26DDD5725" },
+    { "step": 1, "edited": false, "target": [8, 0, 8], "state": "Idle" }
+  ],
+  "expected": {
+    "worldHash": "0xCF5916F26DDD5725",
+    "hotbarIndex": 0
+  }
+}
