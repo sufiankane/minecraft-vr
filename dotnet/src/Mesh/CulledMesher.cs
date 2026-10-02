@@ -23,19 +23,19 @@ namespace Cubeglass.Mesh
     /// Front and <c>+X</c>/<c>-X</c> use Side. Each vertex's <c>Ao</c> byte is
     /// the ADR-0007 quantised three-neighbour level computed by
     /// <see cref="AmbientOcclusion"/>, whose samples also cross the chunk
-    /// border through the neighbour snapshot. Task 4 pools the five streams in
-    /// <see cref="MeshBufferPool"/>, so a warmed-up build and release
-    /// allocates nothing.
+    /// border through the neighbour snapshot. The five streams are rented from
+    /// the <see cref="MeshBufferPool"/> this mesher was constructed with, so a
+    /// warmed-up build and release allocates nothing. A mesher is
+    /// single-threaded: an instance is safe on one thread at a time, and
+    /// parallel callers must construct a distinct pool (and mesher) per worker
+    /// (ADR-0007).
     /// </remarks>
-    public sealed class CulledMesher : IChunkMesher
+    public sealed class CulledMesher : IChunkMesher, IMeshEmitter
     {
         private const int FaceCount = 6;
         private const int CornersPerQuad = 4;
-        private const int IndicesPerQuad = 6;
         private const int DefaultTilesPerRow = 16;
         private const int DefaultTileSize = 16;
-        private const int InitialVertexCapacity = 1024;
-        private const int InitialIndexCapacity = 2048;
 
         /// <summary>
         /// Face order <c>+X, -X, +Y, -Y, +Z, -Z</c> (ADR-0007).
@@ -75,6 +75,7 @@ namespace Cubeglass.Mesh
         };
 
         private readonly AtlasLayout _layout;
+        private readonly MeshBufferPool _pool;
 
         /// <summary>Creates a mesher over the default 16x16 atlas tiles.</summary>
         public CulledMesher()
@@ -82,121 +83,79 @@ namespace Cubeglass.Mesh
         {
         }
 
-        /// <summary>Creates a mesher over <paramref name="layout"/>.</summary>
+        /// <summary>
+        /// Creates a mesher over <paramref name="layout"/> that rents from
+        /// <see cref="MeshBufferPool.Shared"/>.
+        /// </summary>
         /// <exception cref="ArgumentNullException">
         /// <paramref name="layout"/> is null.
         /// </exception>
         public CulledMesher(AtlasLayout layout)
+            : this(layout, MeshBufferPool.Shared)
+        {
+        }
+
+        /// <summary>
+        /// Creates a mesher over <paramref name="layout"/> that rents from
+        /// <paramref name="pool"/>. Pass a pool owned by the calling worker to
+        /// mesh on several threads (ADR-0007).
+        /// </summary>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="layout"/> or <paramref name="pool"/> is null.
+        /// </exception>
+        public CulledMesher(AtlasLayout layout, MeshBufferPool pool)
         {
             _layout = layout ?? throw new ArgumentNullException(nameof(layout));
+            _pool = pool ?? throw new ArgumentNullException(nameof(pool));
         }
 
         public MeshData Build(ChunkSnapshot chunk, NeighbourSnapshot neighbours, IBlockRegistry blocks)
         {
-            if (chunk is null)
-            {
-                throw new ArgumentNullException(nameof(chunk));
-            }
+            return MesherBuild.Run(_pool, this, chunk, neighbours, blocks);
+        }
 
-            if (neighbours is null)
+        /// <summary>
+        /// Appends one quad per exposed face, cells in <c>z, y, x</c> order
+        /// and faces in the fixed ADR-0007 order.
+        /// </summary>
+        void IMeshEmitter.Emit(
+            ChunkSnapshot chunk,
+            NeighbourSnapshot neighbours,
+            IBlockRegistry blocks,
+            ref MeshBuffers buffers)
+        {
+            for (int z = 0; z < ChunkMath.ChunkSize; z++)
             {
-                throw new ArgumentNullException(nameof(neighbours));
-            }
-
-            if (blocks is null)
-            {
-                throw new ArgumentNullException(nameof(blocks));
-            }
-
-            var positions = new PooledStream<Vector3f>(MeshBufferPool.Shared, InitialVertexCapacity);
-            var normals = new PooledStream<Vector3f>(MeshBufferPool.Shared, InitialVertexCapacity);
-            var uvs = new PooledStream<Vector2f>(MeshBufferPool.Shared, InitialVertexCapacity);
-            var ao = new PooledStream<byte>(MeshBufferPool.Shared, InitialVertexCapacity);
-            var indices = new PooledStream<int>(MeshBufferPool.Shared, InitialIndexCapacity);
-
-            try
-            {
-                for (int z = 0; z < ChunkMath.ChunkSize; z++)
+                for (int y = 0; y < ChunkMath.ChunkSize; y++)
                 {
-                    for (int y = 0; y < ChunkMath.ChunkSize; y++)
+                    for (int x = 0; x < ChunkMath.ChunkSize; x++)
                     {
-                        for (int x = 0; x < ChunkMath.ChunkSize; x++)
+                        var local = new Int3(x, y, z);
+                        BlockId id = chunk.Get(local);
+                        if (id == BlockId.Air)
                         {
-                            var local = new Int3(x, y, z);
-                            BlockId id = chunk.Get(local);
-                            if (id == BlockId.Air)
+                            continue;
+                        }
+
+                        BlockDefinition definition = blocks.Get(id);
+                        for (int face = 0; face < FaceCount; face++)
+                        {
+                            if (IsFaceHidden(chunk, neighbours, blocks, local, FaceDirections[face]))
                             {
                                 continue;
                             }
 
-                            BlockDefinition definition = blocks.Get(id);
-                            for (int face = 0; face < FaceCount; face++)
-                            {
-                                if (IsFaceHidden(chunk, neighbours, blocks, local, FaceDirections[face]))
-                                {
-                                    continue;
-                                }
-
-                                AppendQuad(
-                                    ref positions,
-                                    ref normals,
-                                    ref uvs,
-                                    ref ao,
-                                    ref indices,
-                                    chunk,
-                                    neighbours,
-                                    blocks,
-                                    face,
-                                    AtlasIndex(definition, face),
-                                    local);
-                            }
+                            AppendQuad(
+                                ref buffers,
+                                chunk,
+                                neighbours,
+                                blocks,
+                                face,
+                                AtlasIndex(definition, face),
+                                local);
                         }
                     }
                 }
-
-                int vertexCount = positions.Count;
-                int indexCount = indices.Count;
-                Vector3f min = Vector3f.Zero;
-                Vector3f max = Vector3f.Zero;
-                if (vertexCount > 0)
-                {
-                    min = positions[0];
-                    max = positions[0];
-                    for (int i = 1; i < vertexCount; i++)
-                    {
-                        Vector3f position = positions[i];
-                        min = new Vector3f(
-                            Math.Min(min.X, position.X),
-                            Math.Min(min.Y, position.Y),
-                            Math.Min(min.Z, position.Z));
-                        max = new Vector3f(
-                            Math.Max(max.X, position.X),
-                            Math.Max(max.Y, position.Y),
-                            Math.Max(max.Z, position.Z));
-                    }
-                }
-
-                MeshData mesh = MeshBufferPool.Shared.RentMeshData();
-                mesh.Initialize(
-                    positions.Detach(),
-                    normals.Detach(),
-                    uvs.Detach(),
-                    ao.Detach(),
-                    indices.Detach(),
-                    vertexCount,
-                    indexCount,
-                    min,
-                    max);
-                return mesh;
-            }
-            catch
-            {
-                positions.Return();
-                normals.Return();
-                uvs.Return();
-                ao.Return();
-                indices.Return();
-                throw;
             }
         }
 
@@ -228,11 +187,7 @@ namespace Cubeglass.Mesh
         }
 
         private void AppendQuad(
-            ref PooledStream<Vector3f> positions,
-            ref PooledStream<Vector3f> normals,
-            ref PooledStream<Vector2f> uvs,
-            ref PooledStream<byte> ao,
-            ref PooledStream<int> indices,
+            ref MeshBuffers buffers,
             ChunkSnapshot chunk,
             NeighbourSnapshot neighbours,
             IBlockRegistry blocks,
@@ -243,25 +198,25 @@ namespace Cubeglass.Mesh
             Vector2f tileMin = AtlasMap.TileMin(_layout, atlasIndex);
             float tileSize = AtlasMap.TileUvSize(_layout).X;
             Vector3f normal = FaceNormals[face];
-            int first = positions.Count;
+            int first = buffers.Positions.Count;
 
             for (int corner = 0; corner < CornersPerQuad; corner++)
             {
                 Int3 offset = FaceCorners[face, corner];
-                positions.Add(new Vector3f(cell.X + offset.X, cell.Y + offset.Y, cell.Z + offset.Z));
-                normals.Add(normal);
-                uvs.Add(new Vector2f(
+                buffers.Positions.Add(new Vector3f(cell.X + offset.X, cell.Y + offset.Y, cell.Z + offset.Z));
+                buffers.Normals.Add(normal);
+                buffers.Uvs.Add(new Vector2f(
                     (corner == 1 || corner == 2) ? tileMin.X + tileSize : tileMin.X,
                     (corner >= 2) ? tileMin.Y + tileSize : tileMin.Y));
-                ao.Add(AmbientOcclusion.Compute(chunk, neighbours, blocks, cell, face, corner));
+                buffers.Ao.Add(AmbientOcclusion.Compute(chunk, neighbours, blocks, cell, face, corner));
             }
 
-            indices.Add(first + 0);
-            indices.Add(first + 1);
-            indices.Add(first + 2);
-            indices.Add(first + 0);
-            indices.Add(first + 2);
-            indices.Add(first + 3);
+            buffers.Indices.Add(first + 0);
+            buffers.Indices.Add(first + 1);
+            buffers.Indices.Add(first + 2);
+            buffers.Indices.Add(first + 0);
+            buffers.Indices.Add(first + 2);
+            buffers.Indices.Add(first + 3);
         }
 
         private static int AtlasIndex(BlockDefinition definition, int face)

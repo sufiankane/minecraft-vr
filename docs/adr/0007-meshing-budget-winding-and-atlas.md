@@ -42,7 +42,7 @@ required; any later change to these conventions needs a new ADR.
   edits to the quoted contract.
 - The invariant set is testable without an engine: no internal faces between
   two opaque blocks, a fully solid chunk emits exactly the surface quads in the
-  reference mesher (6 per cell face region before Task 2 merging), the same
+  reference mesher (6 per cell face region without merging), the same
   input gives byte-identical output.
 - `Cubeglass.CoreMath` stays C# 9 (hand-written structs, no `record struct`);
   `Cubeglass.Mesh` may use C# 10 but avoids an `IsExternalInit` polyfill.
@@ -89,8 +89,8 @@ Recorded as additive to the S1/S2 contracts:
 - `NeighbourSnapshot` in `Cubeglass.Voxel`, plus
   `World.CreateNeighbourSnapshot(ChunkCoord)`.
 - `ChunkEditPropagation.GetAffectedChunks(Int3)` in `Cubeglass.Voxel`.
-- `IChunkMesher`, `CulledMesher`, `AtlasLayout`, `AtlasMap`,
-  `MeshBufferPool` in `Cubeglass.Mesh`.
+- `IChunkMesher`, `CulledMesher`, `GreedyMesher`, `AmbientOcclusion`,
+  `AtlasLayout`, `AtlasMap`, `MeshBufferPool` in `Cubeglass.Mesh`.
 
 ### MeshData storage and ownership
 
@@ -99,10 +99,23 @@ full-capacity arrays owned by the origin `MeshBufferPool`; `VertexCount` and
 `IndexCount` delimit the live region of every stream. `Min`/`Max` are the
 inclusive bounds of all positions and are both the origin for an empty mesh.
 `Release()` returns all five buffers to their origin pool exactly once; a
-second call throws `InvalidOperationException`. Task 1 deliberately rents
-fresh arrays per build (the brief allows a non-pooled reference); Task 4
-replaces `MeshBufferPool`'s internals with capacity buckets and adds the
-zero-allocation gate without changing the public shape.
+second call throws `InvalidOperationException`. The pool keeps arrays in
+per-element-type capacity buckets, and both meshers rent the five streams (and
+the greedy mask) from their configured pool, so after one warm-up
+build/release cycle meshing allocates nothing.
+
+### Threading and pool ownership
+
+`MeshBufferPool` is not thread-safe. Each mesher stores the pool passed to its
+constructor: `MeshBufferPool.Shared` behind the parameterless and layout-only
+constructors, or an injected pool via `CulledMesher(AtlasLayout,
+MeshBufferPool)` / `GreedyMesher(AtlasLayout, MeshBufferPool)`. A mesher
+instance is safe on one thread at a time: `Build` reads only immutable
+snapshots, and every scratch buffer for a call is rented and returned within
+that call. Parallel callers must construct a distinct pool per worker,
+because two concurrent builds sharing one pool can hand the same array to
+both. `Shared` is therefore for single-threaded use only — the tests, tools
+and one worker at a time.
 
 ### Winding
 
@@ -128,14 +141,13 @@ normal.
 `Ao` carries one `byte` per vertex, quantised from four levels:
 `0 -> 0`, `1 -> 85`, `2 -> 170`, `3 -> 255`, where level 0 is the most
 occluded and 255 is fully open. The level formula is the standard
-three-neighbour rule, pinned by Task 3 tests:
+three-neighbour rule, pinned by the AO tests:
 
 `level = (side1 && side2) ? 0 : 3 - (side1 ? 1 : 0) - (side2 ? 1 : 0) - (corner ? 1 : 0)`.
 
-Task 1's reference mesher wrote 255 at every vertex until Task 3 computed real
-AO in both meshers; Task 3 refilled the Task 2 golden hashes (solid, empty and
-single-corner hashes are unchanged because every sample of an isolated face
-reads air).
+Both meshers compute the level for every exposed face corner in the ADR-0007
+corner order; an isolated face reads air on every sample and therefore stays
+fully open.
 
 Conservative merge rule (R22). `GreedyMesher` packs each exposed cell's four
 per-cell AO levels into its merge mask next to the block id and compares whole
@@ -155,7 +167,7 @@ the block definition index: `+Y` and `-Y` use `AtlasIndexTop`, `+Z` and `-Z`
 use `AtlasIndexFront`, `+X` and `-X` use `AtlasIndexSide`. (`-Y -> Top` keeps
 the three-index model total; revisit only with real bottom art.)
 
-Greedy merging (Task 2) keeps that mapping per block cell: a merged `W x H`
+Greedy merging keeps that mapping per block cell: a merged `W x H`
 quad — `W` cells along the face's U axis and `H` along V, derived from the
 winding corner table above (`+X` U=+Y,V=+Z; `-X` U=+Z,V=+Y; `+Y` U=+Z,V=+X;
 `-Y` U=+X,V=+Z; `+Z` U=+X,V=+Y; `-Z` U=+Y,V=+X) — uses the same corner
@@ -181,7 +193,7 @@ observed.
 `ChunkEditPropagation.GetAffectedChunks(cell)` returns every chunk containing
 a cell of `cell + [-1, 1]^3`, sorted by `(X, Y, Z)`: 1, 2, 4 or 8 chunks. The
 box is exactly the reach of both effects of an edit: face visibility for
-opaque neighbours (26 directions) and, from Task 3, ambient occlusion of any
+opaque neighbours (26 directions) and ambient occlusion of any
 cell whose vertex corner samples the edited cell (Chebyshev distance 1). Per
 axis the box spans at most two chunks, so its eight corner cells already
 enumerate every affected chunk.
@@ -190,10 +202,11 @@ enumerate every affected chunk.
 
 The meshing budget is p95 **<= 2.0 ms per full 16^3 chunk** (a solid or
 terrain chunk built with `GreedyMesher`) measured on the dev machine by the
-Task 4 benchmark harness: after 100 warm-up builds, 2,000 builds, printing
-p50/p95/p99; the numbers are recorded in `docs/perf/s3.md`. Nightly regression
-thresholds are deferred. No timing assertion enters `dotnet test`; Task 4's
-unit gate is allocation-based (zero bytes after pool warm-up).
+`p95` mode of `dotnet/benchmarks/Mesh.Benchmarks`: after 100 warm-up builds,
+2,000 builds, printing p50/p95/p99; the numbers are recorded in
+`docs/perf/s3.md`. Nightly regression thresholds are deferred. No timing
+assertion enters `dotnet test`; the unit gate is allocation-based (zero bytes
+after pool warm-up).
 
 ### Consequences
 
@@ -201,16 +214,15 @@ unit gate is allocation-based (zero bytes after pool warm-up).
   budget each have one recorded statement and pure tests that need no engine.
 - Good: section 5.10 is untouched; the additive types are listed here so later
   stages can rely on their exact shape.
-- Good: the copy-based `NeighbourSnapshot` makes worker-thread meshing safe
+- Good: the copy-based `NeighbourSnapshot` makes each build pure over immutable
+  input; a worker that injects its own `MeshBufferPool` can mesh in parallel
   without locks, and missing chunks read as air so a seam never crashes.
-- Bad: Task 1 intentionally allocates fresh arrays per build; only Task 4's
-  pooling makes meshing allocation-free, so early benchmarks are misleading.
+- Bad: `MeshBufferPool` is not thread-safe, so parallel meshing needs one pool
+  per worker; sharing `Shared` across threads is unsupported.
 - Bad: `-Y -> Top` is provisional until bottom-face art exists; a bounded
   change, recorded here.
 - Bad: `Cubeglass.Mesh` is C# 10 while `Cubeglass.CoreMath` stays C# 9; the
   split is deliberate (R21) but two language levels coexist in S3.
-- Follow-up: Task 4 implements pooling, the allocation gate and records the
-  measured budget.
 
 ## Confirmation
 
@@ -221,14 +233,16 @@ unit gate is allocation-based (zero bytes after pool warm-up).
   neighbours never culling, border culling through the neighbour snapshot,
   solid 16^3 -> 6 x 256 quads, counter-clockwise winding (`cross(v1-v0,
   v2-v0)` equals the outward normal), the fixed index pattern, UVs inside the
-  tile rect, byte-identical rebuilds, bounds, and single `Release`.
+  tile rect, byte-identical rebuilds, bounds, a negative-coordinate centre
+  chunk, an injected-pool rent/return cycle, null-argument rejection and single
+  `Release`.
 - `dotnet/tests/Voxel.Tests/NeighbourSnapshotTests.cs` and
   `ChunkEditPropagationTests.cs` pin all 26 directions, missing -> `Air`,
   copy isolation and the 1/2/4/8-chunk dirty sets in sorted order.
 - `python -m depcheck --root .` keeps `Cubeglass.Mesh` free of
   `UnityEngine`, `UnityEditor`, `System.IO` and `System.Threading` and limited
   to the CoreMath + Voxel references.
-- Task 4's benchmark prints p95 for the full chunk and `docs/perf/s3.md`
+- The `p95` benchmark prints p95 for the full chunk and `docs/perf/s3.md`
   records it against the 2.0 ms budget.
 
 ## Links
