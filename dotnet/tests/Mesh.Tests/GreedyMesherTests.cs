@@ -35,6 +35,8 @@ namespace Cubeglass.Mesh.Tests
 
             Assert.That(mesh.VertexCount, Is.EqualTo(24), "one merged quad per face");
             Assert.That(mesh.IndexCount, Is.EqualTo(36));
+            Assert.That(mesh.Min, Is.EqualTo(Vector3f.Zero));
+            Assert.That(mesh.Max, Is.EqualTo(new Vector3f(16.0F, 16.0F, 16.0F)));
 
             var expected = new[]
             {
@@ -93,6 +95,8 @@ namespace Cubeglass.Mesh.Tests
                 NeighbourSnapshot.Empty);
 
             Assert.That(mesh.VertexCount, Is.EqualTo(24), "six quads: four long sides plus two end caps");
+            Assert.That(mesh.Min, Is.EqualTo(Vector3f.Zero));
+            Assert.That(mesh.Max, Is.EqualTo(new Vector3f(2.0F, 1.0F, 1.0F)));
 
             var expected = new[]
             {
