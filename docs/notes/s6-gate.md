@@ -18,15 +18,15 @@
 
 | Suite | Result | Counts |
 | --- | --- | --- |
-| EditMode | Passed | `total=56 passed=56 failed=0 skipped=0` |
+| EditMode | Passed | `total=59 passed=59 failed=0 skipped=0` |
 | PlayMode | Passed | `total=5 passed=5 failed=0 skipped=0` |
 
-EditMode is the unchanged T3 suite (placeholder 1, bridge 10, CoreMath 5,
-DebugOverlay 7, WindowManager 5, StereoRig/config 16, LateLatch 10, synthetic
-provider 2). PlayMode is the four T3 tests (yaw sweep, pre-cull ordering,
-manual-tick dedupe, 0-byte/300-frame allocation) plus the new frame-budget
-helper (`FrameBudgetPlayModeTests`), which loads the committed calibration scene
-and measures 600 frames with the overlay on (section 4).
+EditMode is the T3 suite plus the three FOV-conversion tests (placeholder 1,
+bridge 10, CoreMath 5, DebugOverlay 7, WindowManager 5, StereoRig/config 19,
+LateLatch 10, synthetic provider 2). PlayMode is the four T3 tests (yaw sweep,
+pre-cull ordering, manual-tick dedupe, 0-byte/300-frame allocation) plus the
+frame-budget helper (`FrameBudgetPlayModeTests`), which loads the committed
+calibration scene and measures 600 frames with the overlay on (section 4).
 
 Commands (from the repository root):
 
@@ -41,10 +41,13 @@ unity test unity/Cubeglass --mode PlayMode --non-interactive
 `RigPlayModeTests.DisabledOverlayAllocatesNothingAcross300Frames` renders both
 eyes for 64 warm-up frames, snapshots `GC.GetAllocatedBytesForCurrentThread()`,
 renders 300 further frames (late-latch pose applied each frame through
-`Camera.onPreCull`) and asserts the delta is exactly 0. It is green in the
-PlayMode suite above, so the per-frame stereo path allocates nothing with the
-overlay disabled. The overlay's own formatted path is separately pinned
-allocation-free over 1000 unchanged `OverlayText.Set` calls in EditMode.
+`Camera.onPreCull`) and asserts the delta is exactly 0. The provider call count
+is baselined after the warm-up too, and the measured window must show at least
+one read per rendered frame (delta ≥ 300), so the 0-byte window cannot pass with
+a dead late-latch path. It is green in the PlayMode suite above, so the
+per-frame stereo path allocates nothing with the overlay disabled. The overlay's
+own formatted path is separately pinned allocation-free over 1000 unchanged
+`OverlayText.Set` calls in EditMode.
 
 ## 3. Bridge stress (native)
 
@@ -80,18 +83,21 @@ measured frames, on the machine below. The full method and caveats are in
 
 | Statistic | Frame time (ms) |
 | --- | ---: |
-| mean | 0.359 |
-| p50 | 0.333 |
-| p95 | 0.474 |
-| p99 | 0.541 |
-| min | 0.289 |
-| max | 0.935 |
+| mean | 0.504 |
+| p50 | 0.489 |
+| p95 | 0.654 |
+| p99 | 1.142 |
+| min | 0.333 |
+| max | 1.767 |
 
-Target: **≤ 11.1 ms** at 90 Hz (ADR-0010). Observed headroom: **30.9×** at the
-mean and **20.5×** at p99. The p99 does not exceed the target. The scene is a
+Target: **≤ 11.1 ms** at 90 Hz (ADR-0010). Observed headroom: **22.0×** at the
+mean and **9.7×** at p99. The p99 does not exceed the target. The scene is a
 light synthetic load (about 50 unlit primitives), not the S7 content load, and
 the number is CPU-side submission time in the headless lane; the on-glasses
-90 Hz check is part of the HIL run.
+90 Hz check is part of the HIL run. This table is the fix-wave run on the
+regenerated scene (converted FOV, visible pitch-down marker); the original
+committed-run/independent-rerun comparison stays in
+[`../perf/s6.md`](../perf/s6.md).
 
 Machine: AMD Ryzen AI 9 365 (20 logical CPUs), 23 GiB RAM, NVIDIA GeForce RTX
 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity 6000.6.3f1, D3D12.
@@ -105,9 +111,12 @@ Machine: AMD Ryzen AI 9 365 (20 logical CPUs), 23 GiB RAM, NVIDIA GeForce RTX
 - menu `Cubeglass/Build Calibration Scene` and the batch entry
   `-executeMethod Cubeglass.Editor.CalibrationSceneBuilder.Build`;
 - floor plane + 1 m grid, red/green/blue +X/+Y/+Z axis cubes, far wall with
-  four yaw/pitch markers (cyan left, magenta right, yellow up, orange down),
-  a centre marker and a horizon strip at eye height;
-- `StereoRig` (ADR-0010 config defaults: IPD 64 mm, FOV 45°, refresh 90 Hz) with
+  four yaw/pitch markers (cyan left, magenta right, yellow up, orange down at
+  `y = 0.6`, above the floor so the rig can see it), a centre marker and a
+  horizon strip at eye height;
+- `StereoRig` (ADR-0010 config defaults: IPD 64 mm, per-eye horizontal FOV 45°
+  — converted to the vertical `Camera.fieldOfView` 26.2313° at the nominal
+  3840×1080 side-by-side target, 1920×1080 per eye — refresh 90 Hz) with
   `LateLatchPose`, `PoseProviderSelector` (bridge first, synthetic fallback),
   a `SyntheticPoseProvider` child with `UnityInputProvider` +
   `SyntheticPoseDrive` (move axes turn, Q/E snap-turn, R recentres) and
@@ -118,17 +127,17 @@ The builder canonicalises the scene after saving: Unity assigns pseudo-random
 local file ids and an unstable document order, so the pass walks the graph
 deterministically, renumbers every document sequentially and remaps all
 `{fileID: n}` references. Two consecutive rebuilds on Unity 6000.6.3f1 produced
-the identical SHA-256 `EBFE3E1719A7A24296724873DE25B05E338529275710071F23FD99A52BC06A76`.
+the identical SHA-256 `D8C1B61215675879B4BA8C5EFD4591B411D3CEEAE33D2882E08B7E00F8CBA352`.
 The scene is committed by design; the per-commit lanes do not regenerate it
 (calibration is a menu/batch action, not part of `ci-local`).
 
 ## 6. Local lanes
 
 `powershell -File scripts/ci-local.ps1 -SkipUnity` → **ALL LANES PASS**
-(exit 0): python-env 6.9 s, cpp-windows 18.5 s (ctest 5/5), dotnet 23.5 s
-(439 tests: 78 + 118 + 156 + 87), python 2.2 s, depcheck 0.3 s, unity SKIP.
+(exit 0): python-env 8.3 s, cpp-windows 14 s (ctest 5/5), dotnet 21.3 s
+(439 tests: 78 + 118 + 156 + 87), python 1.5 s, depcheck 0.2 s, unity SKIP.
 The Unity lane was exercised separately with the two `unity test` commands in
-section 1 (both exit 0).
+section 1 (both exit 0; EditMode 59/59, PlayMode 5/5).
 
 ## 7. HIL pending (owner)
 
@@ -183,3 +192,11 @@ of the exit gate:
   stable across rebuilds on the same Unity version (section 5); the per-commit
   lanes never regenerate it, and a Unity version change is allowed to re-churn
   the file (rebuild and commit it with the version bump).
+- **`config.json` production loading deferred to S7.** `StereoRigConfig.LoadFromJson`
+  exists and is EditMode-tested, but no runtime bootstrap reads `config.json`
+  yet: the calibration scene uses the serialized/inspector defaults (IPD 64 mm,
+  per-eye horizontal FOV 45°). S7 wires the 5.13 config file into the player.
+- **ABA re-read has no deterministic falsifier.** The bridge reader's second
+  `seq_a` read closes the ABA window by reasoning plus stress coverage; no
+  deterministic test forces that exact interleaving, so the native 8-reader
+  stress test remains the guarantee. Deferred minor, not a gate blocker.
