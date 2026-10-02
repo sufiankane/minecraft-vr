@@ -24,6 +24,13 @@ unity/**/Logs/
 unity/**/UserSettings/
 unity/**/obj/
 
+# Native bridge plugin (built by the cpp lane, copied by scripts/ci-local.ps1)
+unity/Cubeglass/Assets/Plugins/**/*.dll
+unity/Cubeglass/Assets/Plugins/**/*.dll.meta
+
+# Unity CLI default test results (ci-local passes --output to %TEMP% instead)
+/test-results.xml
+
 # Generated (Unity IDE / Python packaging)
 unity/**/.vscode/
 unity/**/*.csproj

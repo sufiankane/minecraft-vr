@@ -14,8 +14,9 @@
       3. dotnet       - dotnet test Cubeglass.sln --configuration Release;
       4. python       - ruff, strict mypy and pytest from python/;
       5. depcheck     - dependency-rule and licence gates from the repo root;
-      6. unity        - Unity EditMode test through the Unity CLI (unless
-                        -SkipUnity is passed).
+      6. unity        - copy cg_unity_bridge.dll from the cpp-windows build into
+                        the Unity project and run the Unity EditMode tests
+                        through the Unity CLI (unless -SkipUnity is passed).
 
     Every command is echoed before it runs. The script exits non-zero on the
     first failure and prints a final PASS/FAIL summary per lane. It works from a
@@ -47,6 +48,8 @@ $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 $RequirementsDev = Join-Path $PythonDir 'requirements-dev.txt'
 $UnityExe = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
 $UnityResults = Join-Path $env:TEMP 'cg-unity-results.xml'
+$BridgeDll = Join-Path $CppDir 'build\windows-msvc\bridge\cg_unity_bridge.dll'
+$UnityPluginsDir = Join-Path $RepoRoot 'unity\Cubeglass\Assets\Plugins\win-x64'
 
 $script:LaneResults = New-Object System.Collections.Generic.List[object]
 
@@ -119,6 +122,9 @@ try {
     . (Join-Path $RepoRoot 'scripts\dev-shell.ps1')
 
     Invoke-Lane 'cpp-windows' {
+        # Builds every target, including the cg_bridge shared library
+        # (cg_unity_bridge.dll). Keep this lane before the unity lane, which
+        # copies that DLL into the Unity project.
         Push-Location $CppDir
         try {
             Invoke-Checked 'cmake --preset windows-msvc' { & cmake --preset windows-msvc }
@@ -175,6 +181,17 @@ try {
             if (-not (Test-Path $UnityExe)) {
                 throw "Unity CLI not found at '$UnityExe'"
             }
+            # The native bridge tests P/Invoke cg_unity_bridge.dll from
+            # Assets/Plugins/win-x64. Fail loudly when it is missing instead of
+            # skipping: the cpp-windows lane above must have built it.
+            if (-not (Test-Path -LiteralPath $BridgeDll)) {
+                throw "native bridge DLL not found at '$BridgeDll'; run the C++ build first (cmake --build --preset windows-msvc), then re-run ci-local"
+            }
+            if (-not (Test-Path -LiteralPath $UnityPluginsDir)) {
+                New-Item -ItemType Directory -Path $UnityPluginsDir -Force | Out-Null
+            }
+            Copy-Item -LiteralPath $BridgeDll -Destination (Join-Path $UnityPluginsDir 'cg_unity_bridge.dll') -Force
+            Write-Host "Copied native bridge DLL: $BridgeDll -> $UnityPluginsDir"
             # The Unity CLI mishandles the project argument (it prepends the
             # current directory to an already-absolute path) when the project
             # has no Assets folder, so a pristine clone aborts before importing.
