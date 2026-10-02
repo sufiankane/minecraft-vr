@@ -1,5 +1,6 @@
 add_executable(
     cg_glasses_tests
+    allocation_tests.cpp
     contract_tests.cpp
     display_control_tests.cpp
     replay_tests.cpp
