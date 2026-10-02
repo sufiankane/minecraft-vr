@@ -46,6 +46,7 @@ namespace Cubeglass.Unity.Rendering
         private bool subscribed;
         private bool hasSample;
         private int lastTickFrame = int.MinValue;
+        private BridgeHeadSample lastSample;
 
         /// <summary>Tracking quality of the latest applied sample.</summary>
         public PoseTrackingState TrackingState { get; private set; } = PoseTrackingState.NotReady;
@@ -54,6 +55,16 @@ namespace Cubeglass.Unity.Rendering
         public bool HasSample
         {
             get { return hasSample; }
+        }
+
+        /// <summary>
+        /// The most recently applied sample; a copy of it, valid when
+        /// <see cref="HasSample"/> is true (the debug overlay reads its
+        /// <c>HostTime</c> for the pose rate/age without consuming a new sample).
+        /// </summary>
+        public BridgeHeadSample LastSample
+        {
+            get { return lastSample; }
         }
 
         /// <summary>True while the <c>Camera.onPreCull</c> hook is subscribed.</summary>
@@ -135,6 +146,7 @@ namespace Cubeglass.Unity.Rendering
             }
 
             hasSample = true;
+            lastSample = sample;
             TrackingState = MapState(sample.State);
             ApplySample(in sample);
         }

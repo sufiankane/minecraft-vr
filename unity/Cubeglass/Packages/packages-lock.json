@@ -6,6 +6,12 @@
       "source": "embedded",
       "dependencies": {}
     },
+    "com.cubeglass.input": {
+      "version": "file:com.cubeglass.input",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.cubeglass.placeholder": {
       "version": "file:com.cubeglass.placeholder",
       "depth": 0,
