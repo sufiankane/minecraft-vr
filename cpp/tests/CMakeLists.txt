@@ -29,3 +29,5 @@ add_test(NAME core_math COMMAND cg_core_math_tests)
 
 add_subdirectory(glasses)
 add_test(NAME glasses COMMAND cg_glasses_tests)
+
+add_subdirectory(bridge)

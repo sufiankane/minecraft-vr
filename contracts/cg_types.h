@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
-#define CG_ABI_VERSION 1
+#define CG_ABI_VERSION 2
 
 typedef int64_t cg_time_ns;            /* HostTime, monotonic nanoseconds */
 
@@ -32,6 +32,23 @@ typedef struct {
   cg_track_state state;
   uint32_t    sequence;
 } cg_head_sample;
+
+typedef struct {
+  uint8_t  present;          /* 0/1 */
+  uint8_t  handedness;       /* 0 left, 1 right */
+  uint8_t  reserved[2];
+  float    confidence;       /* 0..1 */
+  cg_vec3  joints[21];       /* head space, metres */
+  cg_vec3  velocity;         /* wrist, m/s */
+} cg_hand;
+
+typedef struct {
+  cg_time_ns capture_time;   /* camera frame time mapped to HostTime */
+  cg_time_ns publish_time;
+  cg_time_ns predicted_for;  /* the time joints are extrapolated to */
+  uint32_t   sequence;
+  cg_hand    hands[2];
+} cg_hand_frame;
 
 #ifdef __cplusplus
 }

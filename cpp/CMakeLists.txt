@@ -22,6 +22,7 @@ find_package(GTest CONFIG REQUIRED)
 
 add_subdirectory(core-math)
 add_subdirectory(glasses)
+add_subdirectory(bridge)
 add_subdirectory(tools)
 add_subdirectory(tests)
 
