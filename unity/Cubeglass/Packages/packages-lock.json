@@ -1,5 +1,11 @@
 {
   "dependencies": {
+    "com.cubeglass.bridge": {
+      "version": "file:com.cubeglass.bridge",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.cubeglass.placeholder": {
       "version": "file:com.cubeglass.placeholder",
       "depth": 0,

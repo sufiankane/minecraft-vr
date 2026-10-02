@@ -177,6 +177,9 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
     ASSERT_EQ(cg_test_writer_create(), CG_OK);
     void *handle = nullptr;
     ASSERT_EQ(cg_bridge_open(&handle), CG_OK);
+    // The 250 ms heartbeat rule applies to the hand slot too; a far-future
+    // heartbeat keeps every published frame fresh for the whole test.
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 1'000'000'000), CG_OK);
 
     ReadCounters counters;
     std::atomic<bool> finished{false};

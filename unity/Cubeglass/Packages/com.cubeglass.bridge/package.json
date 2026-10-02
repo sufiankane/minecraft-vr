@@ -1,0 +1,7 @@
+{
+  "name": "com.cubeglass.bridge",
+  "version": "0.1.0",
+  "displayName": "Cubeglass Bridge",
+  "description": "P/Invoke wrapper over the cg_unity_bridge C ABI (shared-memory head and hand samples, command channel).",
+  "unity": "6000.6"
+}

@@ -16,6 +16,11 @@
 // accesses with a release/acquire fence around the seqlock counters, the same
 // construction as the S5 `PoseSlot`, so every shared byte access is an atomic
 // operation and the concurrent tests are TSan-clean by construction.
+//
+// Staleness applies to both slots through the same 250 ms heartbeat rule. The
+// head read keeps the sample and reports `CG_TRACK_LOST`; the hand read has no
+// per-hand tracking state, so a stale hand slot reports `CG_ERR_NOT_READY` and
+// no frame instead of emitting stale joints.
 
 #include "cg/bridge/shm_layout.hpp"
 
@@ -25,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <thread>
 
 #include "cg_unity_bridge.h"
 
@@ -51,6 +57,11 @@ constexpr int kMaxReadAttempts = 64;
 constexpr std::size_t kMinimumRegionSize = kHandSlotOffset + sizeof(HandSlot);
 static_assert(kMinimumRegionSize == 848, "the 5.6 head and hand slots must fit the accepted region");
 
+/// Bounded wait for a writer that is mid-initialisation: the header fields are
+/// stored one by one, so a reader that opens in that window retries until the
+/// header is complete instead of failing hard.
+constexpr auto kHeaderInitRetryWindow = std::chrono::milliseconds(50);
+
 /// POSIX has one flat shared-memory namespace; the Windows `Local\` prefix
 /// maps to the leading '/' that `shm_open` requires.
 constexpr char kPosixStateName[] = "/cubeglass.v1.state";
@@ -76,7 +87,15 @@ std::int64_t now_ns() noexcept {
 
 bool header_is_valid(const BridgeHandle &handle) noexcept {
     const auto *header = reinterpret_cast<const ShmHeader *>(handle.base);
-    return header->magic == kShmMagic && header->abi_version == kShmAbiVersion && header->header_size == kHeaderSize;
+    // The open retry can observe the header while the writer is still storing
+    // its fields, so validate through atomic loads (paired with a writer that
+    // publishes the fields).
+    const bool magic = std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_acquire) == kShmMagic;
+    const bool abi =
+        std::atomic_ref<const std::uint32_t>(header->abi_version).load(std::memory_order_acquire) == kShmAbiVersion;
+    const bool size =
+        std::atomic_ref<const std::uint32_t>(header->header_size).load(std::memory_order_acquire) == kHeaderSize;
+    return magic && abi && size;
 }
 
 /// Copies a seqlock payload word-wise through relaxed atomic accesses. The
@@ -122,7 +141,7 @@ cg_status read_head(const BridgeHandle &handle, cg_head_sample *out) noexcept {
         auto *header = reinterpret_cast<ShmHeader *>(handle.base);
         const std::int64_t heartbeat =
             std::atomic_ref<std::int64_t>(header->heartbeat_ns).load(std::memory_order_acquire);
-        if (now_ns() - heartbeat > kStaleAfterNs) {
+        if (is_stale(now_ns(), heartbeat)) {
             out->state = CG_TRACK_LOST;
         }
         return CG_OK;
@@ -146,6 +165,12 @@ cg_status read_hands(const BridgeHandle &handle, cg_hand_frame *out) noexcept {
         }
         if (slot->seq_a.load(std::memory_order_acquire) != seq_a) {
             continue; // same ABA guard as the head slot
+        }
+        auto *header = reinterpret_cast<ShmHeader *>(handle.base);
+        const std::int64_t heartbeat =
+            std::atomic_ref<std::int64_t>(header->heartbeat_ns).load(std::memory_order_acquire);
+        if (is_stale(now_ns(), heartbeat)) {
+            return CG_ERR_NOT_READY; // stale hands are lost hands: no sample
         }
         *out = frame;
         return CG_OK;
@@ -214,6 +239,20 @@ cg_status cg_bridge_open(void **out_handle) {
         CloseHandle(mapping);
         return CG_ERR_INTERNAL;
     }
+    // POSIX checks the exact region size from fstat; a Windows section is
+    // page-granular, so the equivalent guard is the mapped view's region size.
+    // It rejects a view that cannot cover the head and hand slots.
+    MEMORY_BASIC_INFORMATION region{};
+    if (VirtualQuery(view, &region, sizeof(region)) == 0) {
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        return CG_ERR_INTERNAL;
+    }
+    if (region.RegionSize < cg::bridge::kMinimumRegionSize) {
+        UnmapViewOfFile(view);
+        CloseHandle(mapping);
+        return CG_ERR_UNSUPPORTED;
+    }
     handle = new (std::nothrow) BridgeHandle{};
     if (handle == nullptr) {
         UnmapViewOfFile(view);
@@ -253,8 +292,25 @@ cg_status cg_bridge_open(void **out_handle) {
     return CG_ERR_UNSUPPORTED;
 #endif
     if (!cg::bridge::header_is_valid(*handle)) {
-        cg_bridge_close(handle);
-        return CG_ERR_UNSUPPORTED;
+        // A writer stores the header fields one by one, so a reader that opens
+        // mid-initialisation sees an incomplete header. Retry for a short
+        // bounded window before deciding; the normal case recovers in
+        // microseconds.
+        const auto deadline = std::chrono::steady_clock::now() + cg::bridge::kHeaderInitRetryWindow;
+        while (!cg::bridge::header_is_valid(*handle) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (!cg::bridge::header_is_valid(*handle)) {
+            // A zero magic means the region exists but has not been
+            // initialised (or its writer died mid-init): the soft NotReady.
+            // Anything else is a foreign or incompatible region.
+            const auto *header = reinterpret_cast<const cg::bridge::ShmHeader *>(handle->base);
+            const bool magic_present =
+                std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_relaxed) ==
+                cg::bridge::kShmMagic;
+            cg_bridge_close(handle);
+            return magic_present ? CG_ERR_UNSUPPORTED : CG_ERR_NOT_READY;
+        }
     }
     *out_handle = handle; // written only on CG_OK
     return CG_OK;

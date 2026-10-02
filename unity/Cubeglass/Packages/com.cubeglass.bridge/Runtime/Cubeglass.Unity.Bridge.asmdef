@@ -1,0 +1,14 @@
+{
+  "name": "Cubeglass.Unity.Bridge",
+  "rootNamespace": "Cubeglass.Unity.Bridge",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
