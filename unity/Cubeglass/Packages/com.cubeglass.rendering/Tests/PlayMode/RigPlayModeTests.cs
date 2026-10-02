@@ -180,6 +180,34 @@ namespace Cubeglass.Unity.Rendering.PlayTests
         }
 
         [UnityTest]
+        public IEnumerator ManualTickAndRenderInTheSameFrameReadOnce()
+        {
+            provider.SetPose(15f, 0f, 0f, Vector3.zero);
+            provider.SetRates(0f, 0f, 0f);
+
+            int firstCalls = provider.CallCount;
+            latch.TickOnce();
+            rig.LeftCamera.Render();
+            rig.RightCamera.Render();
+
+            Assert.AreEqual(
+                1,
+                provider.CallCount - firstCalls,
+                "a manual tick plus the pre-cull render in one frame must read once");
+
+            yield return null;
+
+            int secondCalls = provider.CallCount;
+            rig.LeftCamera.Render();
+            rig.RightCamera.Render();
+
+            Assert.AreEqual(
+                1,
+                provider.CallCount - secondCalls,
+                "the next frame reads the provider again");
+        }
+
+        [UnityTest]
         public IEnumerator DisabledOverlayAllocatesNothingAcross300Frames()
         {
             var overlayObject = new GameObject("DebugOverlay");

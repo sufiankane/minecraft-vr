@@ -39,18 +39,24 @@ namespace Cubeglass.Unity.Rendering
         [SerializeField] private bool borderlessFullscreen = DefaultBorderlessFullscreen;
         [SerializeField] private int targetRefresh = DefaultTargetRefresh;
 
-        /// <summary>Interpupillary distance in metres, clamped to [0.02, 0.09].</summary>
+        /// <summary>
+        /// Interpupillary distance in metres; programmatic sets are clamped to
+        /// [0.02, 0.09]. JSON-loaded values are clamped by <see cref="Validate"/>.
+        /// </summary>
         public float IpdMeters
         {
             get { return ipdMeters; }
-            set { ipdMeters = value; }
+            set { ipdMeters = Mathf.Clamp(value, MinIpdMeters, MaxIpdMeters); }
         }
 
-        /// <summary>Per-eye field of view in degrees, clamped to [10, 120].</summary>
+        /// <summary>
+        /// Per-eye field of view in degrees; programmatic sets are clamped to
+        /// [10, 120]. JSON-loaded values are clamped by <see cref="Validate"/>.
+        /// </summary>
         public float FovDegrees
         {
             get { return fovDegrees; }
-            set { fovDegrees = value; }
+            set { fovDegrees = Mathf.Clamp(value, MinFovDegrees, MaxFovDegrees); }
         }
 
         /// <summary>Near clip plane in metres.</summary>

@@ -88,6 +88,31 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
+        public void ProgrammaticOutOfRangeIpdAndFovClampTheCameras()
+        {
+            rig.Config.IpdMeters = 0.5f;
+            rig.Config.FovDegrees = 200f;
+            rig.ApplyEyeLayout();
+
+            Assert.AreEqual(StereoRigConfig.MaxIpdMeters, rig.Config.IpdMeters, Tolerance, "ipd clamped on set");
+            Assert.AreEqual(StereoRigConfig.MaxFovDegrees, rig.Config.FovDegrees, Tolerance, "fov clamped on set");
+            Assert.AreEqual(-0.045f, rig.LeftCamera.transform.localPosition.x, Tolerance, "left offset from clamped ipd");
+            Assert.AreEqual(0.045f, rig.RightCamera.transform.localPosition.x, Tolerance, "right offset from clamped ipd");
+            Assert.AreEqual(StereoRigConfig.MaxFovDegrees, rig.LeftCamera.fieldOfView, 1e-4f, "left fov from clamped fov");
+            Assert.AreEqual(StereoRigConfig.MaxFovDegrees, rig.RightCamera.fieldOfView, 1e-4f, "right fov from clamped fov");
+
+            rig.Config.IpdMeters = 0.001f;
+            rig.Config.FovDegrees = 5f;
+            rig.ApplyEyeLayout();
+
+            Assert.AreEqual(StereoRigConfig.MinIpdMeters, rig.Config.IpdMeters, Tolerance, "ipd lower clamp");
+            Assert.AreEqual(StereoRigConfig.MinFovDegrees, rig.Config.FovDegrees, Tolerance, "fov lower clamp");
+            Assert.AreEqual(-0.01f, rig.LeftCamera.transform.localPosition.x, Tolerance, "lower-clamped left offset");
+            Assert.AreEqual(0.01f, rig.RightCamera.transform.localPosition.x, Tolerance, "lower-clamped right offset");
+            Assert.AreEqual(StereoRigConfig.MinFovDegrees, rig.LeftCamera.fieldOfView, 1e-4f, "lower-clamped fov");
+        }
+
+        [Test]
         public void EyeOffsetsRideTheRigRightAxis()
         {
             rig.Config.IpdMeters = 0.08f;

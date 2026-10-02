@@ -31,6 +31,12 @@ namespace Cubeglass.Unity.Input
         /// <summary>Default deterministic sample rate in Hz.</summary>
         public const float DefaultSampleRateHz = 90f;
 
+        /// <summary>Lowest accepted scripted sample rate in Hz.</summary>
+        public const float MinSampleRateHz = 1f;
+
+        /// <summary>Highest accepted scripted sample rate in Hz.</summary>
+        public const float MaxSampleRateHz = 1000f;
+
         private const double Pi = Math.PI;
         private const double NanosecondsPerSecond = 1_000_000_000.0;
 
@@ -85,9 +91,23 @@ namespace Cubeglass.Unity.Input
             get { return 1f / sampleRateHz; }
         }
 
+        /// <summary>The deterministic sample rate in Hz, clamped to [1, 1000].</summary>
+        public float SampleRateHz
+        {
+            get { return sampleRateHz; }
+        }
+
         private void OnEnable()
         {
+            // A serialized/inspector value can be out of range; clamp it through
+            // the same path the public setter uses before the sequence starts.
+            SetSampleRateHz(sampleRateHz);
             ResetSamples();
+        }
+
+        private void OnValidate()
+        {
+            SetSampleRateHz(sampleRateHz);
         }
 
         /// <summary>
@@ -122,10 +142,18 @@ namespace Cubeglass.Unity.Input
             trackingState = state;
         }
 
-        /// <summary>Sets the deterministic sample rate; clamped to at least 1 Hz.</summary>
+        /// <summary>
+        /// Sets the deterministic sample rate in Hz, clamped to [1, 1000].
+        /// A NaN falls back to <see cref="DefaultSampleRateHz"/>.
+        /// </summary>
         public void SetSampleRateHz(float hertz)
         {
-            sampleRateHz = Mathf.Max(1f, hertz);
+            if (float.IsNaN(hertz))
+            {
+                hertz = DefaultSampleRateHz;
+            }
+
+            sampleRateHz = Mathf.Clamp(hertz, MinSampleRateHz, MaxSampleRateHz);
         }
 
         /// <summary>

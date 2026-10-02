@@ -1,0 +1,26 @@
+{
+  "name": "Cubeglass.Unity.Input.Tests",
+  "rootNamespace": "Cubeglass.Unity.Input.Tests",
+  "references": [
+    "Cubeglass.Unity.Input",
+    "Cubeglass.Unity.Rendering",
+    "Cubeglass.Unity.Bridge",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

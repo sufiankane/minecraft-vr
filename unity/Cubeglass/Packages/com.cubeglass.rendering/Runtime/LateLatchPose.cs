@@ -136,10 +136,14 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>
         /// Reads one sample and applies it. Called once per frame from the
-        /// pre-cull hook and directly by tests.
+        /// pre-cull hook and directly by tests. Stamps the current frame, so a
+        /// manual tick and a render in the same frame still read the provider
+        /// exactly once.
         /// </summary>
         public void TickOnce()
         {
+            lastTickFrame = Time.frameCount;
+
             if (provider == null || !provider.TryGetLatest(out BridgeHeadSample sample))
             {
                 return;

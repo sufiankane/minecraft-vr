@@ -100,7 +100,10 @@ namespace Cubeglass.Unity.Rendering
         /// <summary>Incremented every time the text actually changes.</summary>
         public int Version { get; private set; }
 
-        /// <summary>The bucket most recently set, or <c>int.MinValue</c> before the first set.</summary>
+        /// <summary>
+        /// The bucket most recently passed to <see cref="Set"/>; 0 before the
+        /// first call (use <see cref="Version"/> to tell whether one happened).
+        /// </summary>
         public int LastBucket
         {
             get { return lastBucket; }

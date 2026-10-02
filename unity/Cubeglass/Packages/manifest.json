@@ -46,6 +46,7 @@
   "testables": [
     "com.cubeglass.placeholder",
     "com.cubeglass.bridge",
-    "com.cubeglass.rendering"
+    "com.cubeglass.rendering",
+    "com.cubeglass.input"
   ]
 }

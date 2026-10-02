@@ -70,15 +70,20 @@ namespace Cubeglass.Unity.Rendering
 
             EnsureCameras();
 
-            float halfIpd = config.IpdMeters * 0.5f;
+            // Clamp at the point of use too: Unity deserialization writes the
+            // serialized fields directly, bypassing the clamping setters, so a
+            // scene asset can still carry out-of-range values.
+            float ipd = Mathf.Clamp(config.IpdMeters, StereoRigConfig.MinIpdMeters, StereoRigConfig.MaxIpdMeters);
+            float fov = Mathf.Clamp(config.FovDegrees, StereoRigConfig.MinFovDegrees, StereoRigConfig.MaxFovDegrees);
+            float halfIpd = ipd * 0.5f;
             leftCamera.transform.localPosition = new Vector3(-halfIpd, 0f, 0f);
             rightCamera.transform.localPosition = new Vector3(halfIpd, 0f, 0f);
 
             leftCamera.rect = new Rect(0f, 0f, 0.5f, 1f);
             rightCamera.rect = new Rect(0.5f, 0f, 0.5f, 1f);
 
-            leftCamera.fieldOfView = config.FovDegrees;
-            rightCamera.fieldOfView = config.FovDegrees;
+            leftCamera.fieldOfView = fov;
+            rightCamera.fieldOfView = fov;
 
             leftCamera.nearClipPlane = config.Near;
             rightCamera.nearClipPlane = config.Near;

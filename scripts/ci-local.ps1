@@ -93,7 +93,7 @@ function Invoke-Lane {
 }
 
 function Assert-UnityResults {
-    param([string]$Path, [string]$Mode)
+    param([string]$Path, [string]$Mode, [string]$ExpectedAssembly)
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Unity $Mode results not found at '$Path'"
     }
@@ -107,6 +107,13 @@ function Assert-UnityResults {
     $failed = [int]$testRun.failed
     $skipped = [int]$testRun.skipped
     Write-Host "Unity $Mode results: total=$total passed=$passed failed=$failed skipped=$skipped"
+    if ($total -le 0) {
+        throw "Unity $Mode results at '$Path' report no tests (total=$total); the suite did not run"
+    }
+    $assemblies = @($testRun.SelectNodes('.//test-suite[@type="Assembly"]') | ForEach-Object { $_.name })
+    if ($assemblies -notcontains $ExpectedAssembly) {
+        throw "Unity $Mode results at '$Path' do not contain the expected assembly '$ExpectedAssembly' (found: $($assemblies -join ', ')); wrong test mode or stale results"
+    }
     if ($failed -gt 0) {
         throw "Unity $Mode reported $failed failed test(s); see '$Path'"
     }
@@ -237,12 +244,12 @@ try {
                 Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
                     & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResultsEditMode
                 }
-                Assert-UnityResults -Path $UnityResultsEditMode -Mode 'EditMode'
+                Assert-UnityResults -Path $UnityResultsEditMode -Mode 'EditMode' -ExpectedAssembly 'Cubeglass.Unity.Rendering.Tests.dll'
 
                 Invoke-Checked 'unity test unity/Cubeglass --mode PlayMode --non-interactive' {
                     & $UnityExe test 'unity/Cubeglass' --mode PlayMode --non-interactive --output $UnityResultsPlayMode
                 }
-                Assert-UnityResults -Path $UnityResultsPlayMode -Mode 'PlayMode'
+                Assert-UnityResults -Path $UnityResultsPlayMode -Mode 'PlayMode' -ExpectedAssembly 'Cubeglass.Unity.Rendering.PlayTests.dll'
             }
             finally {
                 Pop-Location
