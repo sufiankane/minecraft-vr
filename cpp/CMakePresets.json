@@ -45,12 +45,13 @@
     {
       "name": "linux-tsan",
       "displayName": "Linux TSan (Ninja)",
+      "description": "GCC 13's libstdc++ emits -Wtsan for every std::atomic_thread_fence under -fsanitize=thread and the repo builds with -Werror. TSan does not instrument fences; the fence-based seqlock protocol is deliberate and sound, so -Wno-tsan (right after -fsanitize=thread) disables only that diagnostic; the later generic -Werror does not re-enable a disabled warning.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/linux-tsan",
       "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer -g",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -Wno-tsan -fno-omit-frame-pointer -g",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
