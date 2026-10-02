@@ -16,9 +16,13 @@ namespace Cubeglass.Mesh.Tests
     /// <see cref="GC.GetAllocatedBytesForCurrentThread"/> around
     /// <see cref="MeasuredIterations"/> cycles. No NUnit call sits inside a
     /// measured region and every measured result feeds a checked sink. The
+    /// throw-path gate compares <see cref="MeshBufferPool.OutstandingBuffers"/>
+    /// across a failed build and then measures a single following cycle: the
+    /// counter detects a one-shot leak deterministically even when a larger
+    /// pooled array would otherwise hide it from the allocation snapshot. The
     /// gate's sensitivity is proven in <c>docs/notes/s3-gate.md</c>: with a
-    /// temporary allocation inside a measured loop the run fails and reports
-    /// the probe bytes; the probe is then removed.
+    /// temporary probe the run fails and reports the leak; the probe is then
+    /// removed.
     /// </remarks>
     [TestFixture]
     public sealed class AllocationTests
@@ -56,13 +60,50 @@ namespace Cubeglass.Mesh.Tests
         public void ThrowingBuildReturnsRentedBuffersToThePool()
         {
             ChunkSnapshot unknownBlock = TestChunks.Snapshot(Origin, (new Int3(0, 0, 0), new BlockId(99)));
+            ChunkSnapshot solid = TestChunks.FilledSnapshot(Origin, TestChunks.Stone);
+            MeshBufferPool pool = MeshBufferPool.Shared;
+
+            // Warm up FIRST: a leak on the throw path shows up as an
+            // outstanding buffer, and warming up after the throw would
+            // silently refill the leaked bucket before it could be observed.
+            Run(Greedy, solid, WarmupIterations);
+            AssertThrowReturnsEveryRent(Greedy, unknownBlock, pool, "greedy");
+            AssertSingleCycleAllocatesNothing(Greedy, solid, "greedy");
+
+            Run(Reference, solid, WarmupIterations);
+            AssertThrowReturnsEveryRent(Reference, unknownBlock, pool, "culled");
+            AssertSingleCycleAllocatesNothing(Reference, solid, "culled");
+        }
+
+        private static void AssertThrowReturnsEveryRent(
+            IChunkMesher mesher,
+            ChunkSnapshot unknownBlock,
+            MeshBufferPool pool,
+            string label)
+        {
+            long outstandingBefore = pool.OutstandingBuffers;
 
             Assert.Throws<KeyNotFoundException>(
-                () => Greedy.Build(unknownBlock, NeighbourSnapshot.Empty, TestChunks.Registry));
-            Assert.Throws<KeyNotFoundException>(
-                () => Reference.Build(unknownBlock, NeighbourSnapshot.Empty, TestChunks.Registry));
+                () => mesher.Build(unknownBlock, NeighbourSnapshot.Empty, TestChunks.Registry));
 
-            AssertNoAllocation(Greedy, TestChunks.FilledSnapshot(Origin, TestChunks.Stone), "greedy solid chunk after a throwing build");
+            long leaked = pool.OutstandingBuffers - outstandingBefore;
+            Assert.That(
+                leaked,
+                Is.Zero,
+                $"the {label} throw path leaked {leaked} rented buffer(s)");
+        }
+
+        private static void AssertSingleCycleAllocatesNothing(IChunkMesher mesher, ChunkSnapshot chunk, string label)
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            long sink = Run(mesher, chunk, 1);
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+            Assert.That(sink, Is.GreaterThan(0L), $"the single measured {label} build must mesh vertices");
+            Assert.That(
+                allocated,
+                Is.Zero,
+                $"the {label} throw path left the pool dry: the first build after it allocated {allocated} bytes");
         }
 
         private static void AssertNoAllocation(IChunkMesher mesher, ChunkSnapshot chunk, string label)

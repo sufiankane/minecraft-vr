@@ -15,9 +15,9 @@ namespace Cubeglass.Mesh
     /// the origin <see cref="MeshBufferPool"/>, which also pools the
     /// <see cref="MeshData"/> wrapper itself so a steady-state build allocates
     /// nothing. <see cref="Release"/> returns every buffer exactly once, then
-    /// the wrapper; a second call throws. Buffers are returned before the
-    /// public windows are cleared, so a throwing return cannot strand the
-    /// buffers behind defaulted fields. Using a mesh after
+    /// the wrapper; a second call throws. Each buffer is returned and its
+    /// window cleared before the next return, so a mid-sequence throw cannot
+    /// leave an already-returned array for a retry. Using a mesh after
     /// <see cref="Release"/> (or calling <see cref="Release"/> twice) is
     /// invalid; the wrapper may already have been re-issued to another build.
     /// </remarks>
@@ -102,7 +102,9 @@ namespace Cubeglass.Mesh
 
         /// <summary>
         /// Returns every buffer to its origin pool, then the wrapper. Call
-        /// exactly once.
+        /// exactly once. A buffer is cleared as soon as its return succeeds,
+        /// so if a return throws, a retry can only return the buffers that
+        /// were not returned yet.
         /// </summary>
         /// <exception cref="InvalidOperationException">
         /// <see cref="Release"/> was already called.
@@ -115,17 +117,26 @@ namespace Cubeglass.Mesh
             }
 
             _pool.Return(_positions);
+            _positions = Array.Empty<Vector3f>();
+            Positions = default;
+
             _pool.Return(_normals);
+            _normals = Array.Empty<Vector3f>();
+            Normals = default;
+
             _pool.Return(_uvs);
+            _uvs = Array.Empty<Vector2f>();
+            Uvs = default;
+
             _pool.Return(_ao);
+            _ao = Array.Empty<byte>();
+            Ao = default;
+
             _pool.Return(_indices);
+            _indices = Array.Empty<int>();
+            Indices = default;
 
             _released = true;
-            Positions = default;
-            Normals = default;
-            Uvs = default;
-            Ao = default;
-            Indices = default;
             _pool.ReturnMeshData(this);
         }
     }

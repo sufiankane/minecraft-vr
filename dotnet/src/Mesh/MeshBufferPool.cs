@@ -19,10 +19,11 @@ namespace Cubeglass.Mesh
     /// shapes the game will mesh; there is no separate allocation API.
     /// </para>
     /// <para>
-    /// <see cref="MeshData.Release"/> returns its five buffers first and then
-    /// the wrapper, so a buffer that is mid-return is never stranded behind a
-    /// cleared window. The pool is not thread-safe: use one instance per
-    /// meshing thread (the process-wide <see cref="Shared"/> is for
+    /// <see cref="MeshData.Release"/> returns each buffer and clears its
+    /// window immediately, then returns the wrapper last, so a mid-sequence
+    /// throw can only leave not-yet-returned buffers for a retry and can never
+    /// strand a returned one. The pool is not thread-safe: use one instance
+    /// per meshing thread (the process-wide <see cref="Shared"/> is for
     /// single-threaded tests, tools and one worker at a time).
     /// </para>
     /// </remarks>
@@ -33,6 +34,16 @@ namespace Cubeglass.Mesh
 
         private readonly Dictionary<Type, object> _buckets = new Dictionary<Type, object>();
         private readonly Stack<MeshData> _meshData = new Stack<MeshData>();
+        private long _rented;
+        private long _returned;
+
+        /// <summary>
+        /// The number of stream/mask buffers currently checked out of the
+        /// pool (rents minus returns). A successful build/release cycle leaves
+        /// it unchanged; the throw-path gate uses it to prove that a failed
+        /// build returns every rent.
+        /// </summary>
+        internal long OutstandingBuffers => _rented - _returned;
 
         /// <summary>
         /// Returns a pooled array of at least <paramref name="minCapacity"/>
@@ -51,6 +62,7 @@ namespace Cubeglass.Mesh
                 return Array.Empty<T>();
             }
 
+            _rented++;
             return GetOrAddBuckets<T>().Rent(minCapacity);
         }
 
@@ -67,6 +79,7 @@ namespace Cubeglass.Mesh
 
             if (buffer.Length > 0)
             {
+                _returned++;
                 GetOrAddBuckets<T>().Return(buffer);
             }
         }

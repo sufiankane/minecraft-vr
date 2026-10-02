@@ -66,8 +66,18 @@ build/release cycles, then snapshots `GC.GetAllocatedBytesForCurrentThread()`
 around 1,000 `Build`+`Release` cycles; every result is consumed by a checked
 sink and no NUnit call sits inside a measured region. Measured loops cover the
 greedy terrain chunk, the greedy checkerboard chunk (the growth-path worst
-case), the reference culled terrain chunk, and a solid chunk after a build that
-threw on an unregistered block id (the per-buffer return path).
+case) and the reference culled terrain chunk.
+
+The fourth test, `ThrowingBuildReturnsRentedBuffersToThePool`, warms the pool
+**first**, then builds a chunk holding an unregistered block id so both meshers
+throw from mid-build. It checks `MeshBufferPool.OutstandingBuffers` (rents minus
+returns) across the throw and then measures a **single** following
+build/release cycle. The counter is the deterministic detector — a simulated
+one-array leak fails it — while the single-cycle allocation snapshot alone can
+be masked by a larger pooled array left by another test; the single cycle then
+also proves the pool still serves the next build with zero allocations. A
+warm-up after the throw would refill a leak and hide it, which is why the order
+is warm-up, throw, measure.
 
 Probe-first sequence:
 
@@ -76,9 +86,10 @@ Probe-first sequence:
 | Pre-pooling (RED, temporary test) | greedy terrain | FAIL: `allocated 1544736000 bytes over 1000 build/release cycles` |
 | Pre-pooling (RED, temporary test) | greedy checkerboard | FAIL: `allocated 3517137912 bytes over 1000 cycles` |
 | Pre-pooling (RED, temporary test) | culled terrain | FAIL: `allocated 3537261448 bytes over 1000 cycles` |
-| Pre-pooling (RED, temporary test) | solid after throwing build | FAIL: `allocated 44552000 bytes over 1000 cycles` |
-| Probe in the measured loop (`byte[16]` + `GC.KeepAlive`) | all four | FAIL: `allocated 40000 bytes over 1000 cycles` (40 bytes/cycle: 16-byte array + 24-byte header) |
-| Probe removed (GREEN, committed) | all four | PASS: delta `0` bytes |
+| Leak probe: `positions.Return()` temporarily removed from the greedy catch | throw path | FAIL: `the greedy throw path leaked 1 rented buffer(s)` |
+| Leak probe: same removal from the culled catch | throw path | FAIL: `the culled throw path leaked 1 rented buffer(s)` |
+| Probe in the measured loop (`byte[16]` + `GC.KeepAlive`) | warm-up gates | FAIL: `allocated 40000 bytes over 1000 cycles` (40 bytes/cycle: 16-byte array + 24-byte header) |
+| All probes removed (GREEN, committed) | all four | PASS: delta `0` bytes, `0` leaked buffers |
 
 Command:
 
@@ -143,8 +154,9 @@ floor 90%`. No extra tests were needed; the floor is enforced by the new
   `coverage/mesh` report with the same fail-loud selector as CoreMath/Voxel;
   the solution build and the 95/90 floors are unchanged.
 - `.github/workflows/nightly.yml`: `bench-dotnet` runs
-  `benchmarks/Mesh.Benchmarks/Mesh.Benchmarks.csproj` next to CoreMath and
-  Voxel, so the ADR-0007 harness is exercised nightly.
+  `benchmarks/Mesh.Benchmarks/Mesh.Benchmarks.csproj` (BenchmarkDotNet) next to
+  CoreMath and Voxel. The ADR-0007 `p95` harness (`-- p95`) is a local/release
+  gate recorded in `docs/perf/s3.md`; the nightly BDN run does not invoke it.
 - `docs/ci.md`: coverage table gains the `Cubeglass.Mesh` 90% row and the
   nightly paragraph names the Mesh benchmark project.
 - `docs/perf/s3.md`: machine, commands, p50/p95/p99 table and the budget
