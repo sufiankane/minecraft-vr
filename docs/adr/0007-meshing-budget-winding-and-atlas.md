@@ -145,6 +145,16 @@ the block definition index: `+Y` and `-Y` use `AtlasIndexTop`, `+Z` and `-Z`
 use `AtlasIndexFront`, `+X` and `-X` use `AtlasIndexSide`. (`-Y -> Top` keeps
 the three-index model total; revisit only with real bottom art.)
 
+Greedy merging (Task 2) keeps that mapping per block cell: a merged `W x H`
+quad — `W` cells along the face's U axis and `H` along V, derived from the
+winding corner table above (`+X` U=+Y,V=+Z; `-X` U=+Z,V=+Y; `+Y` U=+Z,V=+X;
+`-Y` U=+X,V=+Z; `+Z` U=+X,V=+Y; `-Z` U=+Y,V=+X) — uses the same corner
+pattern `(0,0), (W,0), (W,H), (0,H)` in tile units, i.e.
+`uv = TileMin + TileUvSize * (cornerU * W, cornerV * H)`. A 1x1 quad therefore
+reproduces the reference UVs exactly, and a merged quad repeats (tiles) the
+tile once per covered cell, so its UVs may leave `[0,1]` and rely on texture
+wrap; `GreedyMesher`'s class doc pins the same rule.
+
 ### Neighbour scope and missing chunks
 
 The neighbour scope is the 26 directions with components in `{-1, 0, 1}`,
