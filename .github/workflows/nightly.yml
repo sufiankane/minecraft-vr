@@ -67,6 +67,11 @@ jobs:
           dotnet run --configuration Release
           --project benchmarks/Voxel.Benchmarks/Voxel.Benchmarks.csproj
 
+      - name: Run Mesh benchmarks
+        run: >-
+          dotnet run --configuration Release
+          --project benchmarks/Mesh.Benchmarks/Mesh.Benchmarks.csproj
+
       - name: Upload BenchmarkDotNet artifacts
         uses: actions/upload-artifact@v4
         with:

@@ -11,7 +11,7 @@ merging is blocked while any of them fails.
 | --- | --- | --- |
 | `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror`, `clang-tidy` |
 | `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan build and `ctest` |
-| `dotnet` | `ubuntu-latest` | `dotnet test Cubeglass.sln --configuration Release` on the SDK pinned by `dotnet/global.json` |
+| `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, per-project `dotnet test` with `XPlat Code Coverage`, and the module coverage floors |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy`, `pytest` |
 | `depcheck` | `ubuntu-latest` | `python -m depcheck --root .` (inward-only dependency rules) |
 | `licences` | `ubuntu-latest` | `python -m depcheck licences --root .` (licence allowlist for declared dependencies) |
@@ -101,22 +101,24 @@ real instrumentable code; the `calib` and `depcheck` floors remain at 90.
 | `core-math` (C++) | `cpp-linux-asan` | 95% |
 | `Cubeglass.CoreMath` (.NET) | `dotnet` | 95% |
 | `Cubeglass.Voxel` (.NET) | `dotnet` | 90% |
+| `Cubeglass.Mesh` (.NET) | `dotnet` | 90% |
 | `calib` (Python) | `python` | 90% |
 | `depcheck` (Python) | `python` | 90% |
 
 `cpp-linux-asan` builds and runs the `linux-coverage` preset, generates
 Cobertura XML with `gcovr`, and runs
 `python -m depcheck coverage --report coverage.cobertura.xml --module core-math
---floor 95`. The `dotnet` job runs
-`dotnet test Cubeglass.sln --configuration Release` with `XPlat Code Coverage`
-and enforces `--module Cubeglass.CoreMath --floor 95` and `--module
-Cubeglass.Voxel --floor 90`. Both .NET floors select their report by content,
-because the Voxel test run also emits a (mostly uncovered)
-`Cubeglass.CoreMath` package: the CoreMath step matches the report whose
-`<source>` root is `src/CoreMath/`, the Voxel step matches the report containing
-the `Cubeglass.Voxel` package, and each fails loudly when no report matches. The
-`python` job runs `pytest` with coverage and enforces `--module calib --floor
-90` and `--module depcheck --floor 90`. A matched module with zero coverable
+--floor 95`. The `dotnet` job builds the solution, runs each .NET test project
+with `XPlat Code Coverage` into `coverage/coremath`, `coverage/voxel` and
+`coverage/mesh`, and enforces `--module Cubeglass.CoreMath --floor 95`,
+`--module Cubeglass.Voxel --floor 90` and `--module Cubeglass.Mesh --floor 90`.
+The CoreMath step selects its report by content, because the Voxel test run also
+emits a (mostly uncovered) `Cubeglass.CoreMath` package: it matches the report
+whose `<source>` root is `src/CoreMath/`; the Voxel and Mesh steps match the
+report containing the `Cubeglass.Voxel` / `Cubeglass.Mesh` package, and each
+fails loudly when no report matches. The `python` job runs `pytest` with
+coverage and enforces `--module calib --floor 90` and `--module depcheck --floor
+90`. A matched module with zero coverable
 lines still prints a `WARNING` and exits 0, but no current module takes that
 path: every floor above is enforced from its job's coverage report. See
 [`docs/perf/README.md`](perf/README.md) for details.
@@ -126,10 +128,14 @@ path: every floor above is enforced from its job's coverage report. See
 Performance numbers are produced by `.github/workflows/nightly.yml`, not by the
 required CI gates. The nightly lane runs `bench-cpp` (the Google Benchmark target
 `cg_core_math_benchmarks` from the `benchmarks` CMake preset) and `bench-dotnet`
-(the `dotnet/benchmarks/CoreMath.Benchmarks` and
-`dotnet/benchmarks/Voxel.Benchmarks` console projects), and uploads both outputs
-as GitHub Actions artefacts. The same workflow's `mutation` job runs
-`dotnet stryker` against `Cubeglass.Voxel` with the break threshold at 70.
+(the `dotnet/benchmarks/CoreMath.Benchmarks`,
+`dotnet/benchmarks/Voxel.Benchmarks` and `dotnet/benchmarks/Mesh.Benchmarks`
+console projects), and uploads both outputs as GitHub Actions artefacts. The
+Mesh project also carries the ADR-0007 budget harness, run from `dotnet/` as
+`dotnet run --configuration Release --project
+benchmarks/Mesh.Benchmarks/Mesh.Benchmarks.csproj -- p95`; its numbers are
+recorded in [`docs/perf/s3.md`](perf/s3.md). The same workflow's `mutation` job
+runs `dotnet stryker` against `Cubeglass.Voxel` with the break threshold at 70.
 Nothing is committed automatically. The methodology, the artefact locations and
 the S0 caveat are documented in [`docs/perf/README.md`](perf/README.md).
 

@@ -207,6 +207,16 @@ jobs:
           echo "Enforcing floor against ${report}"
           python -m depcheck coverage --report "$report" --module Cubeglass.Voxel --floor 90
 
+      - name: Enforce Mesh coverage floor
+        run: |
+          report=$(find coverage/mesh -name 'coverage.cobertura.xml' | head -n 1)
+          test -n "$report" || {
+            echo "ERROR: no coverage.cobertura.xml was found under coverage/mesh" >&2
+            exit 1
+          }
+          echo "Enforcing floor against ${report}"
+          python -m depcheck coverage --report "$report" --module Cubeglass.Mesh --floor 90
+
   python:
     name: python
     runs-on: ubuntu-latest
