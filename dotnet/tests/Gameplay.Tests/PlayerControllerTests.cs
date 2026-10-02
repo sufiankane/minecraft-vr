@@ -121,6 +121,29 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void BlockedUpwardMoveWithNonPositivePostGravityVelocityKeepsOnGroundFalse()
+        {
+            var world = TestWorlds.CreateFloor();
+            Assert.That(
+                world.Apply(new EditCommand(new Int3(8, 2, 8), BlockId.Air, TestWorlds.Stone, 1)),
+                Is.EqualTo(EditResult.Applied));
+
+            // v0 = +1.5 m/s at dt = 0.1 s and gravity -25 m/s^2 leave the
+            // post-gravity velocity at -1.0 m/s while the trapezoidal
+            // displacement is still +0.025 m; the ceiling blocks that upward
+            // move. OnGround must follow the displacement direction, not the
+            // post-gravity velocity sign.
+            PlayerState player = Player(8, 1.09, 8);
+            player.Velocity = new Vec3(0, 1.5, 0);
+
+            PlayerController.Step(player, in Frames.Neutral, world, 0.1);
+
+            Assert.That(player.Position.Y, Is.EqualTo(1.09).Within(1e-12), "the blocked move reverts to its exact start");
+            Assert.That(player.Velocity.Y, Is.EqualTo(0.0), "a blocked axis zeroes its velocity");
+            Assert.That(player.OnGround, Is.False, "an upward displacement stopped by a ceiling is not a landing");
+        }
+
+        [Test]
         public void FrameSplitInvarianceHoldsWithinOneMillimetre()
         {
             IWorld world = TestWorlds.CreateEmpty();
