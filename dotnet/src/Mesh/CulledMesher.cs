@@ -6,8 +6,8 @@ using Cubeglass.Voxel;
 namespace Cubeglass.Mesh
 {
     /// <summary>
-    /// The reference face-culling mesher (S3 WI1): one quad per exposed face,
-    /// no greedy merging and no ambient occlusion yet.
+    /// The reference face-culling mesher (S3 WI1): one quad per exposed face
+    /// with no greedy merging, and real per-vertex ambient occlusion.
     /// </summary>
     /// <remarks>
     /// Determinism (ADR-0007): cells are visited <c>z</c>, then <c>y</c>, then
@@ -21,9 +21,11 @@ namespace Cubeglass.Mesh
     /// internal right-handed frame, so <c>cross(v1 - v0, v2 - v0)</c> equals
     /// the stored outward normal. UVs use the block's atlas tile for the face
     /// orientation: <c>+Y</c>/<c>-Y</c> use Top, <c>+Z</c>/<c>-Z</c> use
-    /// Front and <c>+X</c>/<c>-X</c> use Side. Until Task 3 every vertex
-    /// carries AO 255 (fully open). Task 1 rents fresh arrays per build; Task 4
-    /// replaces that with pooling.
+    /// Front and <c>+X</c>/<c>-X</c> use Side. Each vertex's <c>Ao</c> byte is
+    /// the ADR-0007 quantised three-neighbour level computed by
+    /// <see cref="AmbientOcclusion"/>, whose samples also cross the chunk
+    /// border through the neighbour snapshot. Task 1 rents fresh arrays per
+    /// build; Task 4 replaces that with pooling.
     /// </remarks>
     public sealed class CulledMesher : IChunkMesher
     {
@@ -34,7 +36,6 @@ namespace Cubeglass.Mesh
         private const int DefaultTileSize = 16;
         private const int InitialVertexCapacity = 1024;
         private const int InitialIndexCapacity = 2048;
-        private const byte OpenAo = 255;
 
         /// <summary>
         /// Face order <c>+X, -X, +Y, -Y, +Z, -Z</c> (ADR-0007).
@@ -140,6 +141,9 @@ namespace Cubeglass.Mesh
                                 uvs,
                                 ao,
                                 indices,
+                                chunk,
+                                neighbours,
+                                blocks,
                                 face,
                                 AtlasIndex(definition, face),
                                 local);
@@ -216,6 +220,9 @@ namespace Cubeglass.Mesh
             List<Vector2f> uvs,
             List<byte> ao,
             List<int> indices,
+            ChunkSnapshot chunk,
+            NeighbourSnapshot neighbours,
+            IBlockRegistry blocks,
             int face,
             int atlasIndex,
             Int3 cell)
@@ -233,7 +240,7 @@ namespace Cubeglass.Mesh
                 uvs.Add(new Vector2f(
                     (corner == 1 || corner == 2) ? tileMin.X + tileSize : tileMin.X,
                     (corner >= 2) ? tileMin.Y + tileSize : tileMin.Y));
-                ao.Add(OpenAo);
+                ao.Add(AmbientOcclusion.Compute(chunk, neighbours, blocks, cell, face, corner));
             }
 
             indices.Add(first + 0);

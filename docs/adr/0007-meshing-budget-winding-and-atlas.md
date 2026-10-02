@@ -132,8 +132,18 @@ three-neighbour rule, pinned by Task 3 tests:
 
 `level = (side1 && side2) ? 0 : 3 - (side1 ? 1 : 0) - (side2 ? 1 : 0) - (corner ? 1 : 0)`.
 
-Task 1's reference mesher writes 255 at every vertex until Task 3 computes
-real AO; Task 3 updates the Task 2 golden hashes.
+Task 1's reference mesher wrote 255 at every vertex until Task 3 computed real
+AO in both meshers; Task 3 refilled the Task 2 golden hashes (solid, empty and
+single-corner hashes are unchanged because every sample of an isolated face
+reads air).
+
+Conservative merge rule (R22). `GreedyMesher` packs each exposed cell's four
+per-cell AO levels into its merge mask next to the block id and compares whole
+mask values, so two cells merge only when their block id and all four per-cell
+AO bytes are equal; the merged quad then stores that shared four-byte pattern
+in the reference corner order. A merged quad's AO therefore equals the
+per-cell AO of every cell it covers, at the cost of merging fewer quads than
+geometry alone would allow; `GreedyMesher`'s class doc pins the same rule.
 
 ### Atlas mapping
 
@@ -199,8 +209,8 @@ unit gate is allocation-based (zero bytes after pool warm-up).
   change, recorded here.
 - Bad: `Cubeglass.Mesh` is C# 10 while `Cubeglass.CoreMath` stays C# 9; the
   split is deliberate (R21) but two language levels coexist in S3.
-- Follow-up: Task 3 pins the AO formula in tests and updates goldens; Task 4
-  implements pooling, the allocation gate and records the measured budget.
+- Follow-up: Task 4 implements pooling, the allocation gate and records the
+  measured budget.
 
 ## Confirmation
 

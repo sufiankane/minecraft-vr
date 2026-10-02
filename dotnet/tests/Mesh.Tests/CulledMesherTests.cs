@@ -340,7 +340,7 @@ namespace Cubeglass.Mesh.Tests
         }
 
         [Test]
-        public void AoStreamHasOneFullOpenBytePerVertex()
+        public void UnoccludedBlockCarriesFullAo()
         {
             MeshData mesh = Build(
                 TestChunks.Snapshot(Origin, (Min, TestChunks.Stone)),
@@ -349,7 +349,7 @@ namespace Cubeglass.Mesh.Tests
             Assert.That(mesh.Ao.Length, Is.EqualTo(mesh.VertexCount));
             for (int i = 0; i < mesh.Ao.Length; i++)
             {
-                Assert.That(mesh.Ao.Span[i], Is.EqualTo(255), $"vertex {i} starts unoccluded before Task 3");
+                Assert.That(mesh.Ao.Span[i], Is.EqualTo(255), $"vertex {i} is unoccluded in open space");
             }
         }
 

@@ -234,14 +234,14 @@ namespace Cubeglass.Mesh.Tests
         }
 
         [Test]
-        public void AoStreamHasOneFullOpenBytePerMergedVertex()
+        public void UnoccludedSolidChunkCarriesFullAo()
         {
             MeshData mesh = Build(TestChunks.FilledSnapshot(Origin, TestChunks.Stone), NeighbourSnapshot.Empty);
 
             Assert.That(mesh.Ao.Length, Is.EqualTo(mesh.VertexCount));
             for (int i = 0; i < mesh.Ao.Length; i++)
             {
-                Assert.That(mesh.Ao.Span[i], Is.EqualTo(255), $"vertex {i} starts unoccluded before Task 3");
+                Assert.That(mesh.Ao.Span[i], Is.EqualTo(255), $"vertex {i} is unoccluded: every AO sample is outside the chunk");
             }
         }
 

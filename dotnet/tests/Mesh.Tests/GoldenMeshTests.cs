@@ -9,10 +9,13 @@ namespace Cubeglass.Mesh.Tests
     /// meshed by <see cref="GreedyMesher"/> with the registries below.
     /// </summary>
     /// <remarks>
-    /// The constants were produced by the first GREEN run of this fixture and
-    /// are recorded with the command and counts in
-    /// <c>.superpowers/sdd/2026-10-01-s3-meshing/task-2-report.md</c>. Task 3
-    /// replaces the AO placeholder (255) and must update them.
+    /// The constants were produced by the Task 3 GREEN run of this fixture
+    /// (the Task 2 constants were AO placeholders) and are recorded with the
+    /// command and counts in
+    /// <c>.superpowers/sdd/2026-10-01-s3-meshing/task-3-report.md</c>. Solid,
+    /// empty and single-corner chunks keep their Task 2 hashes because every
+    /// AO sample of an isolated face reads air (255); the checkerboard and
+    /// terrain hashes change with real AO.
     /// </remarks>
     [TestFixture]
     public sealed class GoldenMeshTests
@@ -20,12 +23,12 @@ namespace Cubeglass.Mesh.Tests
         private static readonly ChunkCoord Origin = new ChunkCoord(0, 0, 0);
         private static readonly GreedyMesher Mesher = new GreedyMesher();
 
-        // Produced by the first GREEN run of this fixture; the exact command,
-        // counts and recomputation recipe are recorded in task-2-report.md.
+        // Produced by the Task 3 GREEN run of this fixture; the exact command,
+        // counts and recomputation recipe are recorded in task-3-report.md.
         private const ulong SolidHash = 0xDDFB9E0705773F21UL;
         private const ulong EmptyHash = 0xA8C7F832281A39C5UL;
-        private const ulong TerrainHash = 0x878480E926DAB5BAUL;
-        private const ulong CheckerboardHash = 0xF761A180066141B1UL;
+        private const ulong TerrainHash = 0xBEC043606861A156UL;
+        private const ulong CheckerboardHash = 0x974E1E84E4D580C6UL;
         private const ulong SingleCornerHash = 0x16F1B6539053D181UL;
 
         private static readonly IBlockRegistry TerrainRegistry = BlockRegistry.Parse(TerrainBlocksJson);
