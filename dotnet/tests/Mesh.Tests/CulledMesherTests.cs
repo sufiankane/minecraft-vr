@@ -185,6 +185,21 @@ namespace Cubeglass.Mesh.Tests
         }
 
         [Test]
+        public void NegativeCoordinateCentreChunkCullsAgainstItsWorldNeighbour()
+        {
+            var centre = new ChunkCoord(-2, 3, -1);
+            var west = new ChunkCoord(-3, 3, -1);
+
+            MeshData mesh = Build(
+                TestChunks.Snapshot(centre, (Min, TestChunks.Stone)),
+                TestChunks.Neighbours(centre, (west, new Int3(15, 0, 0), TestChunks.Stone)));
+
+            Assert.That(mesh.VertexCount, Is.EqualTo(20), "the -X border face is culled through negative world coordinates");
+            Assert.That(mesh.Min, Is.EqualTo(new Vector3f(0.0F, 0.0F, 0.0F)));
+            Assert.That(mesh.Max, Is.EqualTo(new Vector3f(1.0F, 1.0F, 1.0F)));
+        }
+
+        [Test]
         public void BorderFaceWithoutANeighbourIsEmitted()
         {
             MeshData mesh = Build(
@@ -192,6 +207,29 @@ namespace Cubeglass.Mesh.Tests
                 NeighbourSnapshot.Empty);
 
             Assert.That(mesh.VertexCount, Is.EqualTo(24), "an absent neighbour reads as air");
+        }
+
+        [Test]
+        public void BuildRentsFromTheInjectedPool()
+        {
+            var pool = new MeshBufferPool();
+            var mesher = new CulledMesher(Layout, pool);
+
+            MeshData mesh = mesher.Build(
+                TestChunks.Snapshot(Origin, (Min, TestChunks.Stone)),
+                NeighbourSnapshot.Empty,
+                TestChunks.Registry);
+
+            Assert.That(pool.OutstandingBuffers, Is.GreaterThan(0L), "the build must rent from the injected pool");
+            mesh.Release();
+            Assert.That(pool.OutstandingBuffers, Is.Zero, "release must return every buffer to the injected pool");
+        }
+
+        [Test]
+        public void ConstructorsRejectNullArguments()
+        {
+            Assert.Throws<ArgumentNullException>(() => new CulledMesher((AtlasLayout)null!));
+            Assert.Throws<ArgumentNullException>(() => new CulledMesher(Layout, (MeshBufferPool)null!));
         }
 
         [Test]

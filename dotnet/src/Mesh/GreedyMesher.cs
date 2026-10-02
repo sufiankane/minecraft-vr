@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Cubeglass.CoreMath;
 using Cubeglass.Voxel;
 
@@ -28,19 +27,22 @@ namespace Cubeglass.Mesh
     /// where an absent neighbour reads as air) holds an opaque block, so
     /// non-opaque neighbours never cull and there is never a face between two
     /// opaque cells. The mask carries the block id, so different blocks never
-    /// merge; non-opaque and opaque faces stay separate. Task 4 replaces
-    /// per-build array rental with pooling.
+    /// merge; non-opaque and opaque faces stay separate. The mask and the five
+    /// streams are rented from the <see cref="MeshBufferPool"/> this mesher was
+    /// constructed with, so a warmed-up build and release allocates nothing. A
+    /// mesher is single-threaded: an instance is safe on one thread at a time,
+    /// and parallel callers must construct a distinct pool (and mesher) per
+    /// worker (ADR-0007).
     /// </para>
     /// <para>
-    /// Ambient occlusion (Task 3, ADR-0007): every exposed cell's four
-    /// per-cell AO levels are computed by <see cref="AmbientOcclusion"/> and
-    /// packed, two bits per corner in the ADR-0007 corner order, into the
-    /// mask value next to the block id. Because the merge scan compares whole
-    /// packed values, two cells merge only when their block id and all four
-    /// per-cell AO bytes are equal — the conservative merge rule (R22) — so a
-    /// merged <c>W x H</c> quad stores exactly the per-cell AO pattern of
-    /// every cell it covers, and geometrically mergeable cells whose AO
-    /// differs stay separate quads.
+    /// Ambient occlusion (ADR-0007): every exposed cell's four per-cell AO
+    /// levels are computed by <see cref="AmbientOcclusion"/> and packed, two
+    /// bits per corner in the ADR-0007 corner order, into the mask value next
+    /// to the block id. Because the merge scan compares whole packed values,
+    /// two cells merge only when their block id and all four per-cell AO bytes
+    /// are equal — the conservative merge rule (R22) — so a merged <c>W x H</c>
+    /// quad stores exactly the per-cell AO pattern of every cell it covers,
+    /// and geometrically mergeable cells whose AO differs stay separate quads.
     /// </para>
     /// <para>
     /// UV rule: a merged <c>W x H</c> quad (W cells along the face's U axis,
@@ -56,15 +58,12 @@ namespace Cubeglass.Mesh
     /// <c>-Z</c> U=+Y,V=+X.
     /// </para>
     /// </remarks>
-    public sealed class GreedyMesher : IChunkMesher
+    public sealed class GreedyMesher : IChunkMesher, IMeshEmitter
     {
         private const int FaceCount = 6;
         private const int CornersPerQuad = 4;
-        private const int IndicesPerQuad = 6;
         private const int DefaultTilesPerRow = 16;
         private const int DefaultTileSize = 16;
-        private const int InitialVertexCapacity = 1024;
-        private const int InitialIndexCapacity = 2048;
         private const int SliceSize = ChunkMath.ChunkSize;
         private const int MaskSize = SliceSize * SliceSize;
         private const int AoBitsPerCorner = 2;
@@ -126,6 +125,7 @@ namespace Cubeglass.Mesh
         private static readonly int[] CornerV = { 0, 0, 1, 1 };
 
         private readonly AtlasLayout _layout;
+        private readonly MeshBufferPool _pool;
 
         /// <summary>Creates a mesher over the default 16x16 atlas tiles.</summary>
         public GreedyMesher()
@@ -133,81 +133,63 @@ namespace Cubeglass.Mesh
         {
         }
 
-        /// <summary>Creates a mesher over <paramref name="layout"/>.</summary>
+        /// <summary>
+        /// Creates a mesher over <paramref name="layout"/> that rents from
+        /// <see cref="MeshBufferPool.Shared"/>.
+        /// </summary>
         /// <exception cref="ArgumentNullException">
         /// <paramref name="layout"/> is null.
         /// </exception>
         public GreedyMesher(AtlasLayout layout)
+            : this(layout, MeshBufferPool.Shared)
+        {
+        }
+
+        /// <summary>
+        /// Creates a mesher over <paramref name="layout"/> that rents from
+        /// <paramref name="pool"/>. Pass a pool owned by the calling worker to
+        /// mesh on several threads (ADR-0007).
+        /// </summary>
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="layout"/> or <paramref name="pool"/> is null.
+        /// </exception>
+        public GreedyMesher(AtlasLayout layout, MeshBufferPool pool)
         {
             _layout = layout ?? throw new ArgumentNullException(nameof(layout));
+            _pool = pool ?? throw new ArgumentNullException(nameof(pool));
         }
 
         public MeshData Build(ChunkSnapshot chunk, NeighbourSnapshot neighbours, IBlockRegistry blocks)
         {
-            if (chunk is null)
-            {
-                throw new ArgumentNullException(nameof(chunk));
-            }
+            return MesherBuild.Run(_pool, this, chunk, neighbours, blocks);
+        }
 
-            if (neighbours is null)
+        /// <summary>
+        /// Builds and merges the slice masks in orientation-major order,
+        /// renting the scratch mask from this mesher's pool.
+        /// </summary>
+        void IMeshEmitter.Emit(
+            ChunkSnapshot chunk,
+            NeighbourSnapshot neighbours,
+            IBlockRegistry blocks,
+            ref MeshBuffers buffers)
+        {
+            int[] mask = _pool.Rent<int>(MaskSize);
+            try
             {
-                throw new ArgumentNullException(nameof(neighbours));
-            }
-
-            if (blocks is null)
-            {
-                throw new ArgumentNullException(nameof(blocks));
-            }
-
-            var positions = new List<Vector3f>(InitialVertexCapacity);
-            var normals = new List<Vector3f>(InitialVertexCapacity);
-            var uvs = new List<Vector2f>(InitialVertexCapacity);
-            var ao = new List<byte>(InitialVertexCapacity);
-            var indices = new List<int>(InitialIndexCapacity);
-            var mask = new int[MaskSize];
-
-            for (int face = 0; face < FaceCount; face++)
-            {
-                for (int slice = 0; slice < ChunkMath.ChunkSize; slice++)
+                for (int face = 0; face < FaceCount; face++)
                 {
-                    BuildMask(mask, chunk, neighbours, blocks, face, slice);
-                    MergeMask(mask, positions, normals, uvs, ao, indices, blocks, face, slice);
+                    for (int slice = 0; slice < ChunkMath.ChunkSize; slice++)
+                    {
+                        BuildMask(mask, chunk, neighbours, blocks, face, slice);
+                        MergeMask(mask, ref buffers, blocks, face, slice);
+                    }
                 }
             }
-
-            int vertexCount = positions.Count;
-            int indexCount = indices.Count;
-            Vector3f min = Vector3f.Zero;
-            Vector3f max = Vector3f.Zero;
-            if (vertexCount > 0)
+            finally
             {
-                min = positions[0];
-                max = positions[0];
-                for (int i = 1; i < vertexCount; i++)
-                {
-                    Vector3f position = positions[i];
-                    min = new Vector3f(
-                        Math.Min(min.X, position.X),
-                        Math.Min(min.Y, position.Y),
-                        Math.Min(min.Z, position.Z));
-                    max = new Vector3f(
-                        Math.Max(max.X, position.X),
-                        Math.Max(max.Y, position.Y),
-                        Math.Max(max.Z, position.Z));
-                }
+                _pool.Return(mask);
             }
-
-            return new MeshData(
-                MeshBufferPool.Shared,
-                RentAndCopy(positions),
-                RentAndCopy(normals),
-                RentAndCopy(uvs),
-                RentAndCopy(ao),
-                RentAndCopy(indices),
-                vertexCount,
-                indexCount,
-                min,
-                max);
         }
 
         /// <summary>
@@ -259,11 +241,7 @@ namespace Cubeglass.Mesh
         /// </summary>
         private void MergeMask(
             int[] mask,
-            List<Vector3f> positions,
-            List<Vector3f> normals,
-            List<Vector2f> uvs,
-            List<byte> ao,
-            List<int> indices,
+            ref MeshBuffers buffers,
             IBlockRegistry blocks,
             int face,
             int slice)
@@ -292,11 +270,7 @@ namespace Cubeglass.Mesh
 
                     BlockDefinition definition = blocks.Get(new BlockId((ushort)(value >> IdShift)));
                     AppendQuad(
-                        positions,
-                        normals,
-                        uvs,
-                        ao,
-                        indices,
+                        ref buffers,
                         face,
                         AtlasIndex(definition, face),
                         value & AoBitsMask,
@@ -336,11 +310,7 @@ namespace Cubeglass.Mesh
         }
 
         private void AppendQuad(
-            List<Vector3f> positions,
-            List<Vector3f> normals,
-            List<Vector2f> uvs,
-            List<byte> ao,
-            List<int> indices,
+            ref MeshBuffers buffers,
             int face,
             int atlasIndex,
             int aoBits,
@@ -355,29 +325,29 @@ namespace Cubeglass.Mesh
             Vector3f normal = FaceNormals[face];
             int plane = slice + (FacePositive[face] ? 1 : 0);
             int[] map = FacePositionMap[face];
-            int first = positions.Count;
+            int first = buffers.Positions.Count;
 
             for (int corner = 0; corner < CornersPerQuad; corner++)
             {
                 int u = u0 + (CornerU[corner] * width);
                 int v = v0 + (CornerV[corner] * height);
-                positions.Add(new Vector3f(
+                buffers.Positions.Add(new Vector3f(
                     Component(map[0], plane, u, v),
                     Component(map[1], plane, u, v),
                     Component(map[2], plane, u, v)));
-                normals.Add(normal);
-                uvs.Add(new Vector2f(
+                buffers.Normals.Add(normal);
+                buffers.Uvs.Add(new Vector2f(
                     tileMin.X + (CornerU[corner] * width * tileSize.X),
                     tileMin.Y + (CornerV[corner] * height * tileSize.Y)));
-                ao.Add(AmbientOcclusion.Encode((aoBits >> (corner * AoBitsPerCorner)) & AoLevelMask));
+                buffers.Ao.Add(AmbientOcclusion.Encode((aoBits >> (corner * AoBitsPerCorner)) & AoLevelMask));
             }
 
-            indices.Add(first + 0);
-            indices.Add(first + 1);
-            indices.Add(first + 2);
-            indices.Add(first + 0);
-            indices.Add(first + 2);
-            indices.Add(first + 3);
+            buffers.Indices.Add(first + 0);
+            buffers.Indices.Add(first + 1);
+            buffers.Indices.Add(first + 2);
+            buffers.Indices.Add(first + 0);
+            buffers.Indices.Add(first + 2);
+            buffers.Indices.Add(first + 3);
         }
 
         private static float Component(int source, int plane, int u, int v)
@@ -451,13 +421,6 @@ namespace Cubeglass.Mesh
                 default: // +X / -X
                     return definition.AtlasIndexSide;
             }
-        }
-
-        private static T[] RentAndCopy<T>(List<T> source)
-        {
-            T[] array = MeshBufferPool.Shared.Rent<T>(source.Count);
-            source.CopyTo(array);
-            return array;
         }
     }
 }

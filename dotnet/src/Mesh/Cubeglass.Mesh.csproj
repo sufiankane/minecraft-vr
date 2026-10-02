@@ -7,6 +7,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Cubeglass.Mesh.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\CoreMath\Cubeglass.CoreMath.csproj" />
     <ProjectReference Include="..\Voxel\Cubeglass.Voxel.csproj" />
   </ItemGroup>
