@@ -28,6 +28,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "result.hpp"
@@ -131,16 +132,34 @@ void CloseLibrary(LibraryHandle handle) noexcept {
 
 #endif
 
+/// Maximum number of distinct messages interned over the process lifetime.
+constexpr std::size_t kMaxInternedMessages = 64;
+
 /// Returns a process-lifetime copy of `message`. `Status` stores a non-owning
 /// `const char*`, and loader messages are built at runtime, so they are
-/// interned here. The error path is cold, so interned strings are never
+/// interned here. Identical messages share one pointer; at most
+/// `kMaxInternedMessages` distinct messages are kept and every further one
+/// gets the static fallback, so a pathological caller cannot grow the pool
+/// without bound. The error path is cold, so interned strings are never
 /// released; `std::deque` keeps every `c_str()` stable across later pushes.
 [[nodiscard]] const char *InternMessage(std::string message) {
+    static const char *const kOverflowMessage = "viture_loader: too many distinct error messages";
     static std::mutex mutex;
     static std::deque<std::string> pool;
+    static std::unordered_map<std::string, const char *> interned;
+
     const std::lock_guard<std::mutex> lock(mutex);
+    const auto existing = interned.find(message);
+    if (existing != interned.end()) {
+        return existing->second;
+    }
+    if (interned.size() >= kMaxInternedMessages) {
+        return kOverflowMessage;
+    }
     pool.push_back(std::move(message));
-    return pool.back().c_str();
+    const char *stable = pool.back().c_str();
+    interned.emplace(pool.back(), stable);
+    return stable;
 }
 
 // --- Provisional vendor binding table (see the HIL note at the top) --------

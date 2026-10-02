@@ -22,10 +22,13 @@ inline constexpr std::int64_t kViturePollTimeoutNs = 100'000'000;
 /// `FakeVitureApi`.
 ///
 /// Threading contract:
-/// - One polling thread owns the session. It calls, one at a time:
-///   `CreateDevice`, `StartPose`, then `PollPose` in a loop, any of
-///   `ResetOriginCarina`/`SetDisplayMode`/`GetRefreshHz`/`SdkVersion`, and
-///   finally `DestroyDevice`. Render/reader threads never call any method.
+/// - `CreateDevice`, `StartPose` and `DestroyDevice` are lifecycle calls. The
+///   wrapper calls them on its caller thread in `Start`/`Stop` and on the
+///   polling thread while reconnecting; they are serialised with the polling
+///   loop and with each other, never concurrent with a poll.
+/// - `PollPose`, `ResetOriginCarina`, `SetDisplayMode`, `GetRefreshHz` and
+///   `SdkVersion` are called on the polling thread only, one at a time in the
+///   loop. Render/reader threads never call any method.
 /// - `RequestStop()` is the one cross-thread call: the thread asking the
 ///   polling thread to finish (the wrapper's `Stop()`) sets it before
 ///   joining. It is thread-safe, idempotent and `noexcept`, and a blocked
@@ -54,9 +57,17 @@ class IVitureApi {
     ///
     /// May block for up to `kViturePollTimeoutNs` while no sample is
     /// available, and returns `StatusCode::Timeout` when the wait elapses or
-    /// a stop was requested. `sample.host_time` is on the host timeline
-    /// (ADR-0004) and `sample.sequence` is the implementation's monotonic
-    /// counter; the wrapper owns the sequence it publishes.
+    /// a stop was requested.
+    ///
+    /// `sample.host_time` is a legacy C field name inherited from the dossier
+    /// 5.2 struct; it is **not** an instant on the host timeline. It carries
+    /// the SDK's monotonic timestamp encoded in nanoseconds (F-05 counts SDK
+    /// timestamps in seconds). The wrapper converts it once with `ToSeconds`
+    /// and feeds the seconds value to `ClockMapper.AddSample(seconds,
+    /// clock.Now())`, publishing `ClockMapper.Map(seconds)`; treating the raw
+    /// field as an existing HostTime would double-map it. `sample.sequence` is
+    /// the implementation's monotonic counter; the wrapper owns the sequence
+    /// it publishes.
     virtual Result<cg_head_sample> PollPose() = 0;
 
     /// Makes `pose`, layout `[px, py, pz, qw, qx, qy, qz]`, the new origin:

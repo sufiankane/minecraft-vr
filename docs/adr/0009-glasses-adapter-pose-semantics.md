@@ -145,12 +145,15 @@ Every vendor call goes through `IVitureApi`
 (`cpp/glasses/include/cg/glasses/viture_api.hpp`): `CreateDevice`,
 `DestroyDevice`, `StartPose`, `PollPose` (blocking, capped at
 `kViturePollTimeoutNs` = 100 ms), `ResetOriginCarina`, `SetDisplayMode`,
-`GetRefreshHz`, `SdkVersion` and `RequestStop`. One polling thread owns the
-session; `RequestStop` is the only cross-thread call, is thread-safe and
+`GetRefreshHz`, `SdkVersion` and `RequestStop`. `CreateDevice`/`StartPose`/
+`DestroyDevice` are lifecycle calls made on the wrapper's caller thread
+(`Start`/`Stop`) and on the polling thread while reconnecting, serialised with
+the polling loop; `PollPose`/`ResetOriginCarina`/display calls run on the
+polling thread. `RequestStop` is the one cross-thread call, is thread-safe and
 `noexcept`, and must make a blocked `PollPose` return promptly with `Timeout`;
-`StartPose` clears it. Time enters the wrapper as an injected
-`IHostClock` (`SteadyHostClock` in production, `ManualHostClock` in tests). No
-translation unit includes a vendor header; tests drive `FakeVitureApi`
+`StartPose` clears it. Time enters the wrapper as an injected `IHostClock`
+(`SteadyHostClock` in production, `ManualHostClock` in tests). No translation
+unit includes a vendor header; tests drive `FakeVitureApi`
 (`cpp/tests/glasses/fake_viture_api.hpp`), which scripts a `Result` per call,
 counts calls and blocks a long poll until `RequestStop`.
 
@@ -171,6 +174,51 @@ library fails with `Unsupported` naming the first unresolved placeholder; the
 table and its thin adapter are rewritten in that single TU when the answers
 exist. The loader is tested on the error paths only (missing library, empty
 path), which is all that is testable without the vendor DLL.
+
+### Polling policy (Task 2)
+
+`VitureHeadPoseSource`
+(`cpp/glasses/include/cg/glasses/viture_head_pose_source.hpp`) runs one
+`std::jthread` per started session, named `cg-viture-poll` with
+`SetThreadDescription` on Windows; an injectable setup hook (no-op default,
+swallowed if it throws) raises its priority in production. `Start` performs
+`CreateDevice` and `StartPose` on the caller thread, so a failed start returns
+the SDK error synchronously and leaves the object ready for a clean retry,
+then launches the thread; the thread owns `PollPose`, `ResetOriginCarina` and
+the reconnect lifecycle calls.
+
+**SDK time and the repurposed `host_time` field.** `cg_head_sample::host_time`
+is a legacy C field name inherited from the dossier 5.2 struct: it does **not**
+carry a host instant. `IVitureApi::PollPose` fills it with the SDK's monotonic
+timestamp encoded in nanoseconds (F-05 counts SDK timestamps in seconds), and
+the wrapper converts it once with `ToSeconds`, feeds
+`ClockMapper.AddSample(seconds, clock.Now())` and publishes
+`ClockMapper.Map(seconds)`. Reading the raw field as an existing `HostTime`
+would map it a second time; the ADR-0004 rule that the SDK's double seconds are
+converted once at the adapter boundary is what makes this field the sole time
+seam.
+
+**Fault and quiet policy.** A `Device`/`Timeout` (or any other) poll failure
+destroys the device and waits an interruptible backoff of 100 ms doubling to a
+2 s cap. After `kMaxReconnectAttempts` = 10 consecutive failed recreates the
+thread stops recreating and probes every 2 s, reporting `Lost` until a poll
+succeeds; a success resets the attempt counter, the backoff and the quiet
+state. With no successful poll it publishes a synthetic sample carrying the
+last pose and the current host time: `Unstable` after 500 ms
+(`kUnstableAfter`) and `Lost` after 1000 ms (`kLostAfter`). Backoff and quiet
+thresholds are measured on the injected `IHostClock`, so tests pin the
+schedule with `ManualHostClock` and `Stop` interrupts a pending 2 s backoff
+immediately.
+
+**Recentre.** `Recenter` is posted to the polling thread (the only caller of
+the seam), which narrows the newest pose to the SDK's `float[7]` layout
+(`[px, py, pz, qw, qx, qy, qz]`), calls `ResetOriginCarina` and returns its
+`Result` to the waiting caller. On success the wrapper arms an inverse-yaw
+correction for samples whose sequence is at or below the reset sample, so the
+newest pre-reset sample reads recentred as soon as `Recenter` returns (pitch
+and roll untouched, position unchanged) while later samples arrive already
+recentred from the SDK; the polling thread holds the next publish until a
+reader observes the corrected sample, bounded by `kRecentreReadTimeout` = 1 s.
 
 ### Recentre
 

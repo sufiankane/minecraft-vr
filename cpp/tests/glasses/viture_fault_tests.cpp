@@ -183,7 +183,8 @@ TEST(VitureFault, BlockingPollLeavesReadersWaitFreeAndStopPrompt) {
     EXPECT_TRUE(api.stop_requested());
 }
 
-/// `Recenter` returns the SDK's `ResetOriginCarina` failure as its own Result.
+/// `Recenter` returns the SDK's `ResetOriginCarina` failure as its own Result,
+/// and the pose it forwards is the newest pose in the SDK `float[7]` layout.
 TEST(VitureFault, ResetFailureSurfacesAsResult) {
     FakeVitureApi api;
     ManualHostClock clock;
@@ -199,11 +200,82 @@ TEST(VitureFault, ResetFailureSurfacesAsResult) {
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), StatusCode::Device);
     EXPECT_EQ(api.reset_origin_calls.load(), 1U);
-    EXPECT_TRUE(api.has_reset_pose);
+    ASSERT_TRUE(api.has_reset_pose);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[0]), sample.pose.position.x, 1e-6);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[1]), sample.pose.position.y, 1e-6);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[2]), sample.pose.position.z, 1e-6);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[3]), sample.pose.rotation.w(), 1e-6);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[4]), sample.pose.rotation.x(), 1e-6);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[5]), sample.pose.rotation.y(), 1e-6);
+    EXPECT_NEAR(static_cast<double>(api.last_reset_pose[6]), sample.pose.rotation.z(), 1e-6);
     source.Stop();
 }
 
-/// Once `Stop` returns, a pending backoff must not reconnect any more.
+/// After 10 consecutive failed recreates the thread stops recreating, keeps
+/// probing and reporting Lost, then recovers on a successful poll without
+/// breaking sequence order or creating another device.
+TEST(VitureFault, ReconnectCapStopsRecreatingAndRecoversOnLostProbe) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.poll_delay_ns = 1'000'000; // 1 ms per poll keeps the assertions race-free.
+    const std::int64_t kSdkStart = 1'000'000'000;
+    api.poll_script.push_back(Ok(CgSample(1, kSdkStart, CG_TRACK_STABLE, 0.0)));
+    for (int i = 0; i < 20; ++i) {
+        api.poll_script.push_back(Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}));
+    }
+    for (std::uint32_t i = 0; i < 100; ++i) {
+        api.poll_script.push_back(Ok(CgSample(i + 2, kSdkStart + static_cast<std::int64_t>(i + 1) * 10'000'000,
+                                              CG_TRACK_STABLE, 0.1 * static_cast<double>(i + 1))));
+    }
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+
+    // Release every backoff (0.1+0.2+0.4+0.8+1.6+2*5 = 13.1 s). Every retry
+    // re-arms its deadline from the current clock, so advance it tick by tick.
+    for (int tick = 0; tick < 40 && api.create_calls.load() < 11U; ++tick) {
+        clock.Advance(Duration{1'000'000'000});
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_EQ(api.create_calls.load(), 11U) << "10 recreates must have been attempted";
+    HeadSample lost = PlaceholderSample();
+    ASSERT_TRUE(WaitForState(source, TrackState::Lost, lost));
+    EXPECT_EQ(api.create_calls.load(), 11U);
+
+    // The probe keeps running on the clock without recreating: 2 s per poll.
+    clock.Advance(Duration{2'500'000'000});
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(api.create_calls.load(), 11U);
+    HeadSample still_lost = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(still_lost, Duration{0}));
+    EXPECT_EQ(still_lost.state, TrackState::Lost);
+    clock.Advance(Duration{2'500'000'000});
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(api.create_calls.load(), 11U);
+
+    // A successful poll resets the streak and continues the sequence. Each
+    // capped probe re-arms its 2 s deadline from the current clock, so keep
+    // stepping the clock until the scripted success is reached.
+    HeadSample recovered = PlaceholderSample();
+    ASSERT_TRUE(WaitFor(
+        [&] {
+            if (source.TryGetLatest(recovered, Duration{0}) && recovered.state == TrackState::Stable &&
+                recovered.seq > lost.seq) {
+                return true;
+            }
+            clock.Advance(Duration{2'500'000'000});
+            return false;
+        },
+        std::chrono::milliseconds(3000)));
+    EXPECT_GT(recovered.time, lost.time);
+    EXPECT_EQ(api.create_calls.load(), 11U);
+    source.Stop();
+}
+
+/// Once `Stop` returns, a pending backoff must not reconnect any more, even
+/// when the clock the backoff waits on advances afterwards.
 TEST(VitureFault, NoReconnectAfterStop) {
     FakeVitureApi api;
     ManualHostClock clock;
@@ -222,6 +294,7 @@ TEST(VitureFault, NoReconnectAfterStop) {
     source.Stop();
     const std::uint64_t creates_at_stop = api.create_calls.load();
     const std::uint64_t destroys_at_stop = api.destroy_calls.load();
+    clock.Advance(Duration{5'000'000'000});
     std::this_thread::sleep_for(std::chrono::milliseconds(40));
     EXPECT_EQ(api.create_calls.load(), creates_at_stop);
     EXPECT_EQ(api.destroy_calls.load(), destroys_at_stop);
