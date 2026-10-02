@@ -6,7 +6,8 @@
     "Cubeglass.Unity.Input",
     "Cubeglass.Unity.Bridge",
     "UnityEngine.TestRunner",
-    "UnityEditor.TestRunner"
+    "UnityEditor.TestRunner",
+    "UnityEditor"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

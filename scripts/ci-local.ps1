@@ -241,6 +241,10 @@ try {
             }
             Push-Location $RepoRoot
             try {
+                # The S6 calibration scene (Assets/Scenes/Calibration.unity) is
+                # committed and byte-stable; the PlayMode lane loads it directly.
+                # Regenerating it is a manual menu/batch action and is
+                # deliberately not part of this per-commit lane.
                 Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
                     & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResultsEditMode
                 }
