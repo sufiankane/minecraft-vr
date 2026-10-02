@@ -68,6 +68,7 @@ jobs:
 
       - name: Build tools (Release)
         run: cmake --build --preset linux-ci
+        working-directory: cpp
 
       - name: Run glasses soak (30 minutes)
         run: |

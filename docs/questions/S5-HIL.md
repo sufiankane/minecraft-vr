@@ -15,17 +15,20 @@
   - `cg-pose-probe --source viture` (no DLL and `CG_VITURE_DLL` unset);
   - `--dll <bad path>`;
   - `--dll kernel32.dll` (opens, but the placeholder entry points are absent).
-  Each exits 2 with the loader's `Unsupported` message naming the missing
-  library or the first unresolved symbol. The software substitutes were run
-  instead: the contract suite's `viture-fake` factory (the wrapper over
-  `FakeVitureApi`), the fake/replay probe smoke runs, and the soak.
+  The no-DLL case exits 2 with `viture_loader: empty DLL path`
+  (`InvalidArgument`); the bad-path and `kernel32.dll` cases exit 2 with
+  `Unsupported`, naming the path or the first unresolved symbol. The software
+  substitutes were run instead: the contract suite's `viture-fake` factory (the
+  wrapper over `FakeVitureApi`), the fake/replay probe smoke runs, and the
+  soak.
 - **Evidence:** the pre-HIL behaviour is recorded in
-  [`../perf/s5.md`](../perf/s5.md) ("`--source viture` fails with exit code 2
-  and the loader's `Unsupported` message on this machine (no vendor DLL): the
-  documented pre-HIL behaviour") and in the Task 4a exit-code matrix (no DLL /
-  bad path / `kernel32.dll` → exit 2 with the loader message). The loader tests
-  pin only the error paths (`cpp/tests/glasses/viture_loader_tests.cpp`); the
-  vendor export names and calling convention are unresolved placeholders
+  [`../perf/s5.md`](../perf/s5.md) (no DLL → exit 2 with the loader's
+  `InvalidArgument: viture_loader: empty DLL path`; a bad path → exit 2 with
+  `Unsupported` and the path in the message: the documented pre-HIL behaviour)
+  and in the Task 4a exit-code matrix (no DLL / bad path / `kernel32.dll` →
+  exit 2 with the loader message). The loader tests pin only the error paths
+  (`cpp/tests/glasses/viture_loader_tests.cpp`); the vendor export names and
+  calling convention are unresolved placeholders
   (`cpp/glasses/src/viture_loader.cpp`).
 - **Question:** can the owner attach the Luma Ultra to a Windows host with the
   VITURE SDK and run the probe below, then commit the CSV and console log?
@@ -72,9 +75,11 @@ New-Item -ItemType Directory -Force docs\notes\s5-hil | Out-Null
 ```
 
 `--dll` may be replaced by the `CG_VITURE_DLL` environment variable. Exit 0
-means at least one sample was read; exit 2 means the source is unavailable
-(loader/`Unsupported`/`NotReady`) and the message names the first unresolved
-symbol — that message is itself part of the symbol-name evidence.
+means at least one sample was read; exit 2 means the viture library failed to
+load (any loader failure, including `InvalidArgument` for an empty path) or the
+source reported `Unsupported`/`NotReady`; the message names the failure, the
+path or the first unresolved symbol — that message is itself part of the
+symbol-name evidence.
 
 ## What the owner must attach / install
 

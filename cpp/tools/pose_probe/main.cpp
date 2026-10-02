@@ -23,12 +23,15 @@
 // emits at the requested rate, so the measured jitter is the probe's own
 // wall-clock pacing error; `--source replay` paces the recording by its CSV
 // intervals (the first two rows are published back-to-back to learn the first
-// interval) or at a fixed rate when `--rate` is given; `--source viture`
-// loads the vendor library and polls the real source (the HIL path).
+// interval) or on a fixed wall grid when `--rate` is given (the recorded
+// sample times are unchanged either way, so the reported rate and jitter stay
+// the dataset's); `--source viture` loads the vendor library and polls the
+// real source (the HIL path).
 //
-// Exit codes: 0 when at least one sample was read; 2 when the source is
-// unavailable (Unsupported or NotReady, including any LoadVitureApi failure);
-// 1 for every other failure (usage, bad dataset, no samples, output error).
+// Exit codes: 0 when at least one sample was read; 2 when the viture library
+// fails to load (any LoadVitureApi failure, including InvalidArgument for an
+// empty path) or the source reports Unsupported/NotReady; 1 for every other
+// failure (usage, bad dataset, no samples, output error).
 
 #include <algorithm>
 #include <charconv>
@@ -152,8 +155,10 @@ void PrintUsage(std::FILE *stream) {
                "  --dll PATH       VITURE SDK library for --source viture (or CG_VITURE_DLL)\n"
                "  --csv PATH       recorded dataset for --source replay (required)\n"
                "  --seconds N      run time in seconds (default 5)\n"
-               "  --rate HZ        fake: sample rate (default 90). replay: publish at a\n"
-               "                   fixed HZ instead of the CSV's own intervals\n"
+               "  --rate HZ        fake: sample rate (default 90). replay: wall-pacing\n"
+               "                   rate: publish rows on a fixed HZ grid instead of the\n"
+               "                   CSV's own intervals; the recorded sample times (and\n"
+               "                   the measured rate/jitter) are unchanged. viture: ignored.\n"
                "  --out FILE       write the samples to FILE (replay-compatible CSV)\n"
                "  --print-every N  print a progress line every N samples (default 0 = off)\n"
                "  -h, --help       print this help\n"
@@ -169,8 +174,9 @@ void PrintUsage(std::FILE *stream) {
                "  px,py,pz      position (meters); qw,qx,qy,qz rotation quaternion\n"
                "  status        stable, unstable or lost\n"
                "\n"
-               "exit codes: 0 at least one sample; 2 source unavailable (Unsupported or\n"
-               "NotReady, including any viture library load failure); 1 otherwise.\n",
+               "exit codes: 0 at least one sample; 2 loader failure (any viture library\n"
+               "load failure, including InvalidArgument) or source Unsupported/NotReady;\n"
+               "1 otherwise.\n",
                stream);
 }
 
@@ -572,6 +578,12 @@ int RunReplay(const Options &options, SampleLog &log) {
     const cg::Result<void> started = source.Start();
     if (!started.ok()) {
         return ExitForStatus(started.status());
+    }
+
+    if (options.rate_set) {
+        std::printf("pacing: replay rows published on a fixed %.3f Hz wall grid; the recorded sample times "
+                    "(and the measured rate/jitter) are unchanged\n",
+                    options.rate_hz);
     }
 
     const auto start = std::chrono::steady_clock::now();

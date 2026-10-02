@@ -2,10 +2,12 @@
 //
 // Drives the deterministic fake head pose source at a wall-paced `--rate` for
 // `--minutes` while a consumer thread reads `TryGetLatest` continuously. Every
-// 60 s it prints the elapsed time, the published/read/fresh sample counts and
-// the current process RSS. At exit it prints the RSS growth after the
-// first-minute baseline and exits non-zero when that growth exceeds 1 MiB.
-// Ctrl+C stops the run cleanly through a signal flag.
+// 60 s it prints the elapsed time, the published/read/fresh sample counts, the
+// current process RSS and the cumulative read-to-read gap p95 (the gap
+// between consecutive successful reads, a fixed log2-nanosecond histogram,
+// allocation-free). At exit it prints the RSS growth after the first-minute
+// baseline and exits non-zero when that growth exceeds 1 MiB. Ctrl+C stops the
+// run cleanly through a signal flag.
 //
 // `fresh` counts reads that observed a new sequence number; `read` counts every
 // successful TryGetLatest (the render-path read), and `misses` counts the
@@ -19,6 +21,7 @@
 // a source failure or a usage error.
 
 #include <atomic>
+#include <bit>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -67,6 +70,10 @@ using cg::glasses::ManualClock;
 constexpr double kNanosecondsPerSecond = 1e9;
 constexpr double kReportIntervalSeconds = 60.0;
 constexpr std::uint64_t kRssBudgetBytes = 1024ULL * 1024ULL;
+/// Upper-bound buckets for the read-to-read gap histogram: bucket `i` holds
+/// gaps below 2^i nanoseconds (bucket 0 is a zero gap), so the p95 estimate is
+/// the covering bucket's upper bound.
+constexpr int kLatencyBuckets = 40;
 
 volatile std::sig_atomic_t g_stop_requested = 0;
 
@@ -122,9 +129,11 @@ void PrintUsage(std::FILE *stream) {
                "\n"
                "A producer publishes fake samples at wall-paced --rate deadlines while\n"
                "a consumer thread reads TryGetLatest continuously. Every 60 s the tool\n"
-               "prints the elapsed time, the published/read/fresh sample counts and the\n"
-               "current process RSS; at exit it prints the RSS growth after the\n"
-               "first-minute baseline and exits non-zero when it exceeds 1 MiB.\n",
+               "prints the elapsed time, the published/read/fresh sample counts, the\n"
+               "current process RSS and the cumulative read-to-read gap p95 (the gap\n"
+               "between consecutive successful reads); at exit it prints the RSS growth\n"
+               "after the first-minute baseline and exits non-zero when it exceeds\n"
+               "1 MiB.\n",
                stream);
 }
 
@@ -207,19 +216,62 @@ struct ReadCounters {
     std::atomic<std::uint64_t> reads{0};
     std::atomic<std::uint64_t> fresh{0};
     std::atomic<std::uint64_t> misses{0};
+    std::atomic<std::uint64_t> read_gaps[kLatencyBuckets]{};
 };
 
+/// Records one gap between consecutive successful reads into the fixed
+/// histogram (bucket `i` covers gaps below 2^i ns). Allocation-free.
+void RecordReadGap(ReadCounters &counters, HostTime gap_ns) noexcept {
+    const std::uint64_t gap = gap_ns > 0 ? static_cast<std::uint64_t>(gap_ns) : 0;
+    int bucket = static_cast<int>(std::bit_width(gap));
+    if (bucket >= kLatencyBuckets) {
+        bucket = kLatencyBuckets - 1;
+    }
+    counters.read_gaps[bucket].fetch_add(1, std::memory_order_relaxed);
+}
+
+/// p95 of the read-to-read gap in nanoseconds from the fixed histogram: the
+/// covering bucket's upper bound. Allocation-free; called once per report.
+double P95ReadGapNs(const ReadCounters &counters) noexcept {
+    std::uint64_t total = 0;
+    for (const std::atomic<std::uint64_t> &bucket : counters.read_gaps) {
+        total += bucket.load(std::memory_order_relaxed);
+    }
+    if (total == 0) {
+        return 0.0;
+    }
+    const std::uint64_t threshold = (total * 95ULL + 99ULL) / 100ULL;
+    std::uint64_t cumulative = 0;
+    for (int index = 0; index < kLatencyBuckets; ++index) {
+        cumulative += counters.read_gaps[index].load(std::memory_order_relaxed);
+        if (cumulative >= threshold) {
+            return static_cast<double>(std::uint64_t{1} << index);
+        }
+    }
+    return 0.0;
+}
+
 /// The render-path consumer: a tight TryGetLatest loop until the producer
-/// finishes or the stop flag is set. Yields every 1024 iterations so a
-/// single-core runner can schedule the producer.
-void Consume(const cg::IHeadPoseSource &source, ReadCounters &counters, const std::atomic<bool> &producing) noexcept {
+/// finishes or the stop flag is set. Every successful read timestamps the gap
+/// from the previous successful read into the fixed log2 histogram. Yields
+/// every 1024 iterations so a single-core runner can schedule the producer.
+void Consume(const cg::IHeadPoseSource &source, ReadCounters &counters, const std::atomic<bool> &producing,
+             std::chrono::steady_clock::time_point start) noexcept {
     HeadSample sample = PlaceholderSample();
     std::uint32_t last_seq = 0;
     bool have_sample = false;
+    HostTime last_read_ns = 0;
+    bool have_read = false;
     std::uint64_t iterations = 0;
     while (producing.load(std::memory_order_relaxed) && g_stop_requested == 0) {
         if (source.TryGetLatest(sample, Duration{0})) {
             counters.reads.fetch_add(1, std::memory_order_relaxed);
+            const HostTime read_ns = ElapsedSince(start);
+            if (have_read) {
+                RecordReadGap(counters, read_ns - last_read_ns);
+            }
+            last_read_ns = read_ns;
+            have_read = true;
             if (!have_sample || sample.seq != last_seq) {
                 counters.fresh.fetch_add(1, std::memory_order_relaxed);
                 last_seq = sample.seq;
@@ -245,9 +297,9 @@ int Run(const Options &options) {
 
     ReadCounters counters;
     std::atomic<bool> producing{true};
-    std::thread consumer([&source, &counters, &producing] { Consume(source, counters, producing); });
-
     const auto start = std::chrono::steady_clock::now();
+    std::thread consumer([&source, &counters, &producing, start] { Consume(source, counters, producing, start); });
+
     const double total_seconds = options.minutes * 60.0;
     const HostTime period_ns = static_cast<HostTime>(std::llround(kNanosecondsPerSecond / options.rate_hz));
     std::uint64_t published = 0;
@@ -274,6 +326,12 @@ int Run(const Options &options) {
                         static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                         static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
                         static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), Mib(rss));
+            std::printf("[soak] latency t=%.1f s reads=%llu fresh=%llu p95_read_gap=%.2f us "
+                        "(cumulative, bucket bound)\n",
+                        elapsed_seconds,
+                        static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
+                        static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
+                        P95ReadGapNs(counters) / 1e3);
             std::fflush(stdout);
             if (!have_baseline) {
                 baseline_rss = rss;
@@ -306,11 +364,13 @@ int Run(const Options &options) {
 
     const double elapsed_seconds = ToSeconds(ElapsedSince(start));
     const std::uint64_t final_rss = ResidentBytes();
-    std::printf("[soak] done t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%.2f MiB\n", elapsed_seconds,
-                static_cast<unsigned long long>(published),
+    std::printf("[soak] done t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%.2f MiB "
+                "p95_read_gap=%.2f us\n",
+                elapsed_seconds, static_cast<unsigned long long>(published),
                 static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
-                static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), Mib(final_rss));
+                static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), Mib(final_rss),
+                P95ReadGapNs(counters) / 1e3);
     if (g_stop_requested != 0) {
         std::printf("[soak] stopped by signal\n");
     }

@@ -6,10 +6,13 @@
 - **Task:** S5-WI6 / Task 4 (probe tool, soak, benchmark and software evidence),
   plus the Task 5 HIL escalation
 - **Branch:** `s5/probe-budgets`
-- **Commit under test:** the software-evidence commits on `s5/probe-budgets`
-  (parent `778dda4`). The last CI-verified head is `62b2c21`; the TSan lane run
-  [36992064235](https://github.com/sufiankane/minecraft-vr/actions/runs/36992064235)
-  is green on it, and this later fix/soak commit is covered by the PR rerun.
+- **Commit under test:** the Task-4 software tree on `s5/probe-budgets`
+  (probe `b5dcc36`, SDK-stamp fix `778dda4`, the soak lane and this evidence).
+  These Task-4 commits are **not yet CI-verified**. The only green run
+  available,
+  [36992064235](https://github.com/sufiankane/minecraft-vr/actions/runs/36992064235),
+  is on `62b2c21`, which covers the base `f3a97fa` tree only; the PR run will
+  verify the Task-4 commits.
 - **Runner:** `scripts/ci-local.ps1 -SkipUnity` (Unity is untouched by S5)
 
 ## 1. Local lanes
@@ -90,7 +93,8 @@ under TSan by the `linux-tsan` preset inside the `cpp-linux-asan` CI job.
 
 CI run
 [36992064235](https://github.com/sufiankane/minecraft-vr/actions/runs/36992064235)
-is green on `62b2c21`; this later fix/soak commit is covered by the PR rerun.
+is green on `62b2c21` and covers the base `f3a97fa` tree only. The Task-4
+commits on top are not yet CI-verified; the PR run will verify them.
 
 ## 4. Allocation gate
 
@@ -169,9 +173,11 @@ sdk_time_s: host-derived seconds (the replay source carries no SDK stamp)
 
 The fake jitter is the probe's own 1 ms-timer pacing against the 11.111 ms
 sample period; the replay run reproduces the dataset's exact 90.000 Hz and its
-scripted status windows. `--source viture` exits 2 with the loader's
-`Unsupported` message on this machine (no vendor DLL), the documented pre-HIL
-behaviour; the full probe contract is in
+scripted status windows. `--source viture` with no `--dll`/`CG_VITURE_DLL`
+exits 2 with `viture_loader: empty DLL path` (`InvalidArgument`) on this
+machine; a bad path or a library without the placeholder exports exits 2 with
+the loader's `Unsupported` message. Both are loader failures (exit 2), the
+documented pre-HIL behaviour; the full probe contract is in
 [`../perf/s5.md`](../perf/s5.md).
 
 ## 7. Soak and nightly lane
@@ -180,13 +186,15 @@ behaviour; the full probe contract is in
 the fake source at `--rate` (default 500 Hz) for `--minutes` (default 30),
 producing samples at absolute wall deadlines, while one consumer thread reads
 `TryGetLatest(predict=0)` continuously. Every 60 s it prints the elapsed time,
-the published/read/fresh/missed counts and the current RSS (`GetProcessMemoryInfo`
-working set on Windows, `getrusage` on POSIX); at exit it prints the RSS delta
-after the first-minute baseline and exits non-zero when the growth exceeds
-1 MiB. Ctrl+C stops the run cleanly through a `SIGINT`/`SIGTERM` flag.
+the published/read/fresh/missed counts, the current RSS
+(`GetProcessMemoryInfo` working set on Windows, `getrusage` on POSIX) and the
+cumulative read-to-read gap p95 (the gap between consecutive successful reads,
+a fixed log2-nanosecond histogram, allocation-free); at exit it prints the RSS
+delta after the first-minute baseline and exits non-zero when the growth
+exceeds 1 MiB. Ctrl+C stops the run cleanly through a `SIGINT`/`SIGTERM` flag.
 
-Local smoke, 3 minutes, Release (`--minutes 3`, the full run is the nightly
-lane):
+Local smoke, 3 minutes, Release (`--minutes 3`; the full 30-minute run is
+documented below and re-run nightly):
 
 ```powershell
 .\build\benchmarks\bin\glasses_soak.exe --minutes 3
@@ -218,8 +226,49 @@ schedule and `workflow_dispatch` triggers):
   run keeps the partial log), and `set -o pipefail` makes a non-zero soak exit
   fail the job.
 
-The 3-minute smoke is a laptop run; the 30-minute run and its log artefact are
-the nightly job's output, not this document's.
+The 3-minute block above was recorded before the periodic latency line was
+added. Post-fix line smoke (66 s, `--minutes 1.1`, Debug, run while the
+30-minute soak was in flight):
+
+```text
+glasses_soak: rate=500.000 Hz minutes=1.100 rss budget=1.00 MiB
+[soak] t=60.0 s published=30001 read=322385115 fresh=29977 misses=74605 rss=5.24 MiB
+[soak] latency t=60.0 s reads=322385403 fresh=29977 p95_read_gap=0.51 us (cumulative, bucket bound)
+[soak] done t=66.0 s published=33001 read=354700659 fresh=32977 misses=82009 rss=5.25 MiB p95_read_gap=0.51 us
+[soak] rss baseline (t=60.0 s)=5.24 MiB final=5.25 MiB delta=0.01 MiB (budget 1.00 MiB)
+[soak] PASS: RSS growth 0.01 MiB within the 1.00 MiB budget
+```
+
+Exit 0; the read-gap p95 is the Debug consumer's read cadence (0.51 µs), and
+the Release reader is far faster.
+
+### 30-minute local soak (Release, pre-latency-line binary)
+
+The controller ran the real 30-minute gate on the same dev machine cited for
+the benchmark above (`docs/perf/s5.md`: AMD Ryzen AI 9 365, 20 logical CPUs,
+23 GiB RAM), with the Release binary
+`cpp\build\benchmarks\bin\glasses_soak.exe` built before the periodic latency
+line was added:
+
+```powershell
+glasses_soak --minutes 30 --rate 500
+```
+
+Result (exit 0):
+
+- duration 1800.0 s, **900,001 samples published**, **861,333 fresh reads** and
+  **1,716,829 cumulative misses** over ~1.7e11 reads (misses ≈ 0.001 % of
+  reads; fresh reads trail published samples by 38,668 sequences that were
+  replaced before the consumer observed them);
+- RSS baseline (t=60 s) **4.54 MiB** → final **4.47 MiB**, delta **0.00 MiB**
+  against the 1.00 MiB budget;
+- `PASS: RSS growth 0.00 MiB within the 1.00 MiB budget`.
+
+The binary predates the latency line, so this run has no `p95_read_gap`
+figures. The nightly `soak` job (`.github/workflows/nightly.yml`, corrected in
+this fix round) re-runs the same 30-minute gate on `ubuntu-latest` with
+`--minutes 30` (500 Hz, the tool default) and uploads the log as the
+`soak-log` artefact.
 
 ## 8. HIL pending (owner)
 
@@ -248,9 +297,11 @@ Known non-blocking items recorded during Task 4; none affects the software
 half of the exit gate:
 
 - The VITURE loader's exported symbol names, calling convention and blocking
-  behaviour are documented placeholders until the HIL run; loading the real
-  library fails `Unsupported` naming the first unresolved symbol, and the table
-  is rewritten in the single loader TU from the HIL answers (ADR-0009).
+  behaviour are documented placeholders until the HIL run; a library whose
+  exports do not match the placeholder table fails `Unsupported` naming the
+  first unresolved symbol (an empty path is `InvalidArgument`, an unopenable
+  path `Unsupported` with the path), and the table is rewritten in the single
+  loader TU from the HIL answers (ADR-0009).
 - `VitureHeadPoseSource::LastSdkSeconds()` returns the **newest** stamp, so a
   reader can capture a stamp one sample ahead of the sample it observed; at the
   probe's 1 ms poll against a 90 Hz feed the captured stamp matches the sample
@@ -283,4 +334,6 @@ half of the exit gate:
 CI run
 [36992064235](https://github.com/sufiankane/minecraft-vr/actions/runs/36992064235)
 is green on `62b2c21` (TSan, ASan, coverage, Windows, dotnet, python,
-depcheck); this later fix/soak commit is covered by the PR rerun.
+depcheck) and covers the base `f3a97fa` tree only. None of the Task-4 commits
+(`b5dcc36`, `778dda4`, the soak lane and this evidence) has been CI-verified
+yet; the PR run will verify them.
