@@ -4,11 +4,13 @@
 - **Stage:** S4 (gameplay: input abstraction, player controller, interaction
   service, scenario replays, gesture recogniser)
 - **Task:** S4-WI6 / Task 4 (coverage floor and exit-gate evidence)
-- **Branch:** `s4/gate` (PR #22)
-- **Commit under test:** `6e0ba0b` (last CI-verified S4 head). The gate commit on
-  top adds only the coverage-floor wiring in `.github/workflows/ci.yml`, the
-  `docs/ci.md` row and this note; the scenario, property, determinism and
-  coverage numbers below were measured on the `6e0ba0b` tree.
+- **Branch:** `s4/gate` (PR #23)
+- **Commit under test:** `12c1d2c` (the S4 gate head, CI-verified in PR #23). The
+  fix-wave commit on top corrects the blocked-move `OnGround` semantics and
+  closes the review's doc and test minors; the lane, scenario, determinism and
+  coverage evidence below was re-run on the fix-wave tree, and the coverage
+  percentage is unchanged (the fix replaces one expression on an existing
+  library line and adds test-only lines).
 - **Runner:** `scripts/ci-local.ps1 -SkipUnity` (Unity is untouched by S4)
 
 ## 1. Local lanes
@@ -23,20 +25,22 @@ Result: `ci-local: ALL LANES PASS` (exit 0).
 
 | Lane | Result | Time |
 | --- | --- | --- |
-| python-env | PASS | 5.8 s |
+| python-env | PASS | 5.7 s |
 | cpp-windows | PASS | 4.1 s |
-| dotnet | PASS | 15 s |
-| python | PASS | 1.5 s |
+| dotnet | PASS | 13.9 s |
+| python | PASS | 1.4 s |
 | depcheck | PASS | 0.3 s |
 | unity | SKIP (`-SkipUnity`) | 0 s |
 
 Test evidence from the same run:
 
 - `dotnet test Cubeglass.sln --configuration Release` → `Failed: 0, Passed: 78`
-  (`Cubeglass.CoreMath.Tests`), `Failed: 0, Passed: 115`
-  (`Cubeglass.Gameplay.Tests`), `Failed: 0, Passed: 156`
+  (`Cubeglass.CoreMath.Tests`), `Failed: 0, Passed: 118`
+  (`Cubeglass.Gameplay.Tests`, 115 pre-existing plus the 3 new fix-wave tests:
+  the blocked upward-move `OnGround` edge, the inclusive pinch/fist band edges
+  and the mid-band hand-switch carry), `Failed: 0, Passed: 156`
   (`Cubeglass.Voxel.Tests`) and `Failed: 0, Passed: 87`
-  (`Cubeglass.Mesh.Tests`) — **436/436 passed**.
+  (`Cubeglass.Mesh.Tests`) — **439/439 passed**.
 - `ctest --preset ci` → `100% tests passed, 0 tests failed out of 1`.
 - `python -m ruff check .` → `All checks passed!`; `python -m mypy calib
   depcheck` → `Success: no issues found in 6 source files`; `python -m pytest`
@@ -104,13 +108,13 @@ dotnet test tests/Gameplay.Tests/Cubeglass.Gameplay.Tests.csproj --configuration
 Command (from the repository root):
 
 ```powershell
-python\.venv\Scripts\python.exe -m depcheck coverage --report dotnet\coverage\gameplay\fe7eab23-173a-4467-a41b-b303458cada3\coverage.cobertura.xml --module Cubeglass.Gameplay --floor 90
+python\.venv\Scripts\python.exe -m depcheck coverage --report dotnet\coverage\gameplay\c61c054d-257f-4d98-86d4-53b9591f9b85\coverage.cobertura.xml --module Cubeglass.Gameplay --floor 90
 ```
 
 Result: `coverage PASS: module 'Cubeglass.Gameplay' observed 98.61% (355/360
-lines); floor 90%`. No extra tests were needed for the floor; the floor is
-enforced by the `dotnet` CI step with the fail-loud `find coverage/gameplay`
-guard.
+lines); floor 90%` (unchanged on the fix-wave tree). No extra tests were
+needed for the floor; the floor is enforced by the `dotnet` CI step with the
+fail-loud `find coverage/gameplay` guard.
 
 ## 5. Gates added
 
@@ -126,26 +130,21 @@ guard.
 
 Known non-blocking items recorded during Task 4; none affects the exit gate:
 
-- ADR-0008 wording items: the `OnGround` "upward injection" prose and the
-  Task 3 band paragraph phrases differ from the code's exact terms; the code,
-  tests and behaviour are the reference.
 - No explicit `MaxStep`/sweep guard in `PlayerController`: per-axis try/revert
   does not sweep, so a step larger than one cell can tunnel; the ADR documents
   that the fixed timestep and 4.5 m/s walk speed bound this in S4.
-- ADR-0008 hotbar-default rows cite block names rather than the ADR-0006
-  block-id table; the tests prove the ids through `BlockRegistry.Default`, so a
-  content-id change cannot slip through.
-- `InputFrame.Neutral` stays a static field (frozen contract style) instead of a
-  property; tests bind it to locals because `in` arguments cannot take rvalues.
-- Boundary inclusivity tests for every threshold pair (200 ms loss, 250 ms
-  flick, 0.2/0.5/0.7 ratios) are covered at the current edges but not
-  exhaustively for both directions.
-- A dedicated gesture hand-switch carry test (band state latched across a
-  left→right switch mid-band) is deferred; the existing test covers the
-  left-then-right selection path.
+- `InputFrame.Neutral` is a static property, not a field, so tests bind it to
+  locals because `in` arguments cannot take rvalues.
+
+The fix wave closed the other Task 4 minors: `PlayerController` now sets
+`OnGround` from the blocked move's vertical displacement direction (matching
+ADR-0008), the pinch/fist band edges are pinned inclusively at 0.5/0.7 and
+0.4/0.6 by overridden geometry, the latched gesture state is pinned across a
+mid-band left-to-right hand switch, and ADR-0008's hotbar row cites the
+ADR-0006 ids 1..5.
 
 ## 7. CI verification
 
-PR #22 run
-[36967581480](https://github.com/sufiankane/minecraft-vr/actions/runs/36967581480)
-green on `ab71c42`; this fix/gate commit is covered by the PR rerun.
+PR #23 run
+[36968690060](https://github.com/sufiankane/minecraft-vr/actions/runs/36968690060)
+green on `12c1d2c`; this fix-wave commit is covered by the PR rerun.
