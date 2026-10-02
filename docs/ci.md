@@ -112,11 +112,12 @@ Cobertura XML with `gcovr`, and runs
 with `XPlat Code Coverage` into `coverage/coremath`, `coverage/voxel` and
 `coverage/mesh`, and enforces `--module Cubeglass.CoreMath --floor 95`,
 `--module Cubeglass.Voxel --floor 90` and `--module Cubeglass.Mesh --floor 90`.
-The CoreMath step selects its report by content, because the Voxel test run also
-emits a (mostly uncovered) `Cubeglass.CoreMath` package: it matches the report
-whose `<source>` root is `src/CoreMath/`; the Voxel and Mesh steps match the
-report containing the `Cubeglass.Voxel` / `Cubeglass.Mesh` package, and each
-fails loudly when no report matches. The `python` job runs `pytest` with
+Each floor step resolves the first `coverage.cobertura.xml` found under its own
+per-project results directory — `coverage/coremath`, `coverage/voxel`,
+`coverage/mesh` — and fails loudly when none exists, so the three test runs and
+their reports stay separate. A report from the Voxel run also instruments the
+referenced `Cubeglass.CoreMath` package; the `--module` filter selects the
+module each step enforces. The `python` job runs `pytest` with
 coverage and enforces `--module calib --floor 90` and `--module depcheck --floor
 90`. A matched module with zero coverable
 lines still prints a `WARNING` and exits 0, but no current module takes that

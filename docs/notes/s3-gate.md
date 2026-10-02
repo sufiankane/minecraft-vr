@@ -3,11 +3,13 @@
 - **Date:** 2026-10-02
 - **Stage:** S3 (meshing: contracts, reference and greedy meshers, per-vertex AO,
   border seams, pooled buffers, budget)
-- **Task:** S3-WI5 / Task 4 (pooling, benchmarks, budget and exit gate)
-- **Branch:** `s3/budgets-gate` (PR pending)
-- **Commit under test:** `0741f9c` (S3 Task 3) plus the Task 4 working tree;
-  this evidence ships in the final Task 4 commit
-  `ci: enforce mesh budgets and record S3 evidence`.
+- **Task:** S3-WI5 / Task 4 (pooling, benchmarks, budget and exit gate), plus the
+  final-review fix wave (injected pools, shared build scaffolding)
+- **Branch:** `s3/budgets-gate` (PR #19)
+- **Commit under test:** `19445ad` (last CI-verified S3 head). The fix-wave
+  commits on top change only pool ownership plumbing and build scaffolding, and
+  the golden and differential suites prove the emitted bytes are unchanged. The
+  fresh coverage and p95 numbers below were re-measured on the fix-wave tree.
 - **Runner:** `scripts/ci-local.ps1 -SkipUnity` (Unity is untouched by S3)
 
 ## 1. Local lanes
@@ -23,9 +25,9 @@ Result: `ci-local: ALL LANES PASS` (exit 0).
 | Lane | Result | Time |
 | --- | --- | --- |
 | python-env | PASS | 5.6 s |
-| cpp-windows | PASS | 4.0 s |
-| dotnet | PASS | 12.8 s |
-| python | PASS | 1.4 s |
+| cpp-windows | PASS | 4.1 s |
+| dotnet | PASS | 13.2 s |
+| python | PASS | 1.5 s |
 | depcheck | PASS | 0.3 s |
 | unity | SKIP (`-SkipUnity`) | 0 s |
 
@@ -33,8 +35,10 @@ Test evidence from the same run:
 
 - `dotnet test Cubeglass.sln --configuration Release` → `Failed: 0, Passed: 78`
   (`Cubeglass.CoreMath.Tests`), `Failed: 0, Passed: 156`
-  (`Cubeglass.Voxel.Tests`) and `Failed: 0, Passed: 84`
-  (`Cubeglass.Mesh.Tests`, 80 pre-existing plus the 4 new allocation tests).
+  (`Cubeglass.Voxel.Tests`) and `Failed: 0, Passed: 87`
+  (`Cubeglass.Mesh.Tests`, 84 pre-existing plus the 3 new fix-wave tests:
+  injected-pool rent/return, null-argument rejection and the
+  negative-coordinate centre chunk).
 - `ctest --preset ci` → `100% tests passed, 0 tests failed out of 1`.
 - `python -m ruff check .` → `All checks passed!`; `python -m mypy calib
   depcheck` → `Success: no issues found in 6 source files`; `python -m pytest`
@@ -44,9 +48,10 @@ Test evidence from the same run:
 
 ## 2. Differential and golden suites
 
-Both suites ran unchanged on the pooled implementation, which is the
-byte-identity evidence: pooling changes ownership of the arrays, not a single
-emitted byte.
+Both suites ran unchanged on the pooled implementation, and again on the
+fix-wave pool-injection and scaffolding refactor, which is the byte-identity
+evidence: pooling and the shared build flow change ownership of the arrays,
+not a single emitted byte.
 
 - `DifferentialTests.GreedyCoversExactlyTheReferenceExposedFacesOnTwoThousandSeededChunks`:
   2,000 seeded random chunks (250 with neighbour snapshots, 1,978 with faces),
@@ -121,13 +126,15 @@ Machine: AMD Ryzen AI 9 365 w/ Radeon 880M (10 physical / 20 logical cores,
 
 | Shape | Quads | p50 (ms) | p95 (ms) | p99 (ms) | Budget (p95) |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `GreedySolidChunk` | 6 | 0.279 | 0.442 | 0.486 | ≤ 2.0 ms — PASS |
-| `GreedyTerrainChunk` | 240 | 0.245 | 0.405 | 0.440 | ≤ 2.0 ms — PASS |
-| `GreedyCheckerboardChunk` | 5,568 | 0.990 | 1.363 | 1.585 | recorded (R22 worst case) |
+| `GreedySolidChunk` | 6 | 0.287 | 0.438 | 0.498 | ≤ 2.0 ms — PASS |
+| `GreedyTerrainChunk` | 240 | 0.239 | 0.280 | 0.404 | ≤ 2.0 ms — PASS |
+| `GreedyCheckerboardChunk` | 5,568 | 0.971 | 1.115 | 1.579 | recorded (R22 worst case) |
 
-BenchmarkDotNet (`SimpleJob`, one warm-up, three iterations, `[MemoryDiagnoser]`)
-reports 263.0 µs, 240.2 µs and 813.6 µs mean with `Allocated = 0 B` for the
-three shapes. The full table is in [`../perf/s3.md`](../perf/s3.md).
+The numbers above were re-measured on the fix-wave tree; every case clears the
+budget. BenchmarkDotNet (`SimpleJob`, one warm-up, three iterations,
+`[MemoryDiagnoser]`) recorded 263.0 µs, 240.2 µs and 813.6 µs mean with
+`Allocated = 0 B` for the three shapes at `19445ad` (not re-run in the fix
+wave). The full table is in [`../perf/s3.md`](../perf/s3.md).
 
 ## 5. Coverage
 
@@ -140,12 +147,14 @@ dotnet test tests/Mesh.Tests/Cubeglass.Mesh.Tests.csproj --configuration Release
 Command (from the repository root):
 
 ```powershell
-python\.venv\Scripts\python.exe -m depcheck coverage --report dotnet\coverage\mesh\cf379c5a-aa17-4fca-a8c6-14fbc337ff19\coverage.cobertura.xml --module Cubeglass.Mesh --floor 90
+python\.venv\Scripts\python.exe -m depcheck coverage --report dotnet\coverage\mesh\b3fbb4e3-019a-4428-92f9-fb7db87a2d63\coverage.cobertura.xml --module Cubeglass.Mesh --floor 90
 ```
 
-Result: `coverage PASS: module 'Cubeglass.Mesh' observed 96.89% (499/515 lines);
-floor 90%`. No extra tests were needed; the floor is enforced by the new
-`dotnet` CI step with the fail-loud `find coverage/mesh` guard.
+Result: `coverage PASS: module 'Cubeglass.Mesh' observed 97.26% (462/475 lines);
+floor 90%` (up from 96.94% at `19445ad`; the scaffolding extraction removed
+duplicated lines and the new constructor/helper lines are covered). No extra
+tests were needed for the floor; the floor is enforced by the `dotnet` CI step
+with the fail-loud `find coverage/mesh` guard.
 
 ## 6. Gates added
 
@@ -167,8 +176,9 @@ floor 90%`. No extra tests were needed; the floor is enforced by the new
 Known non-blocking items recorded during Task 4; none affects the exit gate:
 
 - `MeshBufferPool` is not thread-safe; parallel workers need one pool per
-  meshing thread (the shared pool serves the single-threaded tests and one
-  worker at a time).
+  meshing thread and now inject it through `CulledMesher(AtlasLayout,
+  MeshBufferPool)` / `GreedyMesher(AtlasLayout, MeshBufferPool)`; `Shared`
+  serves the single-threaded tests and one worker at a time (ADR-0007).
 - Using a `MeshData` after `Release` is undefined and the pooled wrapper may
   already be re-issued; only the double-release guard is contractual.
 - No nightly regression thresholds yet: ADR-0007 defers them until the hot path
@@ -180,4 +190,6 @@ Known non-blocking items recorded during Task 4; none affects the exit gate:
 
 ## 8. CI verification
 
-CI verification: pending
+PR #19 run
+[36955165377](https://github.com/sufiankane/minecraft-vr/actions/runs/36955165377)
+green on `19445ad`; this fix-wave commit is covered by the PR rerun.
