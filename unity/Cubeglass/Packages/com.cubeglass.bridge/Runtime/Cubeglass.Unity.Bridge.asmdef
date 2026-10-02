@@ -1,9 +1,7 @@
 {
   "name": "Cubeglass.Unity.Bridge",
   "rootNamespace": "Cubeglass.Unity.Bridge",
-  "references": [
-    "Cubeglass.CoreMath"
-  ],
+  "references": [],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

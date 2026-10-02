@@ -14,9 +14,10 @@
       3. dotnet       - dotnet test Cubeglass.sln --configuration Release;
       4. python       - ruff, strict mypy and pytest from python/;
       5. depcheck     - dependency-rule and licence gates from the repo root;
-      6. unity        - copy cg_unity_bridge.dll from the cpp-windows build into
-                        the Unity project and run the Unity EditMode tests
-                        through the Unity CLI (unless -SkipUnity is passed).
+      6. unity        - build and copy the managed CoreMath plugin, copy
+                        cg_unity_bridge.dll from the cpp-windows build into the
+                        Unity project and run the Unity EditMode tests through
+                        the Unity CLI (unless -SkipUnity is passed).
 
     Every command is echoed before it runs. The script exits non-zero on the
     first failure and prints a final PASS/FAIL summary per lane. It works from a
@@ -192,6 +193,12 @@ try {
             }
             Copy-Item -LiteralPath $BridgeDll -Destination (Join-Path $UnityPluginsDir 'cg_unity_bridge.dll') -Force
             Write-Host "Copied native bridge DLL: $BridgeDll -> $UnityPluginsDir"
+            # Cubeglass.CoreMath is a .NET library outside Unity, so the bridge
+            # package loads it as a managed plugin instead of an asmdef
+            # reference. The sync script builds it in Release and fails loudly
+            # when the DLL is missing; Task 3 consumes UnityConvert from it.
+            $SyncPlugins = Join-Path $PSScriptRoot 'sync-unity-plugins.ps1'
+            Invoke-Checked 'scripts/sync-unity-plugins.ps1' { & $SyncPlugins }
             # The Unity CLI mishandles the project argument (it prepends the
             # current directory to an already-absolute path) when the project
             # has no Assets folder, so a pristine clone aborts before importing.
