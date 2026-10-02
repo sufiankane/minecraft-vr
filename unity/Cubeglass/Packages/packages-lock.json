@@ -12,6 +12,12 @@
       "source": "embedded",
       "dependencies": {}
     },
+    "com.cubeglass.rendering": {
+      "version": "file:com.cubeglass.rendering",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.unity.ext.nunit": {
       "version": "2.1.0",
       "depth": 1,

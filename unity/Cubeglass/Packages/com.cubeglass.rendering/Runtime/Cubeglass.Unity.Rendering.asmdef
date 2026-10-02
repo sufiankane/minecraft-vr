@@ -1,0 +1,16 @@
+{
+  "name": "Cubeglass.Unity.Rendering",
+  "rootNamespace": "Cubeglass.Unity.Rendering",
+  "references": [
+    "Cubeglass.Unity.Bridge"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
