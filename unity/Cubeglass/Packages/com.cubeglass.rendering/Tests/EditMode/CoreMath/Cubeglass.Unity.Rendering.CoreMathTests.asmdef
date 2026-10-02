@@ -1,0 +1,26 @@
+{
+  "name": "Cubeglass.Unity.Rendering.CoreMathTests",
+  "rootNamespace": "Cubeglass.Unity.Rendering.Tests",
+  "references": [
+    "Cubeglass.Unity.Rendering",
+    "Cubeglass.Unity.Bridge",
+    "UnityEngine.TestRunner",
+    "UnityEditor.TestRunner"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "nunit.framework.dll",
+    "Cubeglass.CoreMath.dll"
+  ],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

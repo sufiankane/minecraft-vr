@@ -16,8 +16,9 @@
       5. depcheck     - dependency-rule and licence gates from the repo root;
       6. unity        - build and copy the managed CoreMath plugin, copy
                         cg_unity_bridge.dll from the cpp-windows build into the
-                        Unity project and run the Unity EditMode tests through
-                        the Unity CLI (unless -SkipUnity is passed).
+                        Unity project and run the Unity EditMode and PlayMode
+                        tests through the Unity CLI, failing loudly on missing
+                        results or failed tests (unless -SkipUnity is passed).
 
     Every command is echoed before it runs. The script exits non-zero on the
     first failure and prints a final PASS/FAIL summary per lane. It works from a
@@ -25,7 +26,8 @@
     interpolated into a shell string).
 
 .PARAMETER SkipUnity
-    Skip the Unity EditMode lane (for machines without the Unity editor).
+    Skip the Unity EditMode and PlayMode lanes (for machines without the Unity
+    editor).
 
 .EXAMPLE
     powershell -File scripts/ci-local.ps1
@@ -48,7 +50,8 @@ $VenvDir = Join-Path $PythonDir '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
 $RequirementsDev = Join-Path $PythonDir 'requirements-dev.txt'
 $UnityExe = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
-$UnityResults = Join-Path $env:TEMP 'cg-unity-results.xml'
+$UnityResultsEditMode = Join-Path $env:TEMP 'cg-unity-editmode-results.xml'
+$UnityResultsPlayMode = Join-Path $env:TEMP 'cg-unity-playmode-results.xml'
 $BridgeDll = Join-Path $CppDir 'build\windows-msvc\bridge\cg_unity_bridge.dll'
 $UnityPluginsDir = Join-Path $RepoRoot 'unity\Cubeglass\Assets\Plugins\win-x64'
 
@@ -86,6 +89,33 @@ function Invoke-Lane {
         $script:LaneResults.Add([pscustomobject]@{ Lane = $Name; Status = 'FAIL'; Seconds = $seconds })
         Write-Host "----- FAIL: $Name ($seconds s)" -ForegroundColor Red
         throw
+    }
+}
+
+function Assert-UnityResults {
+    param([string]$Path, [string]$Mode, [string]$ExpectedAssembly)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Unity $Mode results not found at '$Path'"
+    }
+    [xml]$document = Get-Content -LiteralPath $Path -Raw
+    $testRun = $document.SelectSingleNode('/test-run')
+    if ($null -eq $testRun) {
+        throw "Unity $Mode results at '$Path' contain no /test-run element"
+    }
+    $total = [int]$testRun.total
+    $passed = [int]$testRun.passed
+    $failed = [int]$testRun.failed
+    $skipped = [int]$testRun.skipped
+    Write-Host "Unity $Mode results: total=$total passed=$passed failed=$failed skipped=$skipped"
+    if ($total -le 0) {
+        throw "Unity $Mode results at '$Path' report no tests (total=$total); the suite did not run"
+    }
+    $assemblies = @($testRun.SelectNodes('.//test-suite[@type="Assembly"]') | ForEach-Object { $_.name })
+    if ($assemblies -notcontains $ExpectedAssembly) {
+        throw "Unity $Mode results at '$Path' do not contain the expected assembly '$ExpectedAssembly' (found: $($assemblies -join ', ')); wrong test mode or stale results"
+    }
+    if ($failed -gt 0) {
+        throw "Unity $Mode reported $failed failed test(s); see '$Path'"
     }
 }
 
@@ -212,8 +242,14 @@ try {
             Push-Location $RepoRoot
             try {
                 Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
-                    & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResults
+                    & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResultsEditMode
                 }
+                Assert-UnityResults -Path $UnityResultsEditMode -Mode 'EditMode' -ExpectedAssembly 'Cubeglass.Unity.Rendering.Tests.dll'
+
+                Invoke-Checked 'unity test unity/Cubeglass --mode PlayMode --non-interactive' {
+                    & $UnityExe test 'unity/Cubeglass' --mode PlayMode --non-interactive --output $UnityResultsPlayMode
+                }
+                Assert-UnityResults -Path $UnityResultsPlayMode -Mode 'PlayMode' -ExpectedAssembly 'Cubeglass.Unity.Rendering.PlayTests.dll'
             }
             finally {
                 Pop-Location

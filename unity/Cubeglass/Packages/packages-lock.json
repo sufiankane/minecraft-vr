@@ -6,8 +6,20 @@
       "source": "embedded",
       "dependencies": {}
     },
+    "com.cubeglass.input": {
+      "version": "file:com.cubeglass.input",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
     "com.cubeglass.placeholder": {
       "version": "file:com.cubeglass.placeholder",
+      "depth": 0,
+      "source": "embedded",
+      "dependencies": {}
+    },
+    "com.cubeglass.rendering": {
+      "version": "file:com.cubeglass.rendering",
       "depth": 0,
       "source": "embedded",
       "dependencies": {}

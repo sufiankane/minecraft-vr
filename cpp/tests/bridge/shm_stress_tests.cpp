@@ -6,6 +6,14 @@
 // unvalidated copy would show up as a mismatch. Reader retries are bounded by
 // construction (64 attempts per call), so a reader can observe a timeout, but
 // never a torn sample and never an unbounded loop.
+//
+// CI scheduling: a reader can be starved for the whole writer run on a small
+// runner, so each reader must observe at least one valid sample regardless.
+// A start barrier puts every reader inside its loop before the writer begins,
+// and after the writer stops each reader performs one bounded post-writer
+// read of the (now stable) final sample; that read is validated and counted
+// like any other. The per-reader successful count pins `> 0` without relying
+// on the scheduler giving any reader a turn during the writer's run.
 
 #include "cg/bridge/shm_layout.hpp"
 #include "cg/bridge/test_writer.h"
@@ -28,6 +36,21 @@ constexpr std::uint32_t kSampleCount = 200'000;
 std::int64_t now_ns() {
     const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
     return std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+}
+
+/// Blocks until one more reader has arrived; the main thread waits with
+/// `WaitForReaders`. Yielding keeps a starved runner from spinning forever.
+void JoinStartBarrier(std::atomic<int> &ready, int reader_count) {
+    ready.fetch_add(1, std::memory_order_release);
+    while (ready.load(std::memory_order_acquire) < reader_count) {
+        std::this_thread::yield();
+    }
+}
+
+void WaitForReaders(const std::atomic<int> &ready, int reader_count) {
+    while (ready.load(std::memory_order_acquire) < reader_count) {
+        std::this_thread::yield();
+    }
 }
 
 void FillHead(cg_head_sample &sample, std::uint32_t sequence) {
@@ -104,6 +127,7 @@ struct ReadCounters {
     std::atomic<std::uint64_t> timeout{0};
     std::atomic<std::uint64_t> mismatches{0};
     std::atomic<std::uint64_t> unexpected{0};
+    std::atomic<std::uint64_t> post_read_failures{0};
 
     void Record() const {
         ::testing::Test::RecordProperty("ok_reads", std::to_string(ok.load()));
@@ -111,6 +135,7 @@ struct ReadCounters {
         ::testing::Test::RecordProperty("timeout_reads", std::to_string(timeout.load()));
         ::testing::Test::RecordProperty("mismatched_reads", std::to_string(mismatches.load()));
         ::testing::Test::RecordProperty("unexpected_reads", std::to_string(unexpected.load()));
+        ::testing::Test::RecordProperty("post_read_failures", std::to_string(post_read_failures.load()));
     }
 
     void ExpectConsistent() const {
@@ -120,22 +145,33 @@ struct ReadCounters {
     }
 };
 
+void ExpectEachReaderObservedASample(const std::vector<std::uint64_t> &per_reader_ok) {
+    for (std::size_t reader = 0; reader < per_reader_ok.size(); ++reader) {
+        EXPECT_GT(per_reader_ok[reader], 0U) << "reader " << reader << " observed no valid sample";
+    }
+}
+
 TEST(ShmStress, HeadReadsStayConsistentUnderEightReaders) {
     ASSERT_EQ(cg_test_writer_create(), CG_OK);
     void *handle = nullptr;
     ASSERT_EQ(cg_bridge_open(&handle), CG_OK);
 
+    constexpr int kReaders = 8;
     ReadCounters counters;
     std::atomic<bool> finished{false};
-    constexpr int kReaders = 8;
+    std::atomic<int> ready{0};
+    std::vector<std::uint64_t> per_reader_ok(static_cast<std::size_t>(kReaders), 0);
     std::vector<std::thread> readers;
     readers.reserve(kReaders);
     for (int reader = 0; reader < kReaders; ++reader) {
-        readers.emplace_back([&] {
+        readers.emplace_back([&, reader] {
+            JoinStartBarrier(ready, kReaders);
+            std::uint64_t local_ok = 0;
             while (!finished.load(std::memory_order_acquire)) {
                 cg_head_sample sample{};
                 const cg_status status = cg_bridge_read_head(handle, &sample);
                 if (status == CG_OK) {
+                    local_ok += 1;
                     counters.ok.fetch_add(1, std::memory_order_relaxed);
                     if (!HeadMatchesSequence(sample)) {
                         counters.mismatches.fetch_add(1, std::memory_order_relaxed);
@@ -148,8 +184,28 @@ TEST(ShmStress, HeadReadsStayConsistentUnderEightReaders) {
                     counters.unexpected.fetch_add(1, std::memory_order_relaxed);
                 }
             }
+            // The writer has stopped publishing, so the final sample is stable
+            // and this bounded read must return it for every reader.
+            cg_head_sample sample{};
+            const cg_status status = cg_bridge_read_head(handle, &sample);
+            if (status == CG_OK) {
+                if (HeadMatchesSequence(sample)) {
+                    local_ok += 1;
+                    counters.ok.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    counters.mismatches.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                counters.post_read_failures.fetch_add(1, std::memory_order_relaxed);
+            }
+            per_reader_ok[static_cast<std::size_t>(reader)] = local_ok;
         });
     }
+
+    // Every reader is inside its loop before the writer starts, so a starved
+    // reader cannot miss the run entirely; the post-writer read is the
+    // guaranteed floor.
+    WaitForReaders(ready, kReaders);
 
     bool published = true;
     for (std::uint32_t sequence = 1; sequence <= kSampleCount; ++sequence) {
@@ -160,6 +216,13 @@ TEST(ShmStress, HeadReadsStayConsistentUnderEightReaders) {
             break;
         }
     }
+    // The guaranteed post-writer reads must see fresh data; refresh the
+    // heartbeat after the last publish. Head staleness still returns CG_OK
+    // (with state Lost), but hands staleness returns CG_ERR_NOT_READY, so both
+    // paths refresh to keep the post-read floor consistent.
+    if (cg_test_writer_set_heartbeat(now_ns()) != CG_OK) {
+        published = false;
+    }
     finished.store(true, std::memory_order_release);
     for (std::thread &reader : readers) {
         reader.join();
@@ -168,6 +231,8 @@ TEST(ShmStress, HeadReadsStayConsistentUnderEightReaders) {
     EXPECT_TRUE(published);
     counters.Record();
     counters.ExpectConsistent();
+    EXPECT_EQ(counters.post_read_failures.load(), 0U);
+    ExpectEachReaderObservedASample(per_reader_ok);
 
     cg_bridge_close(handle);
     cg_test_writer_close();
@@ -177,21 +242,28 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
     ASSERT_EQ(cg_test_writer_create(), CG_OK);
     void *handle = nullptr;
     ASSERT_EQ(cg_bridge_open(&handle), CG_OK);
-    // The 250 ms heartbeat rule applies to the hand slot too; a far-future
-    // heartbeat keeps every published frame fresh for the whole test.
+    // A far-future heartbeat keeps the mid-run reads fresh for the first
+    // second of the run; the heartbeat is refreshed after the last publish so
+    // the guaranteed post-writer read never sees stale hands (stale hands
+    // return CG_ERR_NOT_READY, not a sample).
     ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 1'000'000'000), CG_OK);
 
+    constexpr int kReaders = 4;
     ReadCounters counters;
     std::atomic<bool> finished{false};
-    constexpr int kReaders = 4;
+    std::atomic<int> ready{0};
+    std::vector<std::uint64_t> per_reader_ok(static_cast<std::size_t>(kReaders), 0);
     std::vector<std::thread> readers;
     readers.reserve(kReaders);
     for (int reader = 0; reader < kReaders; ++reader) {
-        readers.emplace_back([&] {
+        readers.emplace_back([&, reader] {
+            JoinStartBarrier(ready, kReaders);
+            std::uint64_t local_ok = 0;
             while (!finished.load(std::memory_order_acquire)) {
                 cg_hand_frame frame{};
                 const cg_status status = cg_bridge_read_hands(handle, &frame);
                 if (status == CG_OK) {
+                    local_ok += 1;
                     counters.ok.fetch_add(1, std::memory_order_relaxed);
                     if (!HandsMatchSequence(frame)) {
                         counters.mismatches.fetch_add(1, std::memory_order_relaxed);
@@ -204,8 +276,24 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
                     counters.unexpected.fetch_add(1, std::memory_order_relaxed);
                 }
             }
+            // Same post-writer floor as the head test: the last frame is stable.
+            cg_hand_frame frame{};
+            const cg_status status = cg_bridge_read_hands(handle, &frame);
+            if (status == CG_OK) {
+                if (HandsMatchSequence(frame)) {
+                    local_ok += 1;
+                    counters.ok.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    counters.mismatches.fetch_add(1, std::memory_order_relaxed);
+                }
+            } else {
+                counters.post_read_failures.fetch_add(1, std::memory_order_relaxed);
+            }
+            per_reader_ok[static_cast<std::size_t>(reader)] = local_ok;
         });
     }
+
+    WaitForReaders(ready, kReaders);
 
     bool published = true;
     for (std::uint32_t sequence = 1; sequence <= kSampleCount; ++sequence) {
@@ -216,6 +304,11 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
             break;
         }
     }
+    // Same post-publish heartbeat refresh as the head test: the guaranteed
+    // post-writer read must not be rejected as stale.
+    if (cg_test_writer_set_heartbeat(now_ns()) != CG_OK) {
+        published = false;
+    }
     finished.store(true, std::memory_order_release);
     for (std::thread &reader : readers) {
         reader.join();
@@ -224,6 +317,8 @@ TEST(ShmStress, HandReadsStayConsistentUnderFourReaders) {
     EXPECT_TRUE(published);
     counters.Record();
     counters.ExpectConsistent();
+    EXPECT_EQ(counters.post_read_failures.load(), 0U);
+    ExpectEachReaderObservedASample(per_reader_ok);
 
     cg_bridge_close(handle);
     cg_test_writer_close();
