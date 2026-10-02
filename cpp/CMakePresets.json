@@ -59,11 +59,12 @@
     {
       "name": "linux-coverage",
       "displayName": "Linux coverage (Ninja, gcov)",
+      "description": "gcov's default -fprofile-update=single is not thread-safe; the ThreadSafety stress tests run in this build, so concurrent counter writes can corrupt .gcda data (gcovr NegativeHits parse errors). -fprofile-update=atomic makes the profile counters thread-safe.",
       "inherits": "linux-ci",
       "binaryDir": "${sourceDir}/build/linux-coverage",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_FLAGS": "-O0 -g --coverage",
+        "CMAKE_CXX_FLAGS": "-O0 -g --coverage -fprofile-update=atomic",
         "CMAKE_EXE_LINKER_FLAGS": "--coverage",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       }
