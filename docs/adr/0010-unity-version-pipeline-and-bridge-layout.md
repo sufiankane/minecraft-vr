@@ -225,11 +225,11 @@ reach a consumer. A reader with no valid sample (never published) also reports
   granularity.
 - Header init race: a writer stores the magic, ABI and header size one by
   one, so a reader that opens mid-initialisation would otherwise fail hard.
-  Open retries the header check for a bounded 50 ms window. If the header is
-  still invalid after the window, a zero magic reports `CG_ERR_NOT_READY`
-  (the region exists but the writer has not initialised it), while any other
-  invalid header reports `CG_ERR_UNSUPPORTED` (a foreign or incompatible
-  region).
+  Open retries the header check for a bounded 50 ms window; a header that
+  completes inside the window is accepted. If the header is still invalid
+  after the window, a zero magic reports `CG_ERR_NOT_READY` (the region
+  exists but the writer has not initialised it), while any other invalid
+  header reports `CG_ERR_UNSUPPORTED` (a foreign or incompatible region).
 - Command encoding: `cg_bridge_send_command(h, cmd)` stores `cmd + 1` at
   header byte 32 because 0 is the reserved idle word; `cmd == 0` and
   `cmd == UINT32_MAX` (which would wrap to idle) are rejected with
@@ -273,13 +273,14 @@ bridge functions.
 - `cpp/tests/bridge/shm_reader_tests.cpp` covers the `UINT32_MAX` command
   rejection, the stale-hand `CG_ERR_NOT_READY` rule and the init-race
   outcomes (zero magic → `CG_ERR_NOT_READY`, incompatible header →
-  `CG_ERR_UNSUPPORTED`); `shm_stress_tests.cpp` keeps a far-future heartbeat
-  for the hand stress because staleness now applies to both slots.
+  `CG_ERR_UNSUPPORTED`, a header that completes inside the window → `CG_OK`);
+  `shm_stress_tests.cpp` keeps a far-future heartbeat for the hand stress
+  because staleness now applies to both slots.
 - `python -m depcheck --root .` enforces the `bridge` layer's ONNX Runtime ban
   from `contracts/layers.json`.
 - The C# P/Invoke wrapper uses blittable, explicitly laid-out structs
-  (`[StructLayout(LayoutKind.Sequential)]`, `Pack = 1` only if needed) and is
-  tested against the native writer.
+  (`[StructLayout(LayoutKind.Explicit)]` with a `FieldOffset` per field and
+  sizes pinned to the C `sizeof`) and is tested against the native writer.
 
 ## Links
 

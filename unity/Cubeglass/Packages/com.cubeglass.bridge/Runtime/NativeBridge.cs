@@ -103,13 +103,30 @@ namespace Cubeglass.Unity.Bridge
 
         /// <summary>
         /// Maps the shared-memory region. Returns false with a null
-        /// <paramref name="client"/> when the writer has not created the region
-        /// yet (<see cref="BridgeStatus.NotReady"/>) or the mapping failed
-        /// (<see cref="BridgeStatus.Internal"/>/<see cref="BridgeStatus.Unsupported"/>).
+        /// <paramref name="client"/> when the region is not ready yet, is
+        /// foreign or incompatible, or cannot be mapped; use the overload with
+        /// an out status to tell those cases apart.
         /// </summary>
         public static bool TryOpen(out BridgeClient client)
         {
-            BridgeStatus status = NativeBridge.cg_bridge_open(out IntPtr handle);
+            return TryOpen(out client, out _);
+        }
+
+        /// <summary>
+        /// Maps the shared-memory region and reports the outcome. On success
+        /// <paramref name="status"/> is <see cref="BridgeStatus.Ok"/> and
+        /// <paramref name="client"/> is non-null. On failure
+        /// <paramref name="client"/> is null and <paramref name="status"/> is
+        /// <see cref="BridgeStatus.NotReady"/> (the writer has not created or
+        /// initialised the region), <see cref="BridgeStatus.Unsupported"/>
+        /// (foreign, incompatible or too-small region) or
+        /// <see cref="BridgeStatus.Internal"/> (the mapping failed). A failed
+        /// open has no client to carry a <see cref="LastStatus"/>, so this
+        /// overload is the only place the failure status survives.
+        /// </summary>
+        public static bool TryOpen(out BridgeClient client, out BridgeStatus status)
+        {
+            status = NativeBridge.cg_bridge_open(out IntPtr handle);
             if (status == BridgeStatus.Ok && handle != IntPtr.Zero)
             {
                 client = new BridgeClient(handle) { LastStatus = BridgeStatus.Ok };
@@ -124,7 +141,9 @@ namespace Cubeglass.Unity.Bridge
         /// Reads the newest head sample. False with
         /// <see cref="LastStatus"/> = <see cref="BridgeStatus.NotReady"/> (nothing
         /// published yet) or <see cref="BridgeStatus.Timeout"/> (a publish was in
-        /// flight on every attempt).
+        /// flight on every attempt). A stale head still returns true with
+        /// <see cref="BridgeHeadSample.State"/> forced to
+        /// <see cref="TrackState.Lost"/>.
         /// </summary>
         public bool TryReadHead(out BridgeHeadSample sample)
         {
@@ -140,8 +159,12 @@ namespace Cubeglass.Unity.Bridge
         }
 
         /// <summary>
-        /// Reads the newest hand frame. False with the same status mapping as
-        /// <see cref="TryReadHead"/>.
+        /// Reads the newest hand frame. False with
+        /// <see cref="LastStatus"/> = <see cref="BridgeStatus.NotReady"/> (nothing
+        /// published yet, or the frame is stale because the writer heartbeat is
+        /// older than 250 ms — stale hands are withheld, not returned) or
+        /// <see cref="BridgeStatus.Timeout"/> (a publish was in flight on every
+        /// attempt).
         /// </summary>
         public bool TryReadHands(out BridgeHandFrame frame)
         {

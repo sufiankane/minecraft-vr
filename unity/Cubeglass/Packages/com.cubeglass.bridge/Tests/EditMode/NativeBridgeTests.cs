@@ -440,25 +440,40 @@ namespace Cubeglass.Unity.Bridge.Tests
             Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head(ref good));
             Assert.IsTrue(client.TryReadHead(out BridgeHeadSample baseline));
 
+            // The injected payload differs from the baseline in every derived
+            // field, so a reader that skipped the seqlock validation would
+            // return this sample and fail the assertions below.
+            BridgeHeadSample injected = BridgeSamples.Head(1009);
+
             // seq_a odd: the writer is mid-publish, so every bounded attempt
             // retries and the call times out. The last injected pair must be
             // even/even so the slot can recover below (a real publish bumps
             // seq_a by two, so an odd leftover would never clear).
-            Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head_raw(1, 1, ref good));
-            AssertNoMismatchedSample(client, baseline);
+            Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head_raw(1, 1, ref injected));
+            AssertNoMismatchedSample(client, baseline, injected);
 
             // Even seq_a with a mismatched seq_b: a copy is never accepted.
-            Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head_raw(2, 4, ref good));
-            AssertNoMismatchedSample(client, baseline);
+            Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head_raw(2, 4, ref injected));
+            AssertNoMismatchedSample(client, baseline, injected);
 
             // Even seq_a with a larger mismatched seq_b.
-            Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head_raw(4, 6, ref good));
-            AssertNoMismatchedSample(client, baseline);
+            Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head_raw(4, 6, ref injected));
+            AssertNoMismatchedSample(client, baseline, injected);
 
             // A proper publish recovers the slot.
             Assert.AreEqual(BridgeStatus.Ok, NativeBridge.cg_test_writer_publish_head(ref good));
             Assert.IsTrue(client.TryReadHead(out BridgeHeadSample recovered));
             Assert.IsTrue(BridgeSamples.HeadEquals(baseline, recovered), "the recovered sample is the good one");
+        }
+
+        [Test]
+        public void FailedOpenReportsNotReadyThroughTheStatusOverload()
+        {
+            NativeBridge.cg_test_writer_close();
+
+            Assert.IsFalse(BridgeClient.TryOpen(out BridgeClient client, out BridgeStatus status));
+            Assert.IsNull(client);
+            Assert.AreEqual(BridgeStatus.NotReady, status);
         }
 
         [Test]
@@ -476,15 +491,19 @@ namespace Cubeglass.Unity.Bridge.Tests
             Assert.AreEqual(BridgeStatus.InvalidArg, client.LastStatus);
         }
 
-        private static void AssertNoMismatchedSample(BridgeClient client, BridgeHeadSample baseline)
+        private static void AssertNoMismatchedSample(
+            BridgeClient client, BridgeHeadSample baseline, BridgeHeadSample injected)
         {
             for (int attempt = 0; attempt < 8; attempt++)
             {
                 if (client.TryReadHead(out BridgeHeadSample sample))
                 {
+                    Assert.IsFalse(
+                        BridgeSamples.HeadEquals(injected, sample),
+                        "the reader accepted a payload published behind mismatched seqlock counters");
                     Assert.IsTrue(
                         BridgeSamples.HeadEquals(baseline, sample),
-                        "a torn counter pair produced a mismatched sample");
+                        "an unexpected sample was returned");
                 }
                 else
                 {
