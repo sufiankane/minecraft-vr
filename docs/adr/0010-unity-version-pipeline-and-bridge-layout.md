@@ -93,6 +93,12 @@ hook once per rendered frame and applies the **same** sample to both eyes;
 there is no per-eye sample selection. No allocation is allowed on the
 rig/render path.
 
+**Frame budget:** the stereo path targets 90 Hz, i.e. **≤ 11.1 ms per stereo
+frame** on the dev machine, measured by the calibration-scene PlayMode helper
+(`FrameBudgetPlayModeTests`, 600 frames at 1080p per eye with the overlay
+enabled) and recorded in [`../perf/s6.md`](../perf/s6.md). The budget is a
+recorded comparison, not an absolute in-test timing assertion.
+
 ### Configuration defaults
 
 `config.json` (5.13) carries display mode, IPD, per-eye FOV, view distance and
