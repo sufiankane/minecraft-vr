@@ -11,6 +11,7 @@
 #include "cg/core_math/quat.hpp"
 #include "cg/core_math/time.hpp"
 #include "cg/core_math/vec3.hpp"
+#include "yaw_unwrap.hpp"
 
 namespace cg::glasses {
 
@@ -112,11 +113,11 @@ ReplayHeadPoseSource::ReplayHeadPoseSource(std::filesystem::path csv, ManualCloc
 Result<void> ReplayHeadPoseSource::Load() {
     rows_.clear();
     next_index_ = 0;
+    has_published_.store(false, std::memory_order_relaxed);
     has_previous_ = false;
     loaded_ = false;
     error_message_.clear();
     latest_yaw_deg_.store(0.0, std::memory_order_relaxed);
-    latest_pitch_deg_.store(0.0, std::memory_order_relaxed);
     yaw_rate_deg_per_s_.store(0.0, std::memory_order_relaxed);
     pitch_rate_deg_per_s_.store(0.0, std::memory_order_relaxed);
     yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
@@ -235,6 +236,7 @@ void ReplayHeadPoseSource::PublishNext() noexcept {
     UpdateRate(row);
     const HeadSample sample{row.host_time_ns, row.pose, row.state, next_seq_++};
     slot_.Publish(sample);
+    has_published_.store(true, std::memory_order_release);
 }
 
 void ReplayHeadPoseSource::PublishAll() noexcept {
@@ -252,28 +254,31 @@ bool ReplayHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
     out = newest;
 
     const double yaw_offset_deg = yaw_offset_deg_.load(std::memory_order_relaxed);
-    if (yaw_offset_deg != 0.0) {
+    const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
+    if (capped_ns > 0) {
+        // Compose the recentre offset and the extrapolated delta onto the
+        // recorded rotation (matching the Viture adapter), so a recorded roll
+        // survives and the predicted pose does not snap at the yaw seam.
+        const double dt_s = core_math::ToSeconds(capped_ns);
+        const double yaw_delta_deg = yaw_offset_deg + yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
+        const double pitch_delta_deg = pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
+        out.pose.rotation =
+            core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_delta_deg * kDegreesToRadians) *
+            out.pose.rotation *
+            core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_delta_deg * kDegreesToRadians);
+        out.time = newest.time + capped_ns;
+    } else if (yaw_offset_deg != 0.0) {
         out.pose.rotation =
             core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_offset_deg * kDegreesToRadians) *
             out.pose.rotation;
-    }
-
-    const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
-    if (capped_ns > 0) {
-        const double dt_s = core_math::ToSeconds(capped_ns);
-        const double yaw_deg = yaw_offset_deg + latest_yaw_deg_.load(std::memory_order_relaxed) +
-                               yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
-        const double pitch_deg = latest_pitch_deg_.load(std::memory_order_relaxed) +
-                                 pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
-        out.pose.rotation =
-            core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_deg * kDegreesToRadians) *
-            core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_deg * kDegreesToRadians);
-        out.time = newest.time + capped_ns;
     }
     return true;
 }
 
 Result<void> ReplayHeadPoseSource::Recenter() {
+    if (!has_published_.load(std::memory_order_acquire)) {
+        return Err<void>(Status{StatusCode::NotReady, "replay: no sample to recentre"});
+    }
     yaw_offset_deg_.store(-latest_yaw_deg_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     return Ok();
 }
@@ -287,15 +292,10 @@ void ReplayHeadPoseSource::UpdateRate(const Row &row) noexcept {
     double yaw_deg = YawDegrees(row.pose);
     const double pitch_deg = PitchDegrees(row.pose);
     if (has_previous_ && row.host_time_ns > previous_time_) {
-        double delta_yaw_deg = yaw_deg - previous_yaw_deg_;
-        // Unwrap across the +/-180 degree seam so the rate never spikes.
-        if (delta_yaw_deg > 180.0) {
-            yaw_deg -= 360.0;
-            delta_yaw_deg -= 360.0;
-        } else if (delta_yaw_deg < -180.0) {
-            yaw_deg += 360.0;
-            delta_yaw_deg += 360.0;
-        }
+        // Keep the absolute yaw continuous across the +/-180 degree seam so
+        // the rate never spikes and `latest_yaw_deg_` stays replay-local.
+        const double delta_yaw_deg = detail::UnwrapYawDeltaDegrees(yaw_deg - previous_yaw_deg_);
+        yaw_deg = previous_yaw_deg_ + delta_yaw_deg;
         const double dt_s = core_math::ToSeconds(row.host_time_ns - previous_time_);
         if (dt_s > 0.0) {
             yaw_rate_deg_per_s_.store(delta_yaw_deg / dt_s, std::memory_order_relaxed);
@@ -307,7 +307,6 @@ void ReplayHeadPoseSource::UpdateRate(const Row &row) noexcept {
     previous_time_ = row.host_time_ns;
     has_previous_ = true;
     latest_yaw_deg_.store(yaw_deg, std::memory_order_relaxed);
-    latest_pitch_deg_.store(pitch_deg, std::memory_order_relaxed);
 }
 
 } // namespace cg::glasses

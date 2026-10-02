@@ -44,6 +44,45 @@ jobs:
           name: bench-cpp-results
           path: cpp/benchmark_results.json
 
+  soak:
+    name: soak
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Clone and bootstrap vcpkg at the pinned baseline
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          git -C "$VCPKG_ROOT" checkout eb2d3a3279fd019cb7733072d86900d0ad2a1aef
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+
+      - name: Configure tools (Release)
+        run: cmake --preset linux-ci
+        working-directory: cpp
+
+      - name: Build tools (Release)
+        run: cmake --build --preset linux-ci
+        working-directory: cpp
+
+      - name: Run glasses soak (30 minutes)
+        run: |
+          set -o pipefail
+          ./build/linux-ci/bin/glasses_soak --minutes 30 2>&1 | tee soak.log
+        working-directory: cpp
+
+      - name: Upload soak log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-log
+          path: cpp/soak.log
+
   bench-dotnet:
     name: bench-dotnet
     runs-on: ubuntu-latest

@@ -17,6 +17,7 @@ namespace cg::glasses::test {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kRadiansToDegrees = 180.0 / kPi;
 constexpr std::int64_t kMillisecondNs = 1'000'000;
 constexpr std::int64_t kHundredMillisecondsNs = 100 * kMillisecondNs;
 
@@ -25,6 +26,12 @@ constexpr std::int64_t kHundredMillisecondsNs = 100 * kMillisecondNs;
 HeadSample PlaceholderSample() noexcept {
     return HeadSample{0, core_math::Pose{core_math::Vec3{0.0, 0.0, 0.0}, core_math::Quat::kIdentity},
                       TrackState::Stable, 0};
+}
+
+/// Yaw of a pose: the heading of its forward axis (-Z) about world +Y.
+double YawDegrees(const core_math::Pose &pose) noexcept {
+    const core_math::Vec3 forward = pose.rotation.Rotate(core_math::Vec3{0.0, 0.0, -1.0});
+    return std::atan2(-forward.x, -forward.z) * kRadiansToDegrees;
 }
 
 /// A seam sample with `host_time` in SDK nanoseconds and a pure yaw rotation.
@@ -188,7 +195,12 @@ TEST(VitureFault, BlockingPollLeavesReadersWaitFreeAndStopPrompt) {
 TEST(VitureFault, ResetFailureSurfacesAsResult) {
     FakeVitureApi api;
     ManualHostClock clock;
-    api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 10.0)};
+    constexpr std::int64_t kSdkNs = 1'000'000'000;
+    // The first scripted poll succeeds; every later poll succeeds too (same
+    // pose, so whichever sample is newest at the reset has identical values),
+    // which keeps the device alive for the Recenter.
+    api.poll_script = {Ok(CgSample(1, kSdkNs, CG_TRACK_STABLE, 10.0))};
+    api.empty_poll_result = Ok(CgSample(2, kSdkNs, CG_TRACK_STABLE, 10.0));
     api.reset_origin_result = Err<void>(Status{StatusCode::Device, "fake: reset rejected"});
 
     VitureHeadPoseSource source(api, clock);
@@ -208,6 +220,177 @@ TEST(VitureFault, ResetFailureSurfacesAsResult) {
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[4]), sample.pose.rotation.x(), 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[5]), sample.pose.rotation.y(), 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[6]), sample.pose.rotation.z(), 1e-6);
+    source.Stop();
+}
+
+/// While a backoff is pending the device is destroyed, so `Recenter` is
+/// `NotReady` and the seam is never called in that state.
+TEST(VitureFault, RecentreDuringBackoffIsNotReady) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 5.0)};
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample sample = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, sample, 1U));
+
+    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    ASSERT_FALSE(api.device_alive.load());
+    const std::uint64_t resets_before = api.reset_origin_calls.load();
+
+    const Result<void> result = source.Recenter();
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), StatusCode::NotReady);
+    EXPECT_EQ(api.reset_origin_calls.load(), resets_before) << "a destroyed device must never see the reset call";
+    source.Stop();
+}
+
+/// A successful recreate revives the device, and `Recenter` then reaches the
+/// seam again.
+TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    constexpr std::int64_t kSdkNs = 1'000'000'000;
+    api.poll_script = {Ok(CgSample(1, kSdkNs, CG_TRACK_STABLE, 3.0)),
+                       Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"})};
+    // Every poll after the reconnect succeeds, so the recreated device stays
+    // alive while the Recenter is serviced.
+    api.empty_poll_result = Ok(CgSample(2, kSdkNs + 10'000'000, CG_TRACK_STABLE, 4.0));
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+
+    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    EXPECT_FALSE(api.device_alive.load());
+    clock.Advance(Duration{kHundredMillisecondsNs});
+    ASSERT_TRUE(WaitFor([&] { return api.device_alive.load(); }));
+
+    const Result<void> result = source.Recenter();
+    ASSERT_TRUE(result.ok()) << result.status().message();
+    EXPECT_EQ(api.reset_origin_calls.load(), 1U);
+    EXPECT_TRUE(api.has_reset_pose);
+    source.Stop();
+}
+
+/// The fake models the SDK device lifetime: pose calls fail `NotReady` while
+/// destroyed and work again after a create.
+TEST(VitureFault, FakeVitureApiModelsDeviceLifetime) {
+    FakeVitureApi api;
+    const float pose[7] = {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
+    EXPECT_EQ(api.PollPose().status().code(), StatusCode::NotReady);
+    EXPECT_EQ(api.StartPose().status().code(), StatusCode::NotReady);
+    EXPECT_EQ(api.ResetOriginCarina(pose).status().code(), StatusCode::NotReady);
+    EXPECT_FALSE(api.device_alive.load());
+
+    ASSERT_TRUE(api.CreateDevice().ok());
+    EXPECT_TRUE(api.device_alive.load());
+    ASSERT_TRUE(api.StartPose().ok());
+    api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 0.0)};
+    EXPECT_TRUE(api.PollPose().ok());
+
+    api.DestroyDevice();
+    EXPECT_FALSE(api.device_alive.load());
+    EXPECT_EQ(api.PollPose().status().code(), StatusCode::NotReady);
+    EXPECT_EQ(api.ResetOriginCarina(pose).status().code(), StatusCode::NotReady);
+    api.DestroyDevice(); // Idempotent.
+}
+
+/// A failed `StartPose` tears the device down; the next `Start` is clean and
+/// reaches the feed.
+TEST(VitureFault, StartPoseFailureDestroysTheDeviceThenRetrySucceeds) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.start_script = {Err<void>(Status{StatusCode::Device, "fake: start pose failed"})};
+    api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 0.0)};
+
+    VitureHeadPoseSource source(api, clock);
+    const Result<void> first = source.Start();
+    ASSERT_FALSE(first.ok());
+    EXPECT_EQ(first.status().code(), StatusCode::Device);
+    EXPECT_EQ(api.create_calls.load(), 1U);
+    EXPECT_EQ(api.start_calls.load(), 1U);
+    EXPECT_EQ(api.destroy_calls.load(), 1U);
+    EXPECT_FALSE(api.device_alive.load());
+
+    ASSERT_TRUE(source.Start().ok());
+    EXPECT_EQ(api.create_calls.load(), 2U);
+    EXPECT_EQ(api.start_calls.load(), 2U);
+    EXPECT_TRUE(api.device_alive.load());
+    HeadSample sample = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, sample, 1U));
+    source.Stop();
+}
+
+/// A yaw step across the +/-180 degree seam must not make the prediction snap:
+/// the rate is derived from the unwrapped difference. The pair genuinely
+/// crosses the seam (179.9 -> -179.9, i.e. +0.2 unwrapped vs -359.8 wrapped),
+/// and the prediction is 2.5 sample periods, because an integer number of
+/// periods would alias the wrapped 360-degree error away modulo a full turn.
+TEST(VitureFault, PredictionCrossesTheYawSeamWithoutASnap) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    constexpr std::int64_t kSdkNs = 1'000'000'000;
+    constexpr std::int64_t kPeriodNs = 10'000'000;
+    constexpr std::int64_t kPredictNs = 25'000'000; // 2.5 periods.
+    api.samples = {CgSample(1, kSdkNs, CG_TRACK_STABLE, 179.9),
+                   CgSample(2, kSdkNs + kPeriodNs, CG_TRACK_STABLE, -179.9)};
+    // The gate pins the host instants of the two polls, so the mapped
+    // inter-sample delta is exactly one period.
+    api.SetPollGate(true);
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    api.AllowOnePoll();
+    HeadSample newer = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, newer, 1U));
+    clock.Advance(Duration{kPeriodNs});
+    api.AllowOnePoll();
+    HeadSample newest = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, newest, 2U));
+    ASSERT_NEAR(YawDegrees(newest.pose), -179.9, 0.01);
+
+    HeadSample predicted = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(predicted, Duration{kPredictNs}));
+    const core_math::Quat delta = predicted.pose.rotation * newest.pose.rotation.Inverse();
+    const double delta_yaw_deg = 2.0 * std::atan2(delta.y(), delta.w()) * kRadiansToDegrees;
+    // +0.2 degrees per 10 ms is 20 deg/s: 25 ms continues the heading across
+    // the seam to -179.4 (delta +0.5). A wrapped rate (-35980 deg/s) would add
+    // -899.5 degrees, which is 180.5 modulo a full turn, so the pose visibly
+    // snaps instead of continuing.
+    EXPECT_NEAR(delta_yaw_deg, 0.5, 0.05) << "predicted yaw snapped at the seam";
+    EXPECT_NEAR(YawDegrees(predicted.pose), -179.4, 0.05) << "the prediction did not continue past the seam";
+    source.Stop();
+}
+
+/// If the SDK clock restarts when the device is recreated, the first mapped
+/// time must not regress below the last published time (U-01 assumption).
+TEST(VitureFault, SdkClockRestartAfterReconnectDoesNotRegressMappedTime) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    constexpr std::int64_t kSdkBefore = 100'000'000'000;
+    api.poll_script.push_back(Ok(CgSample(1, kSdkBefore, CG_TRACK_STABLE, 0.0)));
+    for (std::uint32_t i = 1; i <= 8; ++i) {
+        api.poll_script.push_back(
+            Ok(CgSample(i + 1, kSdkBefore + static_cast<std::int64_t>(i) * 10'000'000, CG_TRACK_STABLE, 0.1 * i)));
+    }
+    api.poll_script.push_back(Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}));
+    api.poll_script.push_back(Ok(CgSample(99, 1'000'000'000, CG_TRACK_STABLE, 1.0)));
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+    HeadSample last_before = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, last_before, 9U));
+
+    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    clock.Advance(Duration{kHundredMillisecondsNs});
+    HeadSample second = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, second, 10U));
+    EXPECT_GT(second.time, last_before.time) << "a restarted SDK clock must not regress the mapped time";
     source.Stop();
 }
 
@@ -340,6 +523,40 @@ TEST(VitureFault, ThreadSetupHookRunsOnThePollingThread) {
     ASSERT_TRUE(WaitFor([&] { return hook_ran.load(std::memory_order_acquire); }));
     EXPECT_NE(hook_thread.load(std::memory_order_acquire), caller);
     source.Stop();
+}
+
+/// `LastSdkSeconds` is the diagnostics accessor the probe records: empty
+/// before the first publish, then the SDK seconds stamp of the newest
+/// published sample. The poll gate makes the two stamps deterministic.
+TEST(VitureFault, LastSdkSecondsTracksNewestPublishedSample) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    constexpr std::int64_t kFirstSdkNs = 5'000'000'000;
+    constexpr std::int64_t kSecondSdkNs = 5'100'000'000;
+    api.samples = {CgSample(1, kFirstSdkNs, CG_TRACK_STABLE, 0.0), CgSample(2, kSecondSdkNs, CG_TRACK_STABLE, 1.0)};
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_FALSE(source.LastSdkSeconds().has_value()) << "the stamp must be empty before the first publish";
+
+    api.SetPollGate(true);
+    ASSERT_TRUE(source.Start().ok());
+    api.AllowOnePoll();
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+    ASSERT_TRUE(source.LastSdkSeconds().has_value());
+    EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kFirstSdkNs));
+
+    api.AllowOnePoll();
+    HeadSample second = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, second, 2U));
+    ASSERT_TRUE(source.LastSdkSeconds().has_value());
+    EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kSecondSdkNs));
+
+    source.Stop();
+    // Stop is total and keeps the newest sample readable, so the stamp stays too.
+    ASSERT_TRUE(source.TryGetLatest(second, Duration{0}));
+    ASSERT_TRUE(source.LastSdkSeconds().has_value());
+    EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kSecondSdkNs));
 }
 
 } // namespace

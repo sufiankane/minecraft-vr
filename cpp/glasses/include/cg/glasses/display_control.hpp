@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <utility>
 
 #include "cg/glasses/viture_api.hpp"
 #include "result.hpp"
@@ -17,6 +19,9 @@ struct DisplayMode {
 
 /// Display-mode control behind one small interface.
 ///
+/// Configuration is only legal while the pose source is stopped: implementations
+/// must report `NotReady` instead of touching the seam while a poll could be in
+/// flight (the VITURE display calls are not safe concurrently with `PollPose`).
 /// The exact VITURE display surface is U-08 (pending HIL, ADR-0009). The seam
 /// can set a mode (`IVitureApi::SetDisplayMode`) and read the refresh rate
 /// back (`IVitureApi::GetRefreshHz`), but has no SBS getter, so an
@@ -48,16 +53,29 @@ class IDisplayControl {
 /// started, or by another controller, cannot be observed. Every seam failure
 /// passes through unchanged, including `Unsupported` from a build without a
 /// display API (the U-08 placeholder behaviour).
+///
+/// **Threading rule (enforced):** the seam's display calls must not run while
+/// the pose-polling thread could call `PollPose`, so `Get`/`Set` take an
+/// is-running predicate (production wires `VitureHeadPoseSource::Running`)
+/// and return `NotReady` while it reports true. Configure the display before
+/// `Start` or after `Stop`; an empty predicate means "never running" and is
+/// for standalone/test use.
 class VitureDisplayControl final : public IDisplayControl {
   public:
-    explicit VitureDisplayControl(IVitureApi &api) noexcept : api_(api) {}
+    using IsSourceRunning = std::function<bool()>;
+
+    explicit VitureDisplayControl(IVitureApi &api, IsSourceRunning is_source_running = {}) noexcept
+        : api_(api), is_source_running_(std::move(is_source_running)) {}
 
     [[nodiscard]] Result<DisplayMode> Get() const override;
     Result<void> Set(DisplayMode mode) override;
     void Stop() noexcept override;
 
   private:
+    [[nodiscard]] bool SourceIsRunning() const;
+
     IVitureApi &api_;
+    IsSourceRunning is_source_running_;
     mutable std::atomic<bool> sbs_{false};
     std::atomic<bool> stopped_{false};
 };

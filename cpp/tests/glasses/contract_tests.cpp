@@ -130,6 +130,14 @@ void PosesAreFiniteAndUnitQuaternions(SourceUnderTest &uut) {
     uut.source->Stop();
 }
 
+void RecenterBeforeTheFirstSampleIsNotReady(SourceUnderTest &uut) {
+    ASSERT_TRUE(uut.source->Start().ok());
+    const Result<void> result = uut.source->Recenter();
+    EXPECT_FALSE(result.ok()) << "there is no pose to make the origin before the first sample";
+    EXPECT_EQ(result.status().code(), StatusCode::NotReady);
+    uut.source->Stop();
+}
+
 void RecenterZeroesYawAndPreservesPitchRoll(SourceUnderTest &uut) {
     ASSERT_TRUE(uut.source->Start().ok());
     ASSERT_TRUE(uut.advance) << "the contract suite needs a sample driver";
@@ -253,6 +261,7 @@ constexpr ContractCase kContractCases[] = {
     {"TryGetLatestIsFalseBeforeTheFirstSample", &TryGetLatestIsFalseBeforeTheFirstSample},
     {"SequenceAndTimeStrictlyIncrease", &SequenceAndTimeStrictlyIncrease},
     {"PosesAreFiniteAndUnitQuaternions", &PosesAreFiniteAndUnitQuaternions},
+    {"RecenterBeforeTheFirstSampleIsNotReady", &RecenterBeforeTheFirstSampleIsNotReady},
     {"RecenterZeroesYawAndPreservesPitchRoll", &RecenterZeroesYawAndPreservesPitchRoll},
     {"PredictZeroReturnsTheNewestSampleVerbatim", &PredictZeroReturnsTheNewestSampleVerbatim},
     {"PredictExtrapolatesInTheSweepDirection", &PredictExtrapolatesInTheSweepDirection},

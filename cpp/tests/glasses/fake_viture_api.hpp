@@ -50,6 +50,12 @@ template <typename T> [[nodiscard]] Result<T> PopResult(std::deque<Result<T>> &s
 /// wait is cut short as soon as `RequestStop()` is called (or `stop_requested`
 /// is set directly), and the interrupted poll returns `Timeout` promptly.
 ///
+/// A successful `CreateDevice` sets `device_alive`; `DestroyDevice` clears it.
+/// `StartPose`, `PollPose` and `ResetOriginCarina` fail with `NotReady` while
+/// no device is alive, like the real SDK. Display calls are deliberately not
+/// gated: the enforced display rule is "configure while the pose source is
+/// stopped", which includes the window before `Start` creates the device.
+///
 /// The sample feed is either a plain list of `cg_head_sample`, returned
 /// verbatim one per successful poll, or a Task 1 `FakeScript` pattern advanced
 /// on demand over an owned `ManualClock`. Poll scripts take precedence over
@@ -84,6 +90,8 @@ class FakeVitureApi final : public IVitureApi {
     std::int64_t poll_delay_ns = 0;
 
     // --- observability ----------------------------------------------------
+    /// True between a successful `CreateDevice` and the next `DestroyDevice`.
+    std::atomic<bool> device_alive{false};
     std::atomic<std::uint64_t> create_calls{0};
     std::atomic<std::uint64_t> destroy_calls{0};
     std::atomic<std::uint64_t> start_calls{0};
@@ -101,13 +109,23 @@ class FakeVitureApi final : public IVitureApi {
     // --- IVitureApi -------------------------------------------------------
     Result<void> CreateDevice() override {
         create_calls.fetch_add(1, std::memory_order_relaxed);
-        return NextResult(create_script, create_result);
+        const Result<void> result = NextResult(create_script, create_result);
+        if (result.ok()) {
+            device_alive.store(true, std::memory_order_relaxed);
+        }
+        return result;
     }
 
-    void DestroyDevice() noexcept override { destroy_calls.fetch_add(1, std::memory_order_relaxed); }
+    void DestroyDevice() noexcept override {
+        destroy_calls.fetch_add(1, std::memory_order_relaxed);
+        device_alive.store(false, std::memory_order_relaxed);
+    }
 
     Result<void> StartPose() override {
         start_calls.fetch_add(1, std::memory_order_relaxed);
+        if (!device_alive.load(std::memory_order_relaxed)) {
+            return Err<void>(Status{StatusCode::NotReady, "fake: start without a device"});
+        }
         stop_requested_.store(false, std::memory_order_relaxed);
         return NextResult(start_script, start_result);
     }
@@ -124,6 +142,9 @@ class FakeVitureApi final : public IVitureApi {
         if (IsStopped()) {
             return Interrupted();
         }
+        if (!device_alive.load(std::memory_order_relaxed)) {
+            return Err<cg_head_sample>(Status{StatusCode::NotReady, "fake: poll without a device"});
+        }
         if (!poll_script.empty()) {
             return PopResult(poll_script);
         }
@@ -138,6 +159,9 @@ class FakeVitureApi final : public IVitureApi {
 
     Result<void> ResetOriginCarina(const float pose[7]) override {
         reset_origin_calls.fetch_add(1, std::memory_order_relaxed);
+        if (!device_alive.load(std::memory_order_relaxed)) {
+            return Err<void>(Status{StatusCode::NotReady, "fake: recentre without a device"});
+        }
         if (pose == nullptr) {
             return Err<void>(Status{StatusCode::InvalidArgument, "fake: null recentre pose"});
         }

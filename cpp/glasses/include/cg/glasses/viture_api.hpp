@@ -26,9 +26,16 @@ inline constexpr std::int64_t kViturePollTimeoutNs = 100'000'000;
 ///   wrapper calls them on its caller thread in `Start`/`Stop` and on the
 ///   polling thread while reconnecting; they are serialised with the polling
 ///   loop and with each other, never concurrent with a poll.
-/// - `PollPose`, `ResetOriginCarina`, `SetDisplayMode`, `GetRefreshHz` and
-///   `SdkVersion` are called on the polling thread only, one at a time in the
-///   loop. Render/reader threads never call any method.
+/// - `PollPose` and `ResetOriginCarina` are called on the polling thread only,
+///   one at a time in the loop. `ResetOriginCarina` requires a live device
+///   (after a successful `CreateDevice`/`StartPose`) and reports `NotReady`
+///   otherwise.
+/// - `SetDisplayMode`/`GetRefreshHz` are display calls. They only run while
+///   the pose source is stopped (configure before `Start`/after `Stop`):
+///   `VitureDisplayControl` enforces this with an is-running predicate and
+///   reports `NotReady` while a poll could be in flight, so they are never
+///   concurrent with `PollPose`.
+/// - `SdkVersion` is diagnostic and may be called from any thread.
 /// - `RequestStop()` is the one cross-thread call: the thread asking the
 ///   polling thread to finish (the wrapper's `Stop()`) sets it before
 ///   joining. It is thread-safe, idempotent and `noexcept`, and a blocked
@@ -72,7 +79,8 @@ class IVitureApi {
 
     /// Makes `pose`, layout `[px, py, pz, qw, qx, qy, qz]`, the new origin:
     /// position and yaw take the given pose, pitch and roll stay
-    /// gravity-anchored (dossier F-04).
+    /// gravity-anchored (dossier F-04). Requires a live device and reports
+    /// `NotReady` when the device was destroyed or never created.
     virtual Result<void> ResetOriginCarina(const float pose[7]) = 0;
 
     /// Selects side-by-side display at `refresh_hz`. The exact vendor

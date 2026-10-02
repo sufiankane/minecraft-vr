@@ -45,7 +45,9 @@ namespace cg::glasses {
 /// call the API): it passes the newest pose to `ResetOriginCarina` and arms an
 /// inverse-yaw read-time correction for samples published before the reset, so
 /// the newest sample reads back recentred as soon as `Recenter` returns, while
-/// later samples come from the already-recentred SDK stream.
+/// later samples come from the already-recentred SDK stream. It is `NotReady`
+/// before the first sample and while no device is alive (during a backoff or a
+/// failed recreate); the destroyed-device state never calls the seam.
 class VitureHeadPoseSource final : public IHeadPoseSource {
   public:
     /// Runs on the polling thread right after it is named (Windows
@@ -79,6 +81,22 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     [[nodiscard]] bool TryGetLatest(HeadSample &out, Duration predict) const noexcept override;
     Result<void> Recenter() override;
 
+    /// True while the polling thread is alive (between a successful `Start`
+    /// and the join in `Stop`). `VitureDisplayControl` takes this as its
+    /// is-running predicate: display calls are refused while a poll could be
+    /// in flight, so configure the display before `Start` or after `Stop`.
+    [[nodiscard]] bool Running() const noexcept { return running_.load(std::memory_order_acquire); }
+
+    /// Diagnostics only (HIL recordings), NOT part of `IHeadPoseSource`: the
+    /// SDK seconds stamp of the newest published sample, or `std::nullopt`
+    /// before the first successful poll. The polling thread stores it just
+    /// before the matching `PoseSlot::Publish`, so a reader that observes a
+    /// sample can rely on the stamp being at least as new. Lock-free (the
+    /// `std::atomic<double>` is lock-free on every supported platform), no
+    /// allocation, no exceptions. Quiet `Unstable`/`Lost` synthetics carry the
+    /// last real stamp forward rather than clearing it.
+    [[nodiscard]] std::optional<double> LastSdkSeconds() const noexcept;
+
   private:
     void PollLoop(std::stop_token stop) noexcept;
     void SetupThread() noexcept;
@@ -108,6 +126,12 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     bool recentre_done_ = false;
     Result<void> recentre_result_{};
 
+    // Device lifetime (create success sets it, before every destroy it is
+    // cleared) and "a pose was published" (readable by `Recenter` from any
+    // caller thread, so both are atomics).
+    std::atomic<bool> device_alive_{false};
+    std::atomic<bool> has_published_{false};
+
     // Polling-thread state (never touched by readers).
     std::optional<HeadSample> last_published_{};
     std::uint32_t seq_ = 0;
@@ -125,6 +149,12 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::atomic<double> yaw_offset_deg_{0.0};
     std::atomic<std::uint32_t> recentre_until_seq_{0};
     mutable std::atomic<bool> recentre_hold_{false};
+
+    // Diagnostics-only SDK stamp (see `LastSdkSeconds`). Written by the polling
+    // thread before the matching publish; `has_sdk_seconds_` is the release
+    // flag that makes it readable.
+    std::atomic<double> last_sdk_seconds_{0.0};
+    std::atomic<bool> has_sdk_seconds_{false};
 };
 
 } // namespace cg::glasses

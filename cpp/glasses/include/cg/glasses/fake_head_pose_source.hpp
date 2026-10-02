@@ -55,11 +55,13 @@ struct FakeHeadPoseSourceConfig {
 /// period.
 ///
 /// `Recenter` composes an inverse-yaw offset that is applied at read time, so
-/// the newest sample is recentred immediately; pitch and roll are untouched.
-/// `TryGetLatest` extrapolates yaw and pitch by the last inter-sample rate for
-/// `predict` nanoseconds, capped at 100 ms, and leaves the position unchanged.
-/// A `predict` of zero returns the newest sample verbatim. Wait-free reads; one
-/// writer (the test thread driving `AdvanceSamples`) and many readers.
+/// the newest sample is recentred immediately; pitch and roll are untouched,
+/// and it is `NotReady` before the first sample (there is no pose to make the
+/// origin). `TryGetLatest` extrapolates yaw and pitch by the last inter-sample
+/// rate for `predict` nanoseconds, capped at 100 ms, and leaves the position
+/// unchanged. A `predict` of zero returns the newest sample verbatim. Wait-free
+/// reads; one writer (the test thread driving `AdvanceSamples`) and many
+/// readers.
 class FakeHeadPoseSource final : public IHeadPoseSource {
   public:
     explicit FakeHeadPoseSource(FakeHeadPoseSourceConfig config);
@@ -96,6 +98,9 @@ class FakeHeadPoseSource final : public IHeadPoseSource {
     std::uint64_t sample_index_ = 0;
     double yaw_deg_ = 0.0;
     double pitch_deg_ = 0.0;
+    // `Recenter` may be called from a reader thread while the writer emits, so
+    // the "a sample exists" signal is an acquire/release atomic.
+    std::atomic<bool> has_published_{false};
     bool has_previous_ = false;
     double previous_yaw_deg_ = 0.0;
     double previous_pitch_deg_ = 0.0;

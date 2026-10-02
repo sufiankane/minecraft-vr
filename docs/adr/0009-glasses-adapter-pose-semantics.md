@@ -153,14 +153,20 @@ Every vendor call goes through `IVitureApi`
 `GetRefreshHz`, `SdkVersion` and `RequestStop`. `CreateDevice`/`StartPose`/
 `DestroyDevice` are lifecycle calls made on the wrapper's caller thread
 (`Start`/`Stop`) and on the polling thread while reconnecting, serialised with
-the polling loop; `PollPose`/`ResetOriginCarina`/display calls run on the
-polling thread. `RequestStop` is the one cross-thread call, is thread-safe and
-`noexcept`, and must make a blocked `PollPose` return promptly with `Timeout`;
-`StartPose` clears it. Time enters the wrapper as an injected `IHostClock`
-(`SteadyHostClock` in production, `ManualHostClock` in tests). No translation
-unit includes a vendor header; tests drive `FakeVitureApi`
+the polling loop. `PollPose`/`ResetOriginCarina` run on the polling thread, and
+`ResetOriginCarina` requires a live device (`NotReady` otherwise). Display
+calls (`SetDisplayMode`/`GetRefreshHz`) only run while the pose source is
+stopped: `VitureDisplayControl` takes an is-running predicate
+(`VitureHeadPoseSource::Running` in production) and reports `NotReady` while it
+is true, so display calls are never concurrent with `PollPose`. `RequestStop`
+is the one cross-thread call, is thread-safe and `noexcept`, and must make a
+blocked `PollPose` return promptly with `Timeout`; `StartPose` clears it. Time
+enters the wrapper as an injected `IHostClock` (`SteadyHostClock` in
+production, `ManualHostClock` in tests). No translation unit includes a vendor
+header; tests drive `FakeVitureApi`
 (`cpp/tests/glasses/fake_viture_api.hpp`), which scripts a `Result` per call,
-counts calls and blocks a long poll until `RequestStop`.
+counts calls, models the device lifetime (pose/recentre calls are `NotReady`
+while destroyed) and blocks a long poll until `RequestStop`.
 
 `LoadVitureApi(dll_path)` (`cpp/glasses/src/viture_loader.cpp`) is the only TU
 that opens the vendor library (`LoadLibraryW`/`GetProcAddress` on Windows,
@@ -201,41 +207,52 @@ the wrapper converts it once with `ToSeconds`, feeds
 `ClockMapper.Map(seconds)`. Reading the raw field as an existing `HostTime`
 would map it a second time; the ADR-0004 rule that the SDK's double seconds are
 converted once at the adapter boundary is what makes this field the sole time
-seam.
+seam. **U-01 assumption:** the SDK stamp is monotonic within one session. If a
+device recreate restarts it, the wrapper resets `ClockMapper` and re-seeds it
+from that first post-reconnect sample whenever the mapped time would fall
+below the last published time, so a reconnect cannot publish time in the past.
 
 **Fault and quiet policy.** A `Device`/`Timeout` (or any other) poll failure
 destroys the device and waits an interruptible backoff of 100 ms doubling to a
 2 s cap. After `kMaxReconnectAttempts` = 10 consecutive failed recreates the
 thread stops recreating and probes every 2 s, reporting `Lost` until a poll
 succeeds; a success resets the attempt counter, the backoff and the quiet
-state. With no successful poll it publishes a synthetic sample carrying the
-last pose and the current host time: `Unstable` after 500 ms
-(`kUnstableAfter`) and `Lost` after 1000 ms (`kLostAfter`). Backoff and quiet
-thresholds are measured on the injected `IHostClock`, so tests pin the
-schedule with `ManualHostClock` and `Stop` interrupts a pending 2 s backoff
-immediately.
+state. A device-alive flag is cleared before every `DestroyDevice` and set
+after a successful `CreateDevice`; `Recenter` returns `NotReady` and never
+reaches the seam while the flag is clear (a pending backoff or a failed
+recreate) or before the first published sample. With no successful poll it
+publishes a synthetic sample carrying the last pose and the current host time:
+`Unstable` after 500 ms (`kUnstableAfter`) and `Lost` after 1000 ms
+(`kLostAfter`). Backoff and quiet thresholds are measured on the injected
+`IHostClock`, so tests pin the schedule with `ManualHostClock` and `Stop`
+interrupts a pending 2 s backoff immediately.
 
 **Recentre.** `Recenter` is posted to the polling thread (the only caller of
 the seam), which narrows the newest pose to the SDK's `float[7]` layout
 (`[px, py, pz, qw, qx, qy, qz]`), calls `ResetOriginCarina` and returns its
-`Result` to the waiting caller. On success the wrapper arms an inverse-yaw
-correction for samples whose sequence is at or below the reset sample, so the
-newest pre-reset sample reads recentred as soon as `Recenter` returns (pitch
-and roll untouched, position unchanged) while later samples arrive already
-recentred from the SDK; the polling thread holds the next publish until a
-reader observes the corrected sample, bounded by `kRecentreReadTimeout` = 1 s.
+`Result` to the waiting caller. It is `NotReady` before the first sample and
+while no device is alive, and in those states the seam is never called. On
+success the wrapper arms an inverse-yaw correction for samples whose sequence
+is at or below the reset sample, so the newest pre-reset sample reads recentred
+as soon as `Recenter` returns (pitch and roll untouched, position unchanged)
+while later samples arrive already recentred from the SDK; the polling thread
+holds the next publish until a reader observes the corrected sample, bounded by
+`kRecentreReadTimeout` = 1 s.
 
 ### Recentre
 
 `Recenter` means "make the current heading yaw zero" (FR-08, F-04). Yaw is the
 rotation about world +Y; positive yaw turns counter-clockwise seen from above
-(ADR-0004). The fake keeps an inverse-yaw offset and composes it onto the pose
-at read time, so the newest sample is recentred as soon as `Recenter` returns,
-pitch and roll are untouched (the offset is a pre-multiplied pure-yaw
+(ADR-0004). All three sources return `NotReady` when there is no published
+sample to make the origin; a never-applied offset would be silently wrong. The
+fake and the replay source keep an inverse-yaw offset and compose it onto the
+pose at read time, so the newest sample is recentred as soon as `Recenter`
+returns, pitch and roll are untouched (the offset is a pre-multiplied pure-yaw
 rotation), and repeated calls are idempotent. The contract suite pins
 `|yaw| <= 0.1 deg` after recentre with pitch preserved within 0.1 deg. The real
-adapter (Task 2) delegates to the SDK's `ResetOriginCarina`; U-01 (pending HIL)
-will confirm what the SDK reports before and after that call.
+adapter (Task 2) delegates to the SDK's `ResetOriginCarina` (and additionally
+refuses while no device is alive); U-01 (pending HIL) will confirm what the SDK
+reports before and after that call.
 
 ### Predict
 
@@ -245,7 +262,12 @@ linearly by the last inter-sample rate, capped at 100 ms:
 `dt = min(predict, 100 ms)`, `time = newest.time + dt`, `seq` and `state` are
 copied from the newest sample, and the position is unchanged. Rates come from
 the two most recent samples; before there are two, the rate is zero. Negative
-`predict` values are treated as zero.
+`predict` values are treated as zero. Yaw rates are derived from the difference
+unwrapped across the +/-180 degree seam (`cpp/glasses/src/yaw_unwrap.hpp`), so
+a heading that crosses the seam predicts continuously instead of snapping by a
+full turn. The replay source composes the same yaw/pitch delta onto its
+recorded rotation, which preserves a recorded roll (matching the Viture
+adapter) instead of rebuilding the pose from absolute yaw and pitch.
 
 ### U-01 (pending HIL)
 
@@ -296,6 +318,16 @@ is provisional until then). This section is filled in before
   path is `InvalidArgument`. The `IVitureApi` seam and `FakeVitureApi` are
   exercised by the Task 2b fault/contract suites under the same `glasses`
   ctest entry.
+- `cpp/tests/glasses/viture_fault_tests.cpp` additionally pins the review-wave
+  hardenings: recentre on a destroyed device is `NotReady` and never calls the
+  seam, recentre works again after a successful recreate, the fake's device
+  lifetime, `StartPose`-failure teardown and clean retry, seam-crossing
+  prediction, and the reconnect clock-restart mapper guard. The contract suite
+  includes `RecenterBeforeTheFirstSampleIsNotReady` for every factory.
+- `cpp/tests/glasses/display_control_tests.cpp` pins the enforced display rule:
+  `Get`/`Set` are `NotReady` and make no seam call while an injected is-running
+  predicate is true, and round-trip normally before `Start` and after `Stop`,
+  including wired to a live `VitureHeadPoseSource::Running`.
 - `cpp/tests/glasses/thread_safety_tests.cpp` stresses the slot (a saturated
   writer publishing 200k samples against 8 readers) and `VitureHeadPoseSource`
   over `FakeVitureApi` (one producer, four readers, a manual host clock
