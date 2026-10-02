@@ -4,7 +4,7 @@ else()
     set(CG_BRIDGE_LIBRARY_TYPE STATIC)
 endif()
 
-add_library(cg_bridge ${CG_BRIDGE_LIBRARY_TYPE} src/bridge.cpp)
+add_library(cg_bridge ${CG_BRIDGE_LIBRARY_TYPE} src/bridge.cpp src/test_writer.cpp)
 add_library(cg::bridge ALIAS cg_bridge)
 
 target_compile_features(cg_bridge PUBLIC cxx_std_20)

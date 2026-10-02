@@ -199,7 +199,11 @@ build instead of silently changing the ABI.
 Writer: store `seq_a` odd; write the payload; store `seq_b = seq_a + 1`; store
 `seq_a = seq_a + 1`. Reader: read `seq_a` (retry while odd); copy the payload;
 read `seq_b`; accept only when `seq_b == seq_a`. Counter accesses use
-release/acquire ordering (`std::atomic` in the slot structs). A reader that
+release/acquire ordering (`std::atomic` in the slot structs). Because the
+writer stores `seq_b` after the payload, the literal `seq_b == seq_a` check
+alone can accept a torn copy (the previous even value still sits in `seq_b`
+while a new publish is in flight, ABA), so the reader additionally re-reads the
+monotonic `seq_a` and accepts only when it is unchanged. A reader that
 has no valid sample reports `CG_ERR_NOT_READY`; a reader whose
 `now - heartbeat_ns` exceeds `kStaleAfterNs` (250 ms) reports
 `CG_TRACK_LOST`/`CG_ERR_NOT_READY` rather than stale data. The writer updates
@@ -253,5 +257,8 @@ by the production bridge functions.
   [ADR-0009](0009-glasses-adapter-pose-semantics.md).
 - SDD rulings: R42 (hand ABI addition, `CG_ABI_VERSION` 2), R43 (command word
   in reserved bytes 32..39), R44 (SHARED + `WINDOWS_EXPORT_ALL_SYMBOLS`, no
-  export macros in the verbatim header).
+  export macros in the verbatim header), R47 (natural struct padding:
+  `cg_head_sample` is 48 bytes because int64 alignment rounds the 44 field
+  bytes, 5.6's "36" is the `state` offset shorthand, and the fixed slot offsets
+  64/256 are unchanged).
 - Escalation: `docs/questions/S6-HIL.md` (U-09; created in Task 4).
