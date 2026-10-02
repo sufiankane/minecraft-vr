@@ -92,24 +92,36 @@ namespace Cubeglass.Unity.Rendering.Tests
         {
             rig.Config.IpdMeters = 0.5f;
             rig.Config.FovDegrees = 200f;
-            rig.ApplyEyeLayout();
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
 
             Assert.AreEqual(StereoRigConfig.MaxIpdMeters, rig.Config.IpdMeters, Tolerance, "ipd clamped on set");
             Assert.AreEqual(StereoRigConfig.MaxFovDegrees, rig.Config.FovDegrees, Tolerance, "fov clamped on set");
             Assert.AreEqual(-0.045f, rig.LeftCamera.transform.localPosition.x, Tolerance, "left offset from clamped ipd");
             Assert.AreEqual(0.045f, rig.RightCamera.transform.localPosition.x, Tolerance, "right offset from clamped ipd");
-            Assert.AreEqual(StereoRigConfig.MaxFovDegrees, rig.LeftCamera.fieldOfView, 1e-4f, "left fov from clamped fov");
-            Assert.AreEqual(StereoRigConfig.MaxFovDegrees, rig.RightCamera.fieldOfView, 1e-4f, "right fov from clamped fov");
+            Assert.AreEqual(
+                ConvertedVerticalFov(StereoRigConfig.MaxFovDegrees),
+                rig.LeftCamera.fieldOfView,
+                1e-4f,
+                "left fov from clamped horizontal fov");
+            Assert.AreEqual(
+                ConvertedVerticalFov(StereoRigConfig.MaxFovDegrees),
+                rig.RightCamera.fieldOfView,
+                1e-4f,
+                "right fov from clamped horizontal fov");
 
             rig.Config.IpdMeters = 0.001f;
             rig.Config.FovDegrees = 5f;
-            rig.ApplyEyeLayout();
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
 
             Assert.AreEqual(StereoRigConfig.MinIpdMeters, rig.Config.IpdMeters, Tolerance, "ipd lower clamp");
             Assert.AreEqual(StereoRigConfig.MinFovDegrees, rig.Config.FovDegrees, Tolerance, "fov lower clamp");
             Assert.AreEqual(-0.01f, rig.LeftCamera.transform.localPosition.x, Tolerance, "lower-clamped left offset");
             Assert.AreEqual(0.01f, rig.RightCamera.transform.localPosition.x, Tolerance, "lower-clamped right offset");
-            Assert.AreEqual(StereoRigConfig.MinFovDegrees, rig.LeftCamera.fieldOfView, 1e-4f, "lower-clamped fov");
+            Assert.AreEqual(
+                ConvertedVerticalFov(StereoRigConfig.MinFovDegrees),
+                rig.LeftCamera.fieldOfView,
+                1e-4f,
+                "lower-clamped fov");
         }
 
         [Test]
@@ -133,11 +145,11 @@ namespace Cubeglass.Unity.Rendering.Tests
             rig.Config.FovDegrees = 62.5f;
             rig.Config.Near = 0.1f;
             rig.Config.Far = 250f;
-            rig.ApplyEyeLayout();
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
 
             foreach (Camera camera in new[] { rig.LeftCamera, rig.RightCamera })
             {
-                Assert.AreEqual(62.5f, camera.fieldOfView, 1e-4f, "fov");
+                Assert.AreEqual(ConvertedVerticalFov(62.5f), camera.fieldOfView, 1e-4f, "converted fov");
                 Assert.AreEqual(0.1f, camera.nearClipPlane, Tolerance, "near");
                 Assert.AreEqual(250f, camera.farClipPlane, Tolerance, "far");
                 Assert.IsTrue(camera.enabled, "camera enabled");
@@ -152,20 +164,71 @@ namespace Cubeglass.Unity.Rendering.Tests
         {
             rig.Config.IpdMeters = 0.07f;
             rig.Config.FovDegrees = 55f;
-            rig.ApplyEyeLayout();
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
 
             Camera left = rig.LeftCamera;
             Camera right = rig.RightCamera;
             Rect leftRect = left.rect;
             Rect rightRect = right.rect;
 
-            rig.ApplyEyeLayout();
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
 
             Assert.AreSame(left, rig.LeftCamera, "left camera reused");
             Assert.AreSame(right, rig.RightCamera, "right camera reused");
             Assert.AreEqual(leftRect, left.rect, "left rect stable");
             Assert.AreEqual(rightRect, right.rect, "right rect stable");
-            Assert.AreEqual(55f, left.fieldOfView, 1e-4f, "fov stable");
+            Assert.AreEqual(ConvertedVerticalFov(55f), left.fieldOfView, 1e-4f, "fov stable");
+        }
+
+        [Test]
+        public void HorizontalFovConvertsToVerticalAtThePerEyeViewportAspect()
+        {
+            // 3840x1080 side by side = 1920x1080 per eye (16:9): 45 degrees
+            // horizontal becomes 26.2313 degrees vertical.
+            float wide = StereoRig.VerticalFovForHorizontal(
+                45f, StereoRig.PerEyeViewportAspect(3840, 1080));
+            Assert.AreEqual(26.2313f, wide, 0.05f, "1920x1080 per eye");
+
+            // 1920x1080 total = 960x1080 per eye: 45 degrees horizontal
+            // becomes 49.9701 degrees vertical.
+            float half = StereoRig.VerticalFovForHorizontal(
+                45f, StereoRig.PerEyeViewportAspect(1920, 1080));
+            Assert.AreEqual(49.9701f, half, 0.05f, "960x1080 per eye");
+
+            // The conversion inverts Unity's horizontal FOV relation.
+            float roundTrip = 2f * Mathf.Atan(
+                Mathf.Tan(half * 0.5f * Mathf.Deg2Rad) * StereoRig.PerEyeViewportAspect(1920, 1080))
+                * Mathf.Rad2Deg;
+            Assert.AreEqual(45f, roundTrip, 1e-3f, "round trip");
+        }
+
+        [Test]
+        public void ApplyEyeLayoutAppliesTheConvertedVerticalFov()
+        {
+            rig.Config.FovDegrees = 45f;
+            rig.ApplyEyeLayout(3840, 1080);
+
+            float expected = StereoRig.VerticalFovForHorizontal(
+                45f, StereoRig.PerEyeViewportAspect(3840, 1080));
+            Assert.AreEqual(26.2313f, expected, 0.05f, "pinned per-eye 1920x1080 conversion");
+            Assert.AreEqual(expected, rig.LeftCamera.fieldOfView, 1e-4f, "left eye vertical fov");
+            Assert.AreEqual(expected, rig.RightCamera.fieldOfView, 1e-4f, "right eye vertical fov");
+            Assert.AreNotEqual(45f, rig.LeftCamera.fieldOfView, "raw horizontal assignment must fail");
+        }
+
+        [Test]
+        public void ApplyEyeLayoutWithUnknownScreenUsesTheNominalTarget()
+        {
+            rig.ApplyEyeLayout(0, 0);
+
+            Assert.AreEqual(ConvertedVerticalFov(45f), rig.LeftCamera.fieldOfView, 1e-4f, "nominal target fallback");
+        }
+
+        private static float ConvertedVerticalFov(float horizontalFovDegrees)
+        {
+            return StereoRig.VerticalFovForHorizontal(
+                horizontalFovDegrees,
+                StereoRig.PerEyeViewportAspect(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight));
         }
 
         [Test]

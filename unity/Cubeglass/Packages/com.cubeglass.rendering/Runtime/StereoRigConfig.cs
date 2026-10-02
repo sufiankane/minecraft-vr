@@ -11,7 +11,10 @@ namespace Cubeglass.Unity.Rendering
     /// <remarks>
     /// The JSON keys are the serialized field names: <c>ipdMeters</c>,
     /// <c>fovDegrees</c>, <c>near</c>, <c>far</c>, <c>borderlessFullscreen</c>
-    /// and <c>targetRefresh</c>. Loading uses
+    /// and <c>targetRefresh</c>. <c>fovDegrees</c> is the per-eye
+    /// <b>horizontal</b> FOV (ADR-0010); <see cref="StereoRig.ApplyEyeLayout"/>
+    /// converts it to Unity's vertical <see cref="Camera.fieldOfView"/> at the
+    /// per-eye viewport aspect. Loading uses
     /// <see cref="JsonUtility.FromJsonOverwrite(string, object)"/>, so a field
     /// that is not present in the JSON keeps the code default. IPD and FOV are
     /// clamped to their supported ranges with a warning (dossier 5.13 fails
@@ -50,8 +53,11 @@ namespace Cubeglass.Unity.Rendering
         }
 
         /// <summary>
-        /// Per-eye field of view in degrees; programmatic sets are clamped to
-        /// [10, 120]. JSON-loaded values are clamped by <see cref="Validate"/>.
+        /// Per-eye <b>horizontal</b> field of view in degrees (ADR-0010);
+        /// <see cref="StereoRig"/> converts it to the vertical
+        /// <see cref="UnityEngine.Camera.fieldOfView"/> at the per-eye viewport
+        /// aspect. Programmatic sets are clamped to [10, 120]. JSON-loaded
+        /// values are clamped by <see cref="Validate"/>.
         /// </summary>
         public float FovDegrees
         {

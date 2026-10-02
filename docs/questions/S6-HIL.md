@@ -64,7 +64,8 @@ yaw/pitch markers at eye height 1.6 m, ±4 m horizontally):
 - red `+X`, green `+Y`, blue `+Z` axis cubes;
 - horizon strip (white, spanning `x = ±12`) with a black centre marker;
 - yaw markers: **cyan** at `x = -4` (left of forward), **magenta** at `x = +4`;
-- pitch markers: **yellow** at `y = 3.6` (up), **orange** at `y = -0.4` (down);
+- pitch markers: **yellow** at `y = 3.6` (up), **orange** at `y = 0.6` (down,
+  above the floor so the rig can see it);
 - `StereoRig` (defaults: IPD 64 mm, FOV 45°, near 0.05 m, far 500 m, target
   refresh 90 Hz), `LateLatchPose`, bridge-first pose selection with the
   `SyntheticPoseProvider` fallback, and `DebugOverlay` enabled.
@@ -98,8 +99,8 @@ powershell -File scripts/sync-unity-plugins.ps1
 - [ ] **Yaw direction** — hold `D` (or right arrow): the view turns right and
       the magenta marker on the right moves toward the centre; `A` mirrors it.
 - [ ] **Pitch direction** — hold `W` (or up arrow): the view tilts up and the
-      yellow marker enters from the top; `S` mirrors it. The horizon moves down
-      as you look up.
+      yellow marker enters from the top; `S` mirrors it and the orange marker
+      enters from the bottom. The horizon moves down as you look up.
 - [ ] **Depth sanity** — near grid lines and the wall markers sit at a sane
       distance with no eye swap (the left half of the frame is the left eye),
       no excessive disparity on the wall, and no vertical mismatch.

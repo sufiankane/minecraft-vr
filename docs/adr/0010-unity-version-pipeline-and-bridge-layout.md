@@ -87,10 +87,13 @@ overlay are all Built-in-RP features. The test runner uses the existing
 The rig owns two cameras, one per eye. Each camera renders into its half of the
 target: `rect = (0, 0, 0.5, 1)` for the left eye and `(0.5, 0, 0.5, 1)` for
 the right eye, so the two viewports tile the target exactly at any
-configuration. The eye offsets are `±IPD/2` along the rig's right axis and the
-per-eye FOV is applied per camera. Late latch runs from a single documented
-hook once per rendered frame and applies the **same** sample to both eyes;
-there is no per-eye sample selection. No allocation is allowed on the
+configuration. The eye offsets are `±IPD/2` along the rig's right axis.
+`StereoRigConfig.FovDegrees` is the per-eye **horizontal** FOV; Unity's
+`Camera.fieldOfView` is vertical, so `StereoRig` converts it at the per-eye
+viewport aspect: `vertical = 2·atan(tan(horizontal/2) / aspect)` with
+`aspect = (screenWidth·0.5) / screenHeight`. Late latch runs from a single
+documented hook once per rendered frame and applies the **same** sample to both
+eyes; there is no per-eye sample selection. No allocation is allowed on the
 rig/render path.
 
 **Frame budget:** the stereo path targets 90 Hz, i.e. **≤ 11.1 ms per stereo
@@ -107,7 +110,7 @@ the remaining tuning. Defaults live in code and are covered by tests:
 | Setting | Default | Provenance |
 |---|---|---|
 | IPD | 64 mm | ADR default, config-overridable; pending HIL |
-| Per-eye horizontal FOV | 45° | ADR default, config-overridable; pending HIL |
+| Per-eye horizontal FOV | 45° | ADR default, config-overridable; applied as the vertical `Camera.fieldOfView` through `vertical = 2·atan(tan(horizontal/2)/aspect)`, `aspect = (screenWidth·0.5)/screenHeight`; pending HIL |
 | Distortion | none | U-09 pending HIL |
 
 If the HIL run shows that the glasses need a different FOV or distortion

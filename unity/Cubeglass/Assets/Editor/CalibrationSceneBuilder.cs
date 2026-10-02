@@ -181,7 +181,7 @@ namespace Cubeglass.Editor
                 Yellow, materials);
             CreatePrimitive(
                 "MarkerPitchDown", markers.transform, PrimitiveType.Cube,
-                new Vector3(0f, -0.4f, WallZ - 0.15f), Quaternion.identity, Vector3.one * 0.5f,
+                new Vector3(0f, 0.6f, WallZ - 0.15f), Quaternion.identity, Vector3.one * 0.5f,
                 Orange, materials);
             CreatePrimitive(
                 "MarkerCenter", markers.transform, PrimitiveType.Cube,
@@ -202,7 +202,9 @@ namespace Cubeglass.Editor
             config.Far = StereoRigConfig.DefaultFar;
             config.BorderlessFullscreen = StereoRigConfig.DefaultBorderlessFullscreen;
             config.TargetRefresh = StereoRigConfig.DefaultTargetRefresh;
-            rig.ApplyEyeLayout();
+            // Pin the nominal side-by-side target so the baked camera FOVs are
+            // deterministic instead of depending on the batch-mode screen.
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
 
             var latch = rigObject.AddComponent<LateLatchPose>();
             latch.Rig = rig;

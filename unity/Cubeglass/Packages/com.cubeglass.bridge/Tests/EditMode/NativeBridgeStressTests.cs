@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 
@@ -16,6 +17,7 @@ namespace Cubeglass.Unity.Bridge.Tests
     public class NativeBridgeStressTests : NativeBridgeTestBase
     {
         private const uint SampleCount = 20_000;
+        private const uint WarmupSequence = 1;
         private const int DrainAttempts = 10_000;
 
         [Test]
@@ -24,12 +26,34 @@ namespace Cubeglass.Unity.Bridge.Tests
             BridgeClient client = Open();
             SetFreshHeartbeat();
 
+            // Warm the writer with one synchronous publish: the first read below
+            // then always has a valid sample to return, and the writer task
+            // starts its bulk run only after that read has completed.
+            BridgeHeadSample warmupHead = BridgeSamples.Head(WarmupSequence);
+            Assert.AreEqual(
+                BridgeStatus.Ok,
+                NativeBridge.cg_test_writer_publish_head(ref warmupHead),
+                "warm-up publish_head");
+            BridgeHandFrame warmupHands = BridgeSamples.Hands(WarmupSequence);
+            Assert.AreEqual(
+                BridgeStatus.Ok,
+                NativeBridge.cg_test_writer_publish_hands(ref warmupHands),
+                "warm-up publish_hands");
+
+            var writerGate = new ManualResetEventSlim(false);
             Exception writerFailure = null;
             Task writer = Task.Run(() =>
             {
                 try
                 {
-                    for (uint sequence = 1; sequence <= SampleCount; sequence++)
+                    // Do not race the reader: wait until it has read the warm-up
+                    // sample, so the overlapping reads counted below are real.
+                    if (!writerGate.Wait(TimeSpan.FromSeconds(30)))
+                    {
+                        throw new TimeoutException("reader did not reach the stress loop");
+                    }
+
+                    for (uint sequence = WarmupSequence + 1; sequence <= SampleCount; sequence++)
                     {
                         BridgeHeadSample head = BridgeSamples.Head(sequence);
                         if (NativeBridge.cg_test_writer_publish_head(ref head) != BridgeStatus.Ok)
@@ -52,12 +76,23 @@ namespace Cubeglass.Unity.Bridge.Tests
 
             long headReads = 0;
             long handReads = 0;
+            long headReadsWhileWriting = 0;
+            long handReadsWhileWriting = 0;
             long mismatches = 0;
+            ReadHead(client, ref headReads, ref mismatches);
+            ReadHands(client, ref handReads, ref mismatches);
+            writerGate.Set();
+
             var elapsed = Stopwatch.StartNew();
             while (!writer.IsCompleted && elapsed.ElapsedMilliseconds < 30_000)
             {
                 ReadHead(client, ref headReads, ref mismatches);
                 ReadHands(client, ref handReads, ref mismatches);
+                if (!writer.IsCompleted)
+                {
+                    headReadsWhileWriting++;
+                    handReadsWhileWriting++;
+                }
             }
 
             Assert.IsTrue(writer.Wait(TimeSpan.FromSeconds(30)), "writer task did not finish");
@@ -73,6 +108,8 @@ namespace Cubeglass.Unity.Bridge.Tests
                 "final hand frame not observed");
 
             Assert.AreEqual(0L, mismatches, "torn or mismatched samples observed");
+            Assert.Greater(headReadsWhileWriting, 0L, "no head sample was read while the writer task was running");
+            Assert.Greater(handReadsWhileWriting, 0L, "no hand frame was read while the writer task was running");
             Assert.Greater(headReads, 0L, "no head sample was read");
             Assert.Greater(handReads, 0L, "no hand frame was read");
         }

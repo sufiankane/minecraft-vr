@@ -18,7 +18,8 @@
                         cg_unity_bridge.dll from the cpp-windows build into the
                         Unity project and run the Unity EditMode and PlayMode
                         tests through the Unity CLI, failing loudly on missing
-                        results or failed tests (unless -SkipUnity is passed).
+                        results or assemblies, skipped tests or failed tests
+                        (unless -SkipUnity is passed).
 
     Every command is echoed before it runs. The script exits non-zero on the
     first failure and prints a final PASS/FAIL summary per lane. It works from a
@@ -93,7 +94,7 @@ function Invoke-Lane {
 }
 
 function Assert-UnityResults {
-    param([string]$Path, [string]$Mode, [string]$ExpectedAssembly)
+    param([string]$Path, [string]$Mode, [string[]]$RequiredAssemblies)
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Unity $Mode results not found at '$Path'"
     }
@@ -110,9 +111,15 @@ function Assert-UnityResults {
     if ($total -le 0) {
         throw "Unity $Mode results at '$Path' report no tests (total=$total); the suite did not run"
     }
+    if ($skipped -gt 0) {
+        throw "Unity $Mode results at '$Path' report $skipped skipped test(s); every test must run"
+    }
+    # Membership, not equality: extra suites (placeholder, CoreMath, future
+    # packages) are allowed, but every required lane must be present.
     $assemblies = @($testRun.SelectNodes('.//test-suite[@type="Assembly"]') | ForEach-Object { $_.name })
-    if ($assemblies -notcontains $ExpectedAssembly) {
-        throw "Unity $Mode results at '$Path' do not contain the expected assembly '$ExpectedAssembly' (found: $($assemblies -join ', ')); wrong test mode or stale results"
+    $missing = @($RequiredAssemblies | Where-Object { $assemblies -notcontains $_ })
+    if ($missing.Count -gt 0) {
+        throw "Unity $Mode results at '$Path' are missing the required assembly/assemblies '$($missing -join ', ')' (found: $($assemblies -join ', ')); wrong test mode or stale results"
     }
     if ($failed -gt 0) {
         throw "Unity $Mode reported $failed failed test(s); see '$Path'"
@@ -248,12 +255,16 @@ try {
                 Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
                     & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResultsEditMode
                 }
-                Assert-UnityResults -Path $UnityResultsEditMode -Mode 'EditMode' -ExpectedAssembly 'Cubeglass.Unity.Rendering.Tests.dll'
+                Assert-UnityResults -Path $UnityResultsEditMode -Mode 'EditMode' -RequiredAssemblies @(
+                    'Cubeglass.Unity.Bridge.Tests.dll',
+                    'Cubeglass.Unity.Input.Tests.dll',
+                    'Cubeglass.Unity.Rendering.Tests.dll')
 
                 Invoke-Checked 'unity test unity/Cubeglass --mode PlayMode --non-interactive' {
                     & $UnityExe test 'unity/Cubeglass' --mode PlayMode --non-interactive --output $UnityResultsPlayMode
                 }
-                Assert-UnityResults -Path $UnityResultsPlayMode -Mode 'PlayMode' -ExpectedAssembly 'Cubeglass.Unity.Rendering.PlayTests.dll'
+                Assert-UnityResults -Path $UnityResultsPlayMode -Mode 'PlayMode' -RequiredAssemblies @(
+                    'Cubeglass.Unity.Rendering.PlayTests.dll')
             }
             finally {
                 Pop-Location

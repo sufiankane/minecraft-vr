@@ -226,6 +226,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             }
 
             long before = GC.GetAllocatedBytesForCurrentThread();
+            int callsBefore = provider.CallCount;
             for (int i = 0; i < 300; i++)
             {
                 rig.LeftCamera.Render();
@@ -234,9 +235,13 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             }
 
             long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            int callsDuringMeasurement = provider.CallCount - callsBefore;
 
             Assert.AreEqual(0L, allocated, "per-frame allocations with the overlay disabled");
-            Assert.Greater(provider.CallCount, 300, "the late-latch path ran during the measured window");
+            Assert.GreaterOrEqual(
+                callsDuringMeasurement,
+                300,
+                "the late-latch path ran at least once per measured frame");
         }
 
         private readonly struct PreCullEntry
