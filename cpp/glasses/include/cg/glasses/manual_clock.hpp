@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "cg/core_math/time.hpp"
 #include "ports.hpp"
 
@@ -8,20 +10,21 @@ namespace cg::glasses {
 /// Deterministic, test-driven replacement for the host clock.
 ///
 /// The clock starts at `now` (zero by default) and only moves forward when the
-/// test calls `Advance`. No allocation, no exceptions; not thread-safe, callers
-/// serialise access.
+/// test calls `Advance`. No allocation, no exceptions. The instant is stored
+/// atomically so a test thread may advance it while a polling thread reads it
+/// (the Viture adapter's tests drive a free-running poll thread this way).
 class ManualClock {
   public:
     explicit ManualClock(core_math::HostTime now = 0) noexcept : now_(now) {}
 
     /// The current instant on the host timeline. No allocation.
-    [[nodiscard]] core_math::HostTime Now() const noexcept { return now_; }
+    [[nodiscard]] core_math::HostTime Now() const noexcept { return now_.load(std::memory_order_relaxed); }
 
     /// Moves the clock forward by `delta` (a negative delta is caller error).
-    void Advance(Duration delta) noexcept { now_ += delta.ns; }
+    void Advance(Duration delta) noexcept { now_.fetch_add(delta.ns, std::memory_order_relaxed); }
 
   private:
-    core_math::HostTime now_ = 0;
+    std::atomic<core_math::HostTime> now_{0};
 };
 
 } // namespace cg::glasses
