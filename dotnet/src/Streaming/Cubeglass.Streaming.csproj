@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <RootNamespace>Cubeglass.Streaming</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CoreMath\Cubeglass.CoreMath.csproj" />
+    <ProjectReference Include="..\Voxel\Cubeglass.Voxel.csproj" />
+    <ProjectReference Include="..\Mesh\Cubeglass.Mesh.csproj" />
+  </ItemGroup>
+
+</Project>

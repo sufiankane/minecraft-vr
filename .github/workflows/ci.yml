@@ -211,6 +211,12 @@ jobs:
           --configuration Release --collect:"XPlat Code Coverage"
           --results-directory ./coverage/gameplay
 
+      - name: Test Streaming with coverage
+        run: >-
+          dotnet test tests/Streaming.Tests/Cubeglass.Streaming.Tests.csproj
+          --configuration Release --collect:"XPlat Code Coverage"
+          --results-directory ./coverage/streaming
+
       - name: Enforce CoreMath coverage floor
         run: |
           report=$(find coverage/coremath -name 'coverage.cobertura.xml' | head -n 1)
@@ -250,6 +256,16 @@ jobs:
           }
           echo "Enforcing floor against ${report}"
           python -m depcheck coverage --report "$report" --module Cubeglass.Gameplay --floor 90
+
+      - name: Enforce Streaming coverage floor
+        run: |
+          report=$(find coverage/streaming -name 'coverage.cobertura.xml' | head -n 1)
+          test -n "$report" || {
+            echo "ERROR: no coverage.cobertura.xml was found under coverage/streaming" >&2
+            exit 1
+          }
+          echo "Enforcing floor against ${report}"
+          python -m depcheck coverage --report "$report" --module Cubeglass.Streaming --floor 90
 
   python:
     name: python
