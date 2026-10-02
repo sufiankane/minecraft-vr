@@ -190,13 +190,15 @@ namespace Cubeglass.Gameplay.Tests
 
             PlayerState forward = Player(0, 10, 0);
             forward.YawRadians = quarterTurn;
-            PlayerController.Step(forward, in Move(0f, 1f), world, 1.0);
+            InputFrame forwardInput = Move(0f, 1f);
+            PlayerController.Step(forward, in forwardInput, world, 1.0);
             Assert.That(forward.Position.X, Is.EqualTo(-4.5).Within(1e-5), "yaw +90 turns forward to -X");
             Assert.That(forward.Position.Z, Is.EqualTo(0.0).Within(1e-5));
 
             PlayerState strafe = Player(0, 10, 0);
             strafe.YawRadians = quarterTurn;
-            PlayerController.Step(strafe, in Move(1f, 0f), world, 1.0);
+            InputFrame strafeInput = Move(1f, 0f);
+            PlayerController.Step(strafe, in strafeInput, world, 1.0);
             Assert.That(strafe.Position.Z, Is.EqualTo(-4.5).Within(1e-5), "yaw +90 turns right to -Z");
             Assert.That(strafe.Position.X, Is.EqualTo(0.0).Within(1e-5));
         }
@@ -207,16 +209,19 @@ namespace Cubeglass.Gameplay.Tests
             IWorld world = TestWorlds.CreateEmpty();
 
             PlayerState forward = Player(0, 10, 0);
-            PlayerController.Step(forward, in Move(0f, 1f), world, Dt);
+            InputFrame forwardInput = Move(0f, 1f);
+            PlayerController.Step(forward, in forwardInput, world, Dt);
             Assert.That(HorizontalSpeed(forward), Is.EqualTo(4.5).Within(1e-12));
             Assert.That(forward.Position.Z, Is.EqualTo(-4.5 * Dt).Within(1e-12));
 
             PlayerState diagonal = Player(0, 10, 0);
-            PlayerController.Step(diagonal, in Move(1f, 1f), world, Dt);
+            InputFrame diagonalInput = Move(1f, 1f);
+            PlayerController.Step(diagonal, in diagonalInput, world, Dt);
             Assert.That(HorizontalSpeed(diagonal), Is.EqualTo(4.5).Within(1e-12), "a diagonal is clamped to walk speed");
 
             PlayerState half = Player(0, 10, 0);
-            PlayerController.Step(half, in Move(0.5f, 0f), world, Dt);
+            InputFrame halfInput = Move(0.5f, 0f);
+            PlayerController.Step(half, in halfInput, world, Dt);
             Assert.That(HorizontalSpeed(half), Is.EqualTo(2.25).Within(1e-12), "partial input scales the speed");
 
             PlayerState still = Player(0, 10, 0);
@@ -327,7 +332,7 @@ namespace Cubeglass.Gameplay.Tests
             PlayerController.Step(player, in Frames.Neutral, world, dt);
         }
 
-        private static PlayerState RunScript(IInputProvider provider)
+        private static PlayerState RunScript(ScriptedInputProvider provider)
         {
             IWorld world = TestWorlds.CreateFloor();
             PlayerState player = Player(8, 1, 8);
@@ -397,7 +402,10 @@ namespace Cubeglass.Gameplay.Tests
 
         private static class Frames
         {
+            // A field, not a property: it must be passable by `in`.
+#pragma warning disable CA1805 // The neutral frame is the default value by definition (ADR-0008).
             internal static readonly InputFrame Neutral = default;
+#pragma warning restore CA1805
         }
     }
 }
