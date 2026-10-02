@@ -28,10 +28,19 @@ namespace Cubeglass.Mesh
     /// where an absent neighbour reads as air) holds an opaque block, so
     /// non-opaque neighbours never cull and there is never a face between two
     /// opaque cells. The mask carries the block id, so different blocks never
-    /// merge; non-opaque and opaque faces stay separate. Until Task 3 every
-    /// vertex carries the reference AO placeholder 255 (fully open); Task 3
-    /// changes both meshers to real AO, and Task 4 replaces per-build array
-    /// rental with pooling.
+    /// merge; non-opaque and opaque faces stay separate. Task 4 replaces
+    /// per-build array rental with pooling.
+    /// </para>
+    /// <para>
+    /// Ambient occlusion (Task 3, ADR-0007): every exposed cell's four
+    /// per-cell AO levels are computed by <see cref="AmbientOcclusion"/> and
+    /// packed, two bits per corner in the ADR-0007 corner order, into the
+    /// mask value next to the block id. Because the merge scan compares whole
+    /// packed values, two cells merge only when their block id and all four
+    /// per-cell AO bytes are equal — the conservative merge rule (R22) — so a
+    /// merged <c>W x H</c> quad stores exactly the per-cell AO pattern of
+    /// every cell it covers, and geometrically mergeable cells whose AO
+    /// differs stay separate quads.
     /// </para>
     /// <para>
     /// UV rule: a merged <c>W x H</c> quad (W cells along the face's U axis,
@@ -58,7 +67,10 @@ namespace Cubeglass.Mesh
         private const int InitialIndexCapacity = 2048;
         private const int SliceSize = ChunkMath.ChunkSize;
         private const int MaskSize = SliceSize * SliceSize;
-        private const byte OpenAo = 255;
+        private const int AoBitsPerCorner = 2;
+        private const int AoLevelMask = (1 << AoBitsPerCorner) - 1;
+        private const int AoBitsMask = (1 << (CornersPerQuad * AoBitsPerCorner)) - 1;
+        private const int IdShift = CornersPerQuad * AoBitsPerCorner;
 
         /// <summary>Face order <c>+X, -X, +Y, -Y, +Z, -Z</c> (ADR-0007).</summary>
         private static readonly Int3[] FaceDirections =
@@ -200,8 +212,9 @@ namespace Cubeglass.Mesh
 
         /// <summary>
         /// Fills the slice mask for one face orientation: a cell carries its
-        /// block id when the face is exposed, and zero when the cell is air or
-        /// an opaque neighbour hides the face.
+        /// block id and packed per-cell AO levels when the face is exposed,
+        /// and zero when the cell is air or an opaque neighbour hides the
+        /// face.
         /// </summary>
         private static void BuildMask(
             int[] mask,
@@ -227,7 +240,14 @@ namespace Cubeglass.Mesh
                     }
                     else
                     {
-                        mask[(v * SliceSize) + u] = id.Value;
+                        int aoBits = 0;
+                        for (int corner = 0; corner < CornersPerQuad; corner++)
+                        {
+                            aoBits |= AmbientOcclusion.ComputeLevel(chunk, neighbours, blocks, cell, face, corner)
+                                << (corner * AoBitsPerCorner);
+                        }
+
+                        mask[(v * SliceSize) + u] = (id.Value << IdShift) | aoBits;
                     }
                 }
             }
@@ -270,7 +290,7 @@ namespace Cubeglass.Mesh
                         height++;
                     }
 
-                    BlockDefinition definition = blocks.Get(new BlockId((ushort)value));
+                    BlockDefinition definition = blocks.Get(new BlockId((ushort)(value >> IdShift)));
                     AppendQuad(
                         positions,
                         normals,
@@ -279,6 +299,7 @@ namespace Cubeglass.Mesh
                         indices,
                         face,
                         AtlasIndex(definition, face),
+                        value & AoBitsMask,
                         slice,
                         u,
                         v,
@@ -322,6 +343,7 @@ namespace Cubeglass.Mesh
             List<int> indices,
             int face,
             int atlasIndex,
+            int aoBits,
             int slice,
             int u0,
             int v0,
@@ -347,7 +369,7 @@ namespace Cubeglass.Mesh
                 uvs.Add(new Vector2f(
                     tileMin.X + (CornerU[corner] * width * tileSize.X),
                     tileMin.Y + (CornerV[corner] * height * tileSize.Y)));
-                ao.Add(OpenAo);
+                ao.Add(AmbientOcclusion.Encode((aoBits >> (corner * AoBitsPerCorner)) & AoLevelMask));
             }
 
             indices.Add(first + 0);
