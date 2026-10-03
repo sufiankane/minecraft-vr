@@ -26,6 +26,15 @@ namespace Cubeglass.Unity.Rendering
 
         private BridgeClient client;
 
+        /// <summary>
+        /// Test seam: when true, <c>Awake</c> skips the bridge probe and
+        /// selects <see cref="SyntheticFallback"/> directly, so a live shared
+        /// region on the machine cannot take the pose path away from a test
+        /// that scripts the synthetic provider. Process-wide; callers must
+        /// clear it.
+        /// </summary>
+        public static bool ForceSyntheticForTests { get; set; }
+
         /// <summary>True when the bridge region was mapped and is supplying poses.</summary>
         public bool UsingBridge { get; private set; }
 
@@ -57,6 +66,12 @@ namespace Cubeglass.Unity.Rendering
                 return;
             }
 
+            if (ForceSyntheticForTests)
+            {
+                SelectSyntheticFallback();
+                return;
+            }
+
             if (TryOpenBridge(out BridgeClient opened, out BridgeStatus status))
             {
                 client = opened;
@@ -73,6 +88,12 @@ namespace Cubeglass.Unity.Rendering
                     this);
             }
 
+            SelectSyntheticFallback();
+        }
+
+        private void SelectSyntheticFallback()
+        {
+            UsingBridge = false;
             if (syntheticFallback is IPoseProvider fallback)
             {
                 lateLatch.Provider = fallback;

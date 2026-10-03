@@ -65,6 +65,7 @@ namespace Cubeglass.Unity.Rendering.Tests
         private MotionVignette vignette;
         private LateLatchPose latch;
         private SyntheticPoseProvider provider;
+        private PoseProviderSelector selector;
         private PlayerRoot playerRoot;
         private StereoRig rig;
         private FakeInputProvider input;
@@ -74,11 +75,15 @@ namespace Cubeglass.Unity.Rendering.Tests
         {
             Assert.IsNull(GameBoot.WorldNameOverride, "a previous test leaked the world-name override");
             Assert.IsNull(GameBoot.RootDirectoryOverride, "a previous test leaked the root override");
+            Assert.IsFalse(
+                PoseProviderSelector.ForceSyntheticForTests,
+                "a previous test leaked the pose-provider override");
 
             worldName = "game-scene-" + Guid.NewGuid().ToString("N");
             rootDirectory = Path.Combine(Path.GetTempPath(), "cg-game-scene-" + Guid.NewGuid().ToString("N"));
             GameBoot.WorldNameOverride = worldName;
             GameBoot.RootDirectoryOverride = rootDirectory;
+            PoseProviderSelector.ForceSyntheticForTests = true;
             input = new FakeInputProvider();
             yield return null;
         }
@@ -88,6 +93,7 @@ namespace Cubeglass.Unity.Rendering.Tests
         {
             GameBoot.WorldNameOverride = null;
             GameBoot.RootDirectoryOverride = null;
+            PoseProviderSelector.ForceSyntheticForTests = false;
 
             if (reloadRoot != null)
             {
@@ -147,14 +153,11 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(2048, runtime.Views.Capacity, "the view pool cap is pinned");
             Assert.AreSame(rig.transform, runtime.PlayerTransform, "streaming samples the head transform");
 
-            var selector = FindInScene<PoseProviderSelector>(gameScene);
             Assert.IsNotNull(selector, "the scene needs a PoseProviderSelector");
             Assert.AreSame(latch, selector.LateLatch);
             Assert.AreSame(provider, selector.SyntheticFallback);
-            if (!selector.UsingBridge)
-            {
-                Assert.AreSame(provider, latch.Provider, "without a bridge writer the synthetic provider is selected");
-            }
+            Assert.IsFalse(selector.UsingBridge, "the test forces the synthetic selection");
+            Assert.AreSame(provider, latch.Provider, "the forced synthetic provider must be selected");
 
             Assert.IsNotNull(boot.Store, "GameBoot must create the persistent store in Start");
             Assert.AreEqual(worldName, boot.Store.WorldName, "the test seam must redirect the world name");
@@ -387,6 +390,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             vignette = FindInScene<MotionVignette>(gameScene);
             latch = FindInScene<LateLatchPose>(gameScene);
             provider = FindInScene<SyntheticPoseProvider>(gameScene);
+            selector = FindInScene<PoseProviderSelector>(gameScene);
             playerRoot = FindInScene<PlayerRoot>(gameScene);
             rig = FindInScene<StereoRig>(gameScene);
             boot = FindInScene<GameBoot>(gameScene);
@@ -398,6 +402,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.IsNotNull(vignette, "the scene must carry a MotionVignette");
             Assert.IsNotNull(latch, "the scene must carry a LateLatchPose");
             Assert.IsNotNull(provider, "the scene must carry a SyntheticPoseProvider");
+            Assert.IsNotNull(selector, "the scene must carry a PoseProviderSelector");
             Assert.IsNotNull(playerRoot, "the scene must carry a PlayerRoot");
             Assert.IsNotNull(rig, "the scene must carry a StereoRig");
             Assert.IsNotNull(boot, "the scene must carry a GameBoot");
@@ -411,6 +416,13 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             Assert.IsNotNull(boot.Store, "GameBoot must create the store in Start");
             Assert.IsTrue(bridge.IsInitialized, "the bridge must initialize from the scene's streaming runtime");
+
+            Assert.IsFalse(
+                selector.UsingBridge,
+                "the forced synthetic selection must win over any live bridge region");
+            Assert.AreSame(
+                provider, latch.Provider,
+                "the synthetic provider must be the selected pose source so scripting it moves the gaze");
         }
 
         private bool SpawnChunkMeshed()

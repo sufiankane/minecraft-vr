@@ -30,14 +30,19 @@ namespace Cubeglass.Editor
     /// <see cref="SceneCanonicalizer"/> pass the calibration builder uses.
     /// </para>
     /// <para>
-    /// <b>Spawn.</b> The spawn column is <c>(8, 8)</c> and the feet start
+    /// <b>Spawn.</b> The authored Unity spawn column is <c>(8, 8)</c> (the cell
+    /// centre <c>(8.5, 8.5)</c>) and the feet start
     /// <see cref="SpawnHeightAboveSurface"/> metres above the generated
-    /// surface top for <see cref="DefaultWorldSeed"/>, so the player lands on
-    /// the terrain the streaming runtime generates with its serialized seed 1.
-    /// The starter ground plane is a cosmetic flat filler below the surface
-    /// top, occluded as soon as the first streamed chunk meshes; voxel
-    /// collision uses the generated world, never this plane (its collider is
-    /// removed).
+    /// surface top for <see cref="DefaultWorldSeed"/>. The surface height is
+    /// sampled at the internal column the Unity cell centre maps to: ADR-0004
+    /// mirrors Z, so <c>internalZ = -unityZ</c> and the internal cell
+    /// containing <c>-8.5</c> is <c>-9</c> — the sample column is
+    /// <c>(8, -9)</c> (<see cref="SampleColumnX"/>/<see cref="SampleColumnZ"/>),
+    /// not the naive <c>(8, 8)</c>. For seed 1 the two columns happen to have
+    /// the same height, but the builder must not rely on that. The starter
+    /// ground plane is a cosmetic flat filler below the surface top, occluded
+    /// as soon as the first streamed chunk meshes; voxel collision uses the
+    /// generated world, never this plane (its collider is removed).
     /// </para>
     /// <para>
     /// <b>Persistence.</b> <see cref="FileWorldStore"/> cannot be serialized,
@@ -66,14 +71,68 @@ namespace Cubeglass.Editor
         /// <summary>The world seed the scene's streaming runtime boots with.</summary>
         public const long DefaultWorldSeed = 1L;
 
-        /// <summary>The world X column the player spawns in.</summary>
+        /// <summary>The world X column the player spawns in (Unity space).</summary>
         public const int SpawnColumnX = 8;
 
-        /// <summary>The world Z column the player spawns in.</summary>
+        /// <summary>The world Z column the player spawns in (Unity space).</summary>
         public const int SpawnColumnZ = 8;
+
+        /// <summary>
+        /// The internal-frame X column the spawn height is sampled from. The
+        /// Unity-space conversion does not mirror X, so it equals
+        /// <see cref="SpawnColumnX"/>.
+        /// </summary>
+        public const int SampleColumnX = SpawnColumnX;
+
+        /// <summary>
+        /// The internal-frame Z column the spawn height is sampled from. The
+        /// authored Unity spawn sits at the cell centre
+        /// <c>SpawnColumnZ + 0.5</c>; ADR-0004 mirrors Z, so the internal
+        /// coordinate is <c>-(SpawnColumnZ + 0.5)</c> and its cell is
+        /// <c>-SpawnColumnZ - 1</c>.
+        /// </summary>
+        public const int SampleColumnZ = -SpawnColumnZ - 1;
 
         /// <summary>Metres the feet start above the generated surface top.</summary>
         public const int SpawnHeightAboveSurface = 2;
+
+        /// <summary>
+        /// Maps an authored Unity-space spawn column index to the internal-frame
+        /// column whose cell contains the mirrored cell centre. ADR-0004
+        /// mirrors Z (<c>internalZ = -unityZ</c>); the authored centre is
+        /// <c>column + 0.5</c>, so flooring gives <c>-column - 1</c>. X is not
+        /// mirrored.
+        /// </summary>
+        public static int InternalColumnForUnity(int unityColumn)
+        {
+            return -unityColumn - 1;
+        }
+
+        /// <summary>
+        /// The generated surface top (one above the grass layer) for an
+        /// authored Unity-space spawn column, sampled at the mirrored internal
+        /// column.
+        /// </summary>
+        public static int SampleSurfaceTop(int unityColumnX, int unityColumnZ, long seed)
+        {
+            return TerrainGenerator.HeightAt(
+                unityColumnX, InternalColumnForUnity(unityColumnZ), seed) + 1;
+        }
+
+        /// <summary>
+        /// The authored Unity-space spawn position for a spawn column: the cell
+        /// centre, <see cref="SpawnHeightAboveSurface"/> metres above the
+        /// surface top sampled at the mirrored internal column.
+        /// </summary>
+        public static Vector3 ComputeSpawnPosition(
+            int unityColumnX, int unityColumnZ, long seed, int heightAboveSurface)
+        {
+            int internalZ = InternalColumnForUnity(unityColumnZ);
+            return new Vector3(
+                unityColumnX + 0.5f,
+                SampleSurfaceTop(unityColumnX, unityColumnZ, seed) + heightAboveSurface,
+                -(internalZ + 0.5f));
+        }
 
         private const string ScenesFolder = "Assets/Scenes";
         private const float StarterGroundSizeMeters = 16f;
@@ -114,11 +173,9 @@ namespace Cubeglass.Editor
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             var materials = new Dictionary<Color, Material>();
 
-            int surfaceTop = TerrainGenerator.HeightAt(SpawnColumnX, SpawnColumnZ, DefaultWorldSeed) + 1;
-            var spawn = new Vector3(
-                SpawnColumnX + 0.5f,
-                surfaceTop + SpawnHeightAboveSurface,
-                SpawnColumnZ + 0.5f);
+            int surfaceTop = SampleSurfaceTop(SpawnColumnX, SpawnColumnZ, DefaultWorldSeed);
+            Vector3 spawn = ComputeSpawnPosition(
+                SpawnColumnX, SpawnColumnZ, DefaultWorldSeed, SpawnHeightAboveSurface);
 
             BuildStarterGround(materials, surfaceTop);
 
@@ -146,8 +203,7 @@ namespace Cubeglass.Editor
             AssetDatabase.SaveAssets();
         }
 
-        private static void BuildStarterGround(Dictionary<Color, Material> materials, int surfaceTop)
-        {
+        private static void BuildStarterGround(Dictionary<Color, Material> materials, int surfaceTop)        {
             CreatePrimitive(
                 "StarterGround", null, PrimitiveType.Plane,
                 new Vector3(
