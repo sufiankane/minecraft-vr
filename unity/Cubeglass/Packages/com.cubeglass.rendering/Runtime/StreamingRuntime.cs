@@ -1,6 +1,7 @@
 using System;
 using Cubeglass.CoreMath;
 using Cubeglass.Streaming;
+using Cubeglass.Voxel;
 using UnityEngine;
 
 namespace Cubeglass.Unity.Rendering
@@ -43,6 +44,25 @@ namespace Cubeglass.Unity.Rendering
         private StreamingConfig config;
         private ChunkStreamingScheduler scheduler;
         private ChunkViewManager views;
+        private IWorldStore store;
+
+        /// <summary>
+        /// Optional persistence store handed to the view manager (S7 Task 4b):
+        /// chunks load a stored delta over their generated baseline before
+        /// meshing. May be set before or after <see cref="Configure"/>.
+        /// </summary>
+        public IWorldStore Store
+        {
+            get { return store; }
+            set
+            {
+                store = value;
+                if (views != null)
+                {
+                    views.Store = value;
+                }
+            }
+        }
 
         /// <summary>When true (default) <see cref="Update"/> ticks automatically.</summary>
         public bool AutoUpdate
@@ -200,6 +220,7 @@ namespace Cubeglass.Unity.Rendering
             }
 
             views.ViewMaterial = viewMaterial;
+            views.Store = store;
             views.Initialize(config, seed, maxViews, scheduler);
         }
     }

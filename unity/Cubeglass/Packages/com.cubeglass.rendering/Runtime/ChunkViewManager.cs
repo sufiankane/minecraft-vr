@@ -75,6 +75,8 @@ namespace Cubeglass.Unity.Rendering
         private IBlockRegistry blocks = SliceBlockRegistry.Default;
         private ChunkStreamingScheduler scheduler;
         private World world;
+        private long deltasLoaded;
+        private long deltaEditsApplied;
         private Material viewMaterial;
         private long seed;
         private int maxViews = 2048;
@@ -119,6 +121,28 @@ namespace Cubeglass.Unity.Rendering
                     pool.Material = value;
                 }
             }
+        }
+
+        /// <summary>
+        /// Optional persistence store consulted when a chunk is generated
+        /// (S7 Task 4b): an existing delta is replayed over the generated
+        /// baseline through <see cref="World.Apply"/> before the chunk is
+        /// meshed, so edits survive a session. Loads happen on the main thread
+        /// once per generated chunk; a store that faults is ignored and the
+        /// chunk keeps its generated content.
+        /// </summary>
+        public IWorldStore Store { get; set; }
+
+        /// <summary>Chunks that loaded a delta from <see cref="Store"/>.</summary>
+        public long DeltasLoaded
+        {
+            get { return deltasLoaded; }
+        }
+
+        /// <summary>Edits replayed from loaded deltas.</summary>
+        public long DeltaEditsApplied
+        {
+            get { return deltaEditsApplied; }
         }
 
         /// <summary>The upload budget per frame, taken from the streaming config.</summary>
@@ -485,8 +509,15 @@ namespace Cubeglass.Unity.Rendering
                 }
 
                 Chunk generated = generator.Generate(chunk, seed);
-                chunks.Add(chunk, generated);
                 world.LoadChunk(generated);
+
+                // Replay a stored delta before the chunk joins the manager's
+                // live set: HandleChunkChanged only dirties resident chunks, so
+                // a fresh boot's replay does not schedule a remesh for a chunk
+                // that has no view yet.
+                ApplyStoredDelta(chunk);
+
+                chunks.Add(chunk, generated);
                 worldChunks++;
                 generatedChunks++;
                 lastGenerateFrame = Time.frameCount;
@@ -506,6 +537,48 @@ namespace Cubeglass.Unity.Rendering
         public bool TryGetView(ChunkCoord chunk, out ChunkView view)
         {
             return views.TryGetValue(chunk, out view);
+        }
+
+        private void ApplyStoredDelta(ChunkCoord chunk)
+        {
+            IWorldStore activeStore = Store;
+            if (activeStore == null)
+            {
+                return;
+            }
+
+            ChunkDelta delta;
+            try
+            {
+                delta = activeStore.LoadAsync(chunk, System.Threading.CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "[ChunkViewManager] delta load failed for chunk (" + chunk.X + ", "
+                        + chunk.Y + ", " + chunk.Z + "): " + exception.Message);
+                return;
+            }
+
+            if (delta == null || delta.Edits.Count == 0)
+            {
+                return;
+            }
+
+            int applied = 0;
+            foreach (KeyValuePair<Int3, BlockId> edit in delta.Edits)
+            {
+                Int3 cell = ChunkMath.ToWorld(chunk, edit.Key);
+                if (world.Apply(new EditCommand(cell, world.Get(cell), edit.Value, 0L)) == EditResult.Applied)
+                {
+                    applied++;
+                }
+            }
+
+            deltasLoaded++;
+            deltaEditsApplied += applied;
         }
 
         private void EnsureInitialized()
@@ -607,6 +680,8 @@ namespace Cubeglass.Unity.Rendering
             remeshedChunks = 0;
             worldChunks = 0;
             worldCompactions = 0;
+            deltasLoaded = 0;
+            deltaEditsApplied = 0;
             lastGenerateFrame = int.MinValue;
             lastUploadFrame = int.MinValue;
         }
