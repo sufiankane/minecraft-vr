@@ -70,6 +70,16 @@ namespace Cubeglass.Unity.Rendering
         private long worldCompactions;
         private bool initialized;
 
+        /// <summary>
+        /// The live world every loaded chunk is written into. Gameplay edits go
+        /// through <see cref="World.Apply"/> so the same cells drive collision,
+        /// targeting and the next mesh build.
+        /// </summary>
+        public World World
+        {
+            get { return world; }
+        }
+
         /// <summary>The block definitions used for meshing; defaults to <see cref="SliceBlockRegistry.Default"/>.</summary>
         public IBlockRegistry Blocks
         {

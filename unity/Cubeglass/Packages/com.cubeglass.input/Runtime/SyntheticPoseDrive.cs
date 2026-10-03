@@ -74,7 +74,7 @@ namespace Cubeglass.Unity.Input
                 return;
             }
 
-            UnityMoveInput frame = input.Latest;
+            Cubeglass.Gameplay.InputFrame frame = input.Latest;
             if (frame.RecenterPressed)
             {
                 yaw = 0f;
@@ -84,9 +84,9 @@ namespace Cubeglass.Unity.Input
             }
 
             float deltaTime = Time.unscaledDeltaTime;
-            yaw = WrapDegrees(yaw - (frame.Move.x * yawDegreesPerSecond * deltaTime) - frame.TurnSnap);
+            yaw = WrapDegrees(yaw - (frame.Move.X * yawDegreesPerSecond * deltaTime) - frame.TurnSnap);
             pitch = Mathf.Clamp(
-                pitch + (frame.Move.y * pitchDegreesPerSecond * deltaTime),
+                pitch + (frame.Move.Y * pitchDegreesPerSecond * deltaTime),
                 -maxPitchDegrees,
                 maxPitchDegrees);
 
