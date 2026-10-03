@@ -18,8 +18,12 @@ namespace Cubeglass.Unity.Rendering
     /// forwards one tick when <see cref="AutoUpdate"/> is on. PlayMode tests
     /// switch <see cref="AutoUpdate"/> off and call <see cref="Tick"/> directly.
     /// The runtime GameObject must sit at the world origin: chunk views are
-    /// parented to the manager under it and placed in voxel-lattice
-    /// coordinates (see <see cref="ChunkViewManager"/>).
+    /// parented to the manager under it and placed at converted chunk origins
+    /// (see <see cref="ChunkViewManager"/>). The sampled transform lives in
+    /// Unity space, so <see cref="Tick"/> converts its position exactly once
+    /// back to the internal frame (ADR-0004/ADR-0011, R52) before the
+    /// scheduler sees it, and drains the view manager's dirty remeshes so an
+    /// edit and the streaming that follows it share the same upload budget.
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class StreamingRuntime : MonoBehaviour
@@ -152,7 +156,9 @@ namespace Cubeglass.Unity.Rendering
             views.ProcessDeferredLoads();
             Transform target = player != null ? player : transform;
             Vector3 position = target.position;
-            scheduler.Update(views, new Vec3(position.x, position.y, position.z));
+            Vec3 internalPosition = UnityConvert.ToUnity(new Vec3(position.x, position.y, position.z));
+            views.ProcessDirtyRemeshes();
+            scheduler.Update(views, internalPosition);
         }
 
         private void Update()

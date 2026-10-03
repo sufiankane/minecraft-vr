@@ -103,7 +103,7 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
-        public void RigApplicationMatchesTheConvertedGoldenPose()
+        public void RigApplicationMatchesTheConvertedGoldenRotation()
         {
             var root = new GameObject("CoreMathRig");
             try
@@ -118,12 +118,13 @@ namespace Cubeglass.Unity.Rendering.Tests
 
                 latch.TickOnce();
 
-                CorePose unityPose = UnityConvert.ToUnity(new CorePose(new Vec3(1.0, 2.0, -3.0), InternalYaw90));
+                CorePose unityPose = UnityConvert.ToUnity(new CorePose(default, InternalYaw90));
 
                 Assert.AreEqual(1, provider.Calls, "one provider read");
-                Assert.AreEqual((float)unityPose.Position.X, rig.transform.localPosition.x, Tolerance, "position.x");
-                Assert.AreEqual((float)unityPose.Position.Y, rig.transform.localPosition.y, Tolerance, "position.y");
-                Assert.AreEqual((float)unityPose.Position.Z, rig.transform.localPosition.z, Tolerance, "position.z");
+                Assert.AreEqual(
+                    Vector3.zero,
+                    latch.transform.localPosition,
+                    "the head-relative late latch must not apply the sample position");
 
                 Assert.AreEqual((float)unityPose.Rotation.X, rig.transform.localRotation.x, Tolerance, "rotation.x");
                 Assert.AreEqual((float)unityPose.Rotation.Y, rig.transform.localRotation.y, Tolerance, "rotation.y");

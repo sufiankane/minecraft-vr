@@ -10,16 +10,20 @@ using UnityEngine;
 namespace Cubeglass.Unity.Rendering.Tests
 {
     /// <summary>
-    /// EditMode pins for the chunk-view upload path: the ADR-0007 winding
-    /// survives the SoA-to-Unity conversion, the pool cap and lifecycle
-    /// counters hold, and the slice block registry matches the committed
-    /// <c>dotnet/src/Voxel/Content/blocks.json</c> values (read as text; Unity
-    /// must not take a System.Text.Json dependency).
+    /// EditMode pins for the chunk-view upload path: the mirrored Unity-space
+    /// winding (ADR-0011, R52) after the ADR-0004 conversion, the remesh
+    /// neighbourhood covering every <see cref="ChunkEditPropagation"/> result,
+    /// the pool cap and lifecycle counters, and the slice block registry
+    /// matching the committed <c>dotnet/src/Voxel/Content/blocks.json</c>
+    /// values (read as text; Unity must not take a System.Text.Json
+    /// dependency).
     /// </summary>
     public sealed class ChunkViewEditModeTests
     {
+        private static readonly Vector3 BlockCentre = new Vector3(0.5f, 0.5f, -0.5f);
+
         [Test]
-        public void SingleTopQuadWindsOutwardInUnityAndKeepsTheAdr0007Order()
+        public void SingleBlockQuadsWindOutwardInUnityAfterTheMirror()
         {
             MeshData data = BuildSingleStoneChunk();
             var root = new GameObject("WindingPool");
@@ -40,30 +44,19 @@ namespace Cubeglass.Unity.Rendering.Tests
                     Assert.AreEqual(24, vertices.Count);
                     Assert.AreEqual(36, indices.Count);
 
-                    int topVertex = FindVertexFacing(normals, Vector3.up, "+Y");
-                    int topFirst = topVertex - (topVertex % 4);
-                    Vector3 topCross = Vector3.Cross(
-                        vertices[topFirst + 1] - vertices[topFirst],
-                        vertices[topFirst + 2] - vertices[topFirst]);
-                    Assert.Greater(
-                        Vector3.Dot(topCross.normalized, Vector3.up),
-                        0.9999f,
-                        "the top quad winds inward in Unity; do not reverse the ADR-0007 index order");
-                    Assert.AreEqual(1f, vertices[topFirst].y, 1e-6f, "the top quad must sit on the +Y face plane");
-
-                    int sideVertex = FindVertexFacing(normals, Vector3.right, "+X");
-                    int sideFirst = sideVertex - (sideVertex % 4);
-                    Vector3 sideCross = Vector3.Cross(
-                        vertices[sideFirst + 1] - vertices[sideFirst],
-                        vertices[sideFirst + 2] - vertices[sideFirst]);
-                    Assert.Greater(
-                        Vector3.Dot(sideCross.normalized, Vector3.right),
-                        0.9999f,
-                        "the +X side quad winds inward in Unity; do not reverse the ADR-0007 index order");
-                    Assert.AreEqual(1f, vertices[sideFirst].x, 1e-6f, "the side quad must sit on the +X face plane");
-
-                    AssertQuadIndices(indices, topFirst);
-                    AssertQuadIndices(indices, sideFirst);
+                    // Internal (x, y, z) is uploaded as (x, y, -z): the internal
+                    // +Z face is the Unity -Z face at z = -1, and the internal
+                    // -Z face is the Unity +Z face at z = 0. The stored normals
+                    // are mirrored the same way, so each quad's cross product
+                    // must match its converted normal and point away from the
+                    // block centre; the winding flip is what keeps the visible
+                    // face on the viewer's side.
+                    AssertFaceOutward(vertices, normals, indices, new Vector3(0f, 1f, 0f), 1f, "top (+Y -> +Y)");
+                    AssertFaceOutward(vertices, normals, indices, new Vector3(1f, 0f, 0f), 1f, "side (+X -> +X)");
+                    AssertFaceOutward(vertices, normals, indices, new Vector3(-1f, 0f, 0f), 0f, "side (-X -> -X)");
+                    AssertFaceOutward(vertices, normals, indices, new Vector3(0f, -1f, 0f), 0f, "bottom (-Y -> -Y)");
+                    AssertFaceOutward(vertices, normals, indices, new Vector3(0f, 0f, 1f), 0f, "side (-Z -> +Z)");
+                    AssertFaceOutward(vertices, normals, indices, new Vector3(0f, 0f, -1f), 1f, "side (+Z -> -Z)");
 
                     Assert.AreEqual(1, pool.MeshDataBuilds);
                     Assert.AreEqual(1, pool.MeshDataReleases);
@@ -79,6 +72,49 @@ namespace Cubeglass.Unity.Rendering.Tests
             {
                 UnityEngine.Object.DestroyImmediate(root);
             }
+        }
+
+        [Test]
+        public void RemeshNeighbourhoodCoversEveryAffectedChunk()
+        {
+            var changed = new ChunkCoord(2, -1, 3);
+            var destination = new ChunkCoord[ChunkViewManager.RemeshNeighbourhoodSize];
+            int count = ChunkViewManager.FillRemeshNeighbourhood(changed, destination);
+            Assert.AreEqual(ChunkViewManager.RemeshNeighbourhoodSize, count);
+
+            var present = new HashSet<ChunkCoord>(destination);
+            Assert.AreEqual(ChunkViewManager.RemeshNeighbourhoodSize, present.Count, "the neighbourhood has no duplicates");
+
+            // The event reports the chunk, not the cell, so the manager dirties
+            // the Chebyshev-1 neighbourhood. Every cell of the changed chunk
+            // must propagate into it for every edit to be covered.
+            for (int x = 0; x < ChunkMath.ChunkSize; x += ChunkMath.ChunkSize - 1)
+            {
+                for (int y = 0; y < ChunkMath.ChunkSize; y += ChunkMath.ChunkSize - 1)
+                {
+                    for (int z = 0; z < ChunkMath.ChunkSize; z += ChunkMath.ChunkSize - 1)
+                    {
+                        Int3 cell = ChunkMath.ToWorld(changed, new Int3(x, y, z));
+                        IReadOnlyList<ChunkCoord> affected = ChunkEditPropagation.GetAffectedChunks(cell);
+                        for (int i = 0; i < affected.Count; i++)
+                        {
+                            Assert.IsTrue(
+                                present.Contains(affected[i]),
+                                "affected chunk " + affected[i] + " missing for cell " + cell);
+                        }
+                    }
+                }
+            }
+
+            Assert.IsFalse(
+                present.Contains(new ChunkCoord(changed.X + 2, changed.Y, changed.Z)),
+                "the neighbourhood stays at Chebyshev distance 1");
+            Assert.Throws<ArgumentException>(
+                () => ChunkViewManager.FillRemeshNeighbourhood(changed, new ChunkCoord[26]),
+                "a short destination must be rejected");
+            Assert.Throws<ArgumentNullException>(
+                () => ChunkViewManager.FillRemeshNeighbourhood(changed, null),
+                "a null destination must be rejected");
         }
 
         [Test]
@@ -201,6 +237,59 @@ namespace Cubeglass.Unity.Rendering.Tests
             return mesher.Build(chunk.Snapshot(), NeighbourSnapshot.Empty, SliceBlockRegistry.Default);
         }
 
+        private static void AssertFaceOutward(
+            List<Vector3> vertices,
+            List<Vector3> normals,
+            List<int> indices,
+            Vector3 faceNormal,
+            float planeOffset,
+            string label)
+        {
+            int first = FindQuadFirstFacing(normals, faceNormal, label);
+            for (int i = 0; i < 4; i++)
+            {
+                float offset = Vector3.Dot(vertices[first + i], faceNormal);
+                Assert.AreEqual(
+                    planeOffset,
+                    offset,
+                    1e-5f,
+                    label + " must sit on its converted face plane");
+            }
+
+            // The rendered triangle winding is the index order, not the vertex
+            // array order, so the cross product must be taken through indices.
+            int firstIndex = (first / 4) * 6;
+            Vector3 a = vertices[indices[firstIndex + 0]];
+            Vector3 b = vertices[indices[firstIndex + 1]];
+            Vector3 c = vertices[indices[firstIndex + 2]];
+            Vector3 cross = Vector3.Cross(b - a, c - a).normalized;
+            Assert.Greater(
+                Vector3.Dot(cross, faceNormal),
+                0.9999f,
+                label + " quad winds against its converted outward normal");
+
+            Vector3 centroid = Vector3.zero;
+            for (int i = 0; i < 4; i++)
+            {
+                centroid += vertices[first + i];
+            }
+
+            centroid *= 0.25f;
+            Vector3 outward = (centroid - BlockCentre).normalized;
+            Assert.Greater(
+                Vector3.Dot(cross, outward),
+                0.9999f,
+                label + " quad must be visible from its own side (cross points away from the block)");
+
+            AssertQuadIndices(indices, first, label);
+        }
+
+        private static int FindQuadFirstFacing(List<Vector3> normals, Vector3 direction, string label)
+        {
+            int vertex = FindVertexFacing(normals, direction, label);
+            return vertex - (vertex % 4);
+        }
+
         private static int FindVertexFacing(List<Vector3> normals, Vector3 direction, string label)
         {
             for (int i = 0; i < normals.Count; i++)
@@ -215,15 +304,15 @@ namespace Cubeglass.Unity.Rendering.Tests
             return -1;
         }
 
-        private static void AssertQuadIndices(List<int> indices, int first)
+        private static void AssertQuadIndices(List<int> indices, int first, string label)
         {
             int firstIndex = (first / 4) * 6;
-            Assert.AreEqual(first + 0, indices[firstIndex + 0]);
-            Assert.AreEqual(first + 1, indices[firstIndex + 1]);
-            Assert.AreEqual(first + 2, indices[firstIndex + 2]);
-            Assert.AreEqual(first + 0, indices[firstIndex + 3]);
-            Assert.AreEqual(first + 2, indices[firstIndex + 4]);
-            Assert.AreEqual(first + 3, indices[firstIndex + 5]);
+            Assert.AreEqual(first + 0, indices[firstIndex + 0], label + " triangle 0 vertex 0");
+            Assert.AreEqual(first + 2, indices[firstIndex + 1], label + " winding must be flipped for the Z mirror");
+            Assert.AreEqual(first + 1, indices[firstIndex + 2], label + " winding must be flipped for the Z mirror");
+            Assert.AreEqual(first + 0, indices[firstIndex + 3], label + " triangle 1 vertex 0");
+            Assert.AreEqual(first + 3, indices[firstIndex + 4], label + " winding must be flipped for the Z mirror");
+            Assert.AreEqual(first + 2, indices[firstIndex + 5], label + " winding must be flipped for the Z mirror");
         }
 
         /// <summary>

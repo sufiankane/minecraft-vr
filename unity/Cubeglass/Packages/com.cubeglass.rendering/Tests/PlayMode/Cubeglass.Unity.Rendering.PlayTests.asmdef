@@ -18,7 +18,8 @@
     "Cubeglass.CoreMath.dll",
     "Cubeglass.Voxel.dll",
     "Cubeglass.Mesh.dll",
-    "Cubeglass.Streaming.dll"
+    "Cubeglass.Streaming.dll",
+    "Cubeglass.Gameplay.dll"
   ],
   "autoReferenced": false,
   "defineConstraints": [

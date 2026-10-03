@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
 using Cubeglass.CoreMath;
+using Cubeglass.Gameplay;
 using Cubeglass.Streaming;
+using Cubeglass.Unity.Input;
 using Cubeglass.Voxel;
 using NUnit.Framework;
 using UnityEngine;
@@ -11,9 +13,11 @@ namespace Cubeglass.Unity.Rendering.Tests
 {
     /// <summary>
     /// PlayMode invariants for the pooled chunk views and the streaming runtime
-    /// (S7 Task 2): per-frame upload budgets, the load/upload/unload lifecycle,
-    /// walking ahead/behind, steady-state allocation and the Unity triangle
-    /// winding of an uploaded quad.
+    /// (S7 Task 2, extended in Task 4a): per-frame upload budgets, the
+    /// load/upload/unload lifecycle, walking ahead/behind, steady-state
+    /// allocation, the mirrored Unity-space winding and chunk placement, dirty
+    /// remesh after an edit, and the gaze ray agreeing with the rendered
+    /// surface in front.
     /// </summary>
     public sealed class ChunkViewPlayModeTests
     {
@@ -199,6 +203,79 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [UnityTest]
+        public IEnumerator DirtyBurstSharesTheUploadBudgetAndDrainsAcrossFrames()
+        {
+            const int Budget = 2;
+            ChunkViewManager manager = CreateManager("DirtyBurst", SmallConfig(Budget), capacity: 16, out _);
+            ChunkCoord[] chunks = NineAround(0, 0, 0);
+            for (int i = 0; i < chunks.Length; i++)
+            {
+                manager.OnLoad(chunks[i]);
+            }
+
+            yield return PumpUntilUploaded(manager, chunks, 120);
+            Assert.AreEqual(chunks.Length, manager.ActiveViews, "the fixture chunks did not upload");
+
+            // Three edits in one frame in the corner, centre and opposite
+            // corner chunks; their neighbourhoods union to every loaded chunk.
+            long remeshesBefore = manager.RemeshedChunks;
+            int[] edited = { 0, 4, 8 };
+            for (int i = 0; i < edited.Length; i++)
+            {
+                Int3 cell = ChunkMath.ToWorld(chunks[edited[i]], new Int3(0, 0, 0));
+                Assert.AreEqual(
+                    EditResult.Applied,
+                    manager.World.Apply(new EditCommand(cell, new BlockId(1), BlockId.Air, 0L)),
+                    "fixture break {0} was rejected",
+                    i);
+            }
+
+            Assert.AreEqual(chunks.Length, manager.DirtyChunks, "every loaded chunk must be dirty in the same frame");
+
+            int processed = manager.ProcessDirtyRemeshes();
+            Assert.AreEqual(Budget, processed, "the per-frame upload cap is the limiter");
+            Assert.AreEqual(0, manager.ProcessDirtyRemeshes(), "a second pass in the same frame must not exceed the cap");
+            Assert.LessOrEqual(manager.UploadedThisFrame, Budget, "the upload cap was exceeded in one frame");
+
+            int frames = 1;
+            while (manager.DirtyChunks > 0 && frames < 30)
+            {
+                manager.ProcessDirtyRemeshes();
+                frames++;
+                yield return null;
+            }
+
+            Assert.AreEqual(0, manager.DirtyChunks, "the dirty queue did not drain");
+            Assert.AreEqual(
+                chunks.Length,
+                manager.RemeshedChunks - remeshesBefore,
+                "every dirty chunk must be remeshed exactly once");
+            Assert.LessOrEqual(manager.UploadedThisFrame, Budget, "the upload cap was exceeded on the drain frame");
+        }
+
+        [UnityTest]
+        public IEnumerator SampledPlayerPositionIsConvertedBackToTheInternalFrame()
+        {
+            StreamingRuntime runtime = CreateRuntime("MirrorWalk", SmallConfig(4), poolCapacity: 16);
+
+            // Unity (8, 8, -40) is internal (8, 8, +40): chunk (0, 0, 2).
+            // The mirrored chunk (-3 on z) must stay unloaded.
+            player.position = new Vector3(8f, 8f, -40f);
+            for (int frame = 0; frame < 240 && !runtime.Scheduler.IsLoaded(new ChunkCoord(0, 0, 2)); frame++)
+            {
+                runtime.Tick();
+                yield return null;
+            }
+
+            Assert.IsTrue(
+                runtime.Scheduler.IsLoaded(new ChunkCoord(0, 0, 2)),
+                "the Unity-space sample was not converted back with z -> -z");
+            Assert.IsFalse(
+                runtime.Scheduler.IsLoaded(new ChunkCoord(0, 0, -3)),
+                "the scheduler must not see the mirrored, unconverted position");
+        }
+
+        [UnityTest]
         public IEnumerator SteadyStateDoesNotAllocatePerFrame()
         {
             StreamingRuntime runtime = CreateRuntime("Steady", SmallConfig(4), poolCapacity: 32);
@@ -230,7 +307,7 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [UnityTest]
-        public IEnumerator UploadedSingleQuadWindsOutwardAndFacesUp()
+        public IEnumerator UploadedSingleQuadWindsOutwardAndIsMirroredInUnity()
         {
             var managerObject = new GameObject("Winding");
             managerObject.transform.SetParent(root.transform, false);
@@ -263,53 +340,214 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(24, vertices.Count, "a single block must emit six quads");
             Assert.AreEqual(36, indices.Count);
 
-            int topVertex = -1;
-            for (int i = 0; i < normals.Count; i++)
+            // The internal cell (0,0,0) is uploaded as Unity x in [0,1],
+            // y in [0,1], z in [-1,0]; its face toward a viewer at +Z is the
+            // internal -Z face, whose converted normal is +Z and which sits at
+            // Unity z = 0.
+            int first = FindQuadFirstFacing(normals, Vector3.forward, "+Z (mirrored -Z)");
+            for (int i = 0; i < 4; i++)
             {
-                if (normals[i] == Vector3.up)
-                {
-                    topVertex = i;
-                    break;
-                }
+                Assert.AreEqual(0f, vertices[first + i].z, 1e-5f, "the mirrored face plane");
             }
-
-            Assert.GreaterOrEqual(topVertex, 0, "the uploaded mesh has no +Y-facing vertex");
-            int first = topVertex - (topVertex % 4);
-            Vector3 cross = Vector3.Cross(
-                vertices[first + 1] - vertices[first],
-                vertices[first + 2] - vertices[first]);
-            Assert.Greater(
-                Vector3.Dot(cross.normalized, Vector3.up),
-                0.9999f,
-                "the top quad does not wind outward in Unity (cross product does not match its +Y normal)");
 
             int firstIndex = (first / 4) * 6;
-            Assert.AreEqual(first + 0, indices[firstIndex + 0], "the uploaded winding was reversed");
-            Assert.AreEqual(first + 1, indices[firstIndex + 1]);
-            Assert.AreEqual(first + 2, indices[firstIndex + 2]);
-            Assert.AreEqual(first + 0, indices[firstIndex + 3]);
-            Assert.AreEqual(first + 2, indices[firstIndex + 4]);
-            Assert.AreEqual(first + 3, indices[firstIndex + 5]);
+            Vector3 cross = Vector3.Cross(
+                vertices[indices[firstIndex + 1]] - vertices[indices[firstIndex + 0]],
+                vertices[indices[firstIndex + 2]] - vertices[indices[firstIndex + 0]]);
+            Assert.Greater(
+                Vector3.Dot(cross.normalized, Vector3.forward),
+                0.9999f,
+                "the mirrored quad does not wind outward in Unity (cross product does not match its converted +Z normal)");
 
-            int sideVertex = -1;
-            for (int i = 0; i < normals.Count; i++)
+            // The internal +Z side maps to the Unity -Z side at z = -1.
+            int back = FindQuadFirstFacing(normals, Vector3.back, "-Z (mirrored +Z)");
+            for (int i = 0; i < 4; i++)
             {
-                if (normals[i] == Vector3.right)
+                Assert.AreEqual(-1f, vertices[back + i].z, 1e-5f, "the mirrored +Z face plane");
+            }
+
+            Assert.AreEqual(first + 0, indices[firstIndex + 0], "the uploaded winding must be flipped for the mirror");
+            Assert.AreEqual(first + 2, indices[firstIndex + 1], "the uploaded winding must be flipped for the mirror");
+            Assert.AreEqual(first + 1, indices[firstIndex + 2], "the uploaded winding must be flipped for the mirror");
+            Assert.AreEqual(first + 0, indices[firstIndex + 3]);
+            Assert.AreEqual(first + 3, indices[firstIndex + 4], "the uploaded winding must be flipped for the mirror");
+            Assert.AreEqual(first + 2, indices[firstIndex + 5], "the uploaded winding must be flipped for the mirror");
+
+            Assert.AreEqual(
+                Vector3.zero,
+                view.GameObject.transform.localPosition,
+                "chunk (0,0,0) maps to the Unity origin");
+
+            // A chunk at internal z = 2 is placed at Unity z = -32.
+            var mirrored = new ChunkCoord(0, 0, 2);
+            manager.OnLoad(mirrored);
+            for (int frame = 0; frame < 30 && !HasView(manager, mirrored); frame++)
+            {
+                manager.ProcessDeferredLoads();
+                manager.OnUpload(mirrored);
+                yield return null;
+            }
+
+            Assert.IsTrue(manager.TryGetView(mirrored, out ChunkView mirroredView), "the mirrored chunk never uploaded");
+            Assert.AreEqual(
+                -2f * ChunkMath.ChunkSize,
+                mirroredView.GameObject.transform.localPosition.z,
+                1e-4f,
+                "chunk placement uses the converted chunk origin");
+        }
+
+        [UnityTest]
+        public IEnumerator BreakingABlockRemeshesTheChunkAndPlacingRestoresTheFace()
+        {
+            var managerObject = new GameObject("Dirty");
+            managerObject.transform.SetParent(root.transform, false);
+            ChunkViewManager manager = managerObject.AddComponent<ChunkViewManager>();
+            manager.Initialize(
+                SmallConfig(4),
+                worldSeed: 29L,
+                capacity: 4,
+                chunkScheduler: null,
+                worldGenerator: new TwoBlockGenerator(new BlockId(1)));
+
+            var coord = new ChunkCoord(0, 0, 0);
+            manager.OnLoad(coord);
+            for (int frame = 0; frame < 30 && !HasView(manager, coord); frame++)
+            {
+                manager.ProcessDeferredLoads();
+                manager.OnUpload(coord);
+                yield return null;
+            }
+
+            Assert.IsTrue(manager.TryGetView(coord, out ChunkView view), "the dirty chunk never uploaded");
+            UnityEngine.Mesh mesh = view.Mesh;
+            Assert.AreEqual(48, mesh.vertexCount, "two gapped blocks emit twelve quads");
+            Assert.IsTrue(HasTopFaceBeyondX(mesh, 2f), "the far block's top face is rendered before the break");
+
+            // Break the far block: the event must mark the (only loaded) chunk
+            // and the next frame must remesh it within the upload budget.
+            Assert.AreEqual(
+                EditResult.Applied,
+                manager.World.Apply(new EditCommand(new Int3(2, 0, 0), new BlockId(1), BlockId.Air, 0L)));
+            Assert.AreEqual(1, manager.DirtyChunks, "the edited chunk is marked for remesh");
+
+            for (int frame = 0; frame < 10 && manager.RemeshedChunks == 0; frame++)
+            {
+                manager.ProcessDirtyRemeshes();
+                yield return null;
+            }
+
+            Assert.AreEqual(1, manager.RemeshedChunks, "the dirty chunk was not remeshed");
+            Assert.AreEqual(0, manager.DirtyChunks, "the dirty marker was not cleared");
+            Assert.AreEqual(24, mesh.vertexCount, "the broken block's faces are gone from the render mesh");
+            Assert.IsFalse(HasTopFaceBeyondX(mesh, 2f), "the broken cell's top face must disappear");
+
+            // Place the block back: the face returns.
+            Assert.AreEqual(
+                EditResult.Applied,
+                manager.World.Apply(new EditCommand(new Int3(2, 0, 0), BlockId.Air, new BlockId(1), 0L)));
+            Assert.AreEqual(1, manager.DirtyChunks);
+
+            for (int frame = 0; frame < 10 && manager.RemeshedChunks < 2; frame++)
+            {
+                manager.ProcessDirtyRemeshes();
+                yield return null;
+            }
+
+            Assert.AreEqual(2, manager.RemeshedChunks, "the placing edit was not remeshed");
+            Assert.AreEqual(48, mesh.vertexCount, "placing restores the removed block's faces");
+            Assert.IsTrue(HasTopFaceBeyondX(mesh, 2f), "the restored block's top face is rendered again");
+            Assert.AreEqual(0, manager.OutstandingMeshData);
+        }
+
+        [UnityTest]
+        public IEnumerator GazeRayFromTheCameraHitsTheRenderedSurfaceInFront()
+        {
+            var managerObject = new GameObject("Gaze");
+            managerObject.transform.SetParent(root.transform, false);
+            ChunkViewManager manager = managerObject.AddComponent<ChunkViewManager>();
+            manager.Initialize(
+                SmallConfig(4),
+                worldSeed: 31L,
+                capacity: 4,
+                chunkScheduler: null,
+                worldGenerator: new SingleBlockGenerator(new BlockId(1)));
+
+            var coord = new ChunkCoord(0, 0, 0);
+            manager.OnLoad(coord);
+            for (int frame = 0; frame < 30 && !HasView(manager, coord); frame++)
+            {
+                manager.ProcessDeferredLoads();
+                manager.OnUpload(coord);
+                yield return null;
+            }
+
+            Assert.IsTrue(manager.TryGetView(coord, out ChunkView view), "the gaze chunk never uploaded");
+
+            // The internal block (0,0,0) renders in Unity at z in [-1, 0].
+            // A camera at Unity z = 5 facing Unity -Z (rotation 180 about Y)
+            // must see that rendered surface in front of it and hit the same
+            // internal cell: the mirrored-world regression test.
+            var cameraObject = new GameObject("GazeCamera");
+            cameraObject.transform.SetParent(root.transform, false);
+            Camera camera = cameraObject.AddComponent<Camera>();
+            cameraObject.transform.position = new Vector3(0.5f, 0.5f, 5f);
+            cameraObject.transform.rotation = Quaternion.Euler(0f, 180f, 0f);
+
+            var renderedVertices = new List<Vector3>();
+            var renderedNormals = new List<Vector3>();
+            view.Mesh.GetVertices(renderedVertices);
+            view.Mesh.GetNormals(renderedNormals);
+            bool renderedFaceInFront = false;
+            for (int i = 0; i < renderedNormals.Count; i++)
+            {
+                if (renderedNormals[i] == Vector3.forward && Mathf.Abs(renderedVertices[i].z) <= 1e-4f)
                 {
-                    sideVertex = i;
-                    break;
+                    renderedFaceInFront = true;
                 }
             }
 
-            Assert.GreaterOrEqual(sideVertex, 0, "the uploaded mesh has no +X-facing vertex");
-            int sideFirst = sideVertex - (sideVertex % 4);
-            Vector3 sideCross = Vector3.Cross(
-                vertices[sideFirst + 1] - vertices[sideFirst],
-                vertices[sideFirst + 2] - vertices[sideFirst]);
-            Assert.Greater(
-                Vector3.Dot(sideCross.normalized, Vector3.right),
-                0.9999f,
-                "the +X side quad does not wind outward in Unity (cross product does not match its +X normal)");
+            Assert.IsTrue(renderedFaceInFront, "the converted mesh must have its front face toward the camera");
+
+            Assert.IsTrue(
+                GazeTargeting.TryBuildPointerRay(camera, null, out PointerRay pointer),
+                "the gaze provider built no pointer ray");
+            Assert.IsTrue(pointer.TryToRay(out Cubeglass.Voxel.Ray ray), "the pointer ray is not finite");
+            Assert.Greater(ray.Direction.Z, 0.999, "the mirrored camera must look toward internal +Z");
+
+            RayHit? hit = new DdaRaycaster().Cast(manager.World, ray, 10f);
+            Assert.IsTrue(hit.HasValue, "the gaze ray must hit the rendered surface in front, not behind");
+            Assert.AreEqual(new Int3(0, 0, 0), hit.Value.Cell, "the gaze ray hits the cell rendered in front of it");
+        }
+
+        private static bool HasTopFaceBeyondX(UnityEngine.Mesh mesh, float minX)
+        {
+            var vertices = new List<Vector3>();
+            var normals = new List<Vector3>();
+            mesh.GetVertices(vertices);
+            mesh.GetNormals(normals);
+            for (int i = 0; i < normals.Count; i++)
+            {
+                if (normals[i] == Vector3.up && vertices[i].x >= minX - 1e-4f)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int FindQuadFirstFacing(List<Vector3> normals, Vector3 direction, string label)
+        {
+            for (int i = 0; i < normals.Count; i++)
+            {
+                if (normals[i] == direction)
+                {
+                    return i - (i % 4);
+                }
+            }
+
+            Assert.Fail("the mesh has no " + label + "-facing vertex");
+            return -1;
         }
 
         private static StreamingConfig SmallConfig(int uploadBudget)
@@ -407,6 +645,34 @@ namespace Cubeglass.Unity.Rendering.Tests
                 world.LoadChunk(chunk);
                 world.Apply(new EditCommand(
                     ChunkMath.ToWorld(coord, new Int3(0, 0, 0)),
+                    BlockId.Air,
+                    block,
+                    0L));
+                return chunk;
+            }
+        }
+
+        private sealed class TwoBlockGenerator : IWorldGenerator
+        {
+            private readonly BlockId block;
+
+            internal TwoBlockGenerator(BlockId block)
+            {
+                this.block = block;
+            }
+
+            public Chunk Generate(ChunkCoord coord, long seed)
+            {
+                var world = new World();
+                var chunk = new Chunk(coord);
+                world.LoadChunk(chunk);
+                world.Apply(new EditCommand(
+                    ChunkMath.ToWorld(coord, new Int3(0, 0, 0)),
+                    BlockId.Air,
+                    block,
+                    0L));
+                world.Apply(new EditCommand(
+                    ChunkMath.ToWorld(coord, new Int3(2, 0, 0)),
                     BlockId.Air,
                     block,
                     0L));

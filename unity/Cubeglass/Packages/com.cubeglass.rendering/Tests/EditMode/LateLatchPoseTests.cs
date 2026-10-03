@@ -7,9 +7,10 @@ using UnityEngine;
 namespace Cubeglass.Unity.Rendering.Tests
 {
     /// <summary>
-    /// Late-latch behaviour: the newest internal sample is converted once via
-    /// <c>Cubeglass.CoreMath.UnityConvert</c>, applied to the rig, shared by both
-    /// eyes, kept when no sample arrives, and read at most once per tick.
+    /// Late-latch behaviour: the newest internal sample's head-relative
+    /// rotation is converted once via <c>Cubeglass.CoreMath.UnityConvert</c>,
+    /// applied to the rig, shared by both eyes, kept when no sample arrives,
+    /// read at most once per tick, and recentred on demand (ADR-0011).
     /// </summary>
     public class LateLatchPoseTests
     {
@@ -26,6 +27,23 @@ namespace Cubeglass.Unity.Rendering.Tests
                 Calls++;
                 sample = Sample;
                 return HasSample;
+            }
+        }
+
+        private sealed class RecenterablePoseProvider : IRecenterablePoseProvider
+        {
+            public BridgeHeadSample Sample;
+            public int RecentreCalls;
+
+            public bool TryGetLatest(out BridgeHeadSample sample)
+            {
+                sample = Sample;
+                return true;
+            }
+
+            public void Recentre()
+            {
+                RecentreCalls++;
             }
         }
 
@@ -134,15 +152,67 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
-        public void PositionIsConvertedWithTheSameSingleSource()
+        public void SamplePositionIsIgnoredAndTheHeadStaysAtTheEyeOffset()
         {
             provider.Sample = YawSample(0f);
 
             latch.TickOnce();
 
-            Assert.AreEqual(0.25f, latch.transform.localPosition.x, Tolerance, "x unchanged");
-            Assert.AreEqual(1.6f, latch.transform.localPosition.y, Tolerance, "y unchanged");
-            Assert.AreEqual(0.5f, latch.transform.localPosition.z, Tolerance, "z negated");
+            Assert.Less(
+                Vector3.Distance(Vector3.zero, latch.transform.localPosition),
+                Tolerance,
+                "the head-relative pose applies no sample position; PlayerRoot owns the eye offset");
+        }
+
+        [Test]
+        public void RecentreOnANonRecenterableProviderResetsTheLocalBaseline()
+        {
+            provider.Sample = YawSample(90f);
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(latch.transform.localRotation, Quaternion.Euler(0f, -90f, 0f)),
+                Tolerance,
+                "the first sample is applied as-is (identity baseline)");
+
+            latch.Recentre();
+
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, latch.transform.localRotation),
+                Tolerance,
+                "recentre returns the view to the player's forward immediately");
+
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, latch.transform.localRotation),
+                Tolerance,
+                "the current sample became the baseline, so the head offset is zero");
+
+            provider.Sample = YawSample(135f);
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(latch.transform.localRotation, Quaternion.Euler(0f, -45f, 0f)),
+                Tolerance,
+                "later samples are measured relative to the recentred baseline");
+        }
+
+        [Test]
+        public void RecentreCallsARecenterableProviderAndKeepsAnIdentityBaseline()
+        {
+            var recenterable = new RecenterablePoseProvider { Sample = YawSample(90f) };
+            latch.Provider = recenterable;
+            latch.TickOnce();
+
+            latch.Recentre();
+
+            Assert.AreEqual(1, recenterable.RecentreCalls, "the source recentre path is used");
+            Assert.Less(Quaternion.Angle(Quaternion.identity, latch.transform.localRotation), Tolerance);
+
+            recenterable.Sample = YawSample(0f);
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, latch.transform.localRotation),
+                Tolerance,
+                "source-recentred samples keep an identity baseline");
         }
 
         [Test]

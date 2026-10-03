@@ -13,10 +13,13 @@
     the DLLs in `precompiledReferences`). This script:
 
       1. builds `dotnet/src/Streaming` in Release (netstandard2.1), which also
-         builds its CoreMath, Voxel and Mesh project references;
+         builds its CoreMath, Voxel and Mesh project references, and
+         `dotnet/src/Gameplay` (netstandard2.1), which builds CoreMath and
+         Voxel again;
       2. copies `Cubeglass.CoreMath.dll`, `Cubeglass.Voxel.dll`,
          `Cubeglass.Mesh.dll` and `Cubeglass.Streaming.dll` to
-         `unity/Cubeglass/Assets/Plugins/managed/`.
+         `unity/Cubeglass/Assets/Plugins/managed/` and `Cubeglass.Gameplay.dll`
+         from its own output (it is not a Streaming reference).
 
     It fails loudly when the build fails or any expected DLL is missing, the
     same way `scripts/ci-local.ps1` fails loudly for the native bridge DLL.
@@ -41,6 +44,8 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $StreamingProject = Join-Path $RepoRoot 'dotnet\src\Streaming\Cubeglass.Streaming.csproj'
 $StreamingOutput = Join-Path $RepoRoot 'dotnet\src\Streaming\bin\Release\netstandard2.1'
+$GameplayProject = Join-Path $RepoRoot 'dotnet\src\Gameplay\Cubeglass.Gameplay.csproj'
+$GameplayOutput = Join-Path $RepoRoot 'dotnet\src\Gameplay\bin\Release\netstandard2.1'
 $ManagedPluginsDir = Join-Path $RepoRoot 'unity\Cubeglass\Assets\Plugins\managed'
 
 $PluginNames = @(
@@ -56,6 +61,12 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet build failed (exit $LASTEXITCODE): $StreamingProject"
 }
 
+Write-Host ">>> dotnet build '$GameplayProject' --configuration Release" -ForegroundColor Cyan
+& dotnet build $GameplayProject --configuration Release
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed (exit $LASTEXITCODE): $GameplayProject"
+}
+
 New-Item -ItemType Directory -Path $ManagedPluginsDir -Force | Out-Null
 foreach ($pluginName in $PluginNames) {
     $source = Join-Path $StreamingOutput $pluginName
@@ -66,3 +77,11 @@ foreach ($pluginName in $PluginNames) {
     Copy-Item -LiteralPath $source -Destination (Join-Path $ManagedPluginsDir $pluginName) -Force
     Write-Host "Copied managed plugin: $source -> $ManagedPluginsDir"
 }
+
+$gameplaySource = Join-Path $GameplayOutput 'Cubeglass.Gameplay.dll'
+if (-not (Test-Path -LiteralPath $gameplaySource)) {
+    throw "managed plugin not found at '$gameplaySource' after the Release build; check the Gameplay target framework and output path"
+}
+
+Copy-Item -LiteralPath $gameplaySource -Destination (Join-Path $ManagedPluginsDir 'Cubeglass.Gameplay.dll') -Force
+Write-Host "Copied managed plugin: $gameplaySource -> $ManagedPluginsDir"

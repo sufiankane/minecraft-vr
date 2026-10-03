@@ -23,6 +23,7 @@ unity/**/Temp/
 unity/**/Logs/
 unity/**/UserSettings/
 unity/**/obj/
+unity/Cubeglass/ProjectSettings/SceneTemplateSettings.json
 
 # Native bridge plugin (built by the cpp lane, copied by scripts/ci-local.ps1)
 unity/Cubeglass/Assets/Plugins/**/*.dll

@@ -24,11 +24,31 @@ namespace Cubeglass.Unity.Rendering
     /// <summary>
     /// Late-latch pose application: reads the newest head sample once per
     /// rendered frame from an <see cref="IPoseProvider"/> (the bridge adapter or
-    /// the scripted input provider), converts it through the single conversion
-    /// source <see cref="Cubeglass.CoreMath.UnityConvert"/>, and applies it to
-    /// the rig transform so both eye cameras render the same sample.
+    /// the scripted input provider), reduces it to the head-relative rotation
+    /// (recentred yaw/pitch/roll, no absolute position), converts that through
+    /// the single conversion source <see cref="Cubeglass.CoreMath.UnityConvert"/>,
+    /// and applies it to the rig transform so both eye cameras render the same
+    /// sample.
     /// </summary>
     /// <remarks>
+    /// <para>
+    /// Hierarchy (S7 Task 4a, ADR-0011): this component is the head level, a
+    /// child of <see cref="PlayerRoot"/>; it writes only
+    /// <c>target.localRotation</c>. The root owns the world position and the
+    /// body yaw, and the root places the head at the fixed eye height, so a
+    /// sample's absolute position is deliberately ignored and the shoot ray
+    /// cannot be dragged around by head translation.
+    /// </para>
+    /// <para>
+    /// Rotation is relative to the recentre baseline. Initially the baseline is
+    /// identity, so the first sample is applied as-is; <see cref="Recentre"/>
+    /// clears the head offset so the view returns to the player's forward.
+    /// When the provider implements <see cref="IRecenterablePoseProvider"/> the
+    /// source is recentred too and the baseline resets to identity; otherwise
+    /// the current sample rotation becomes the baseline (a local offset reset)
+    /// and the emitted pose is immediately identity.
+    /// </para>
+    /// <para>
     /// The hook is <c>Camera.onPreCull</c>, subscribed once per enable and
     /// removed on disable/destroy. The callback deduplicates by
     /// <c>Time.frameCount</c>, so the left and right camera callbacks of one
@@ -36,6 +56,7 @@ namespace Cubeglass.Unity.Rendering
     /// When the provider has no sample, the last pose and
     /// <see cref="TrackingState"/> are kept unchanged. <see cref="TickOnce"/>
     /// is the manual entry point used by tests.
+    /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class LateLatchPose : MonoBehaviour
@@ -47,6 +68,8 @@ namespace Cubeglass.Unity.Rendering
         private bool hasSample;
         private int lastTickFrame = int.MinValue;
         private BridgeHeadSample lastSample;
+        private Quat recentreBaseline = Quat.Identity;
+        private Quat lastRotation = Quat.Identity;
 
         /// <summary>Tracking quality of the latest applied sample.</summary>
         public PoseTrackingState TrackingState { get; private set; } = PoseTrackingState.NotReady;
@@ -155,6 +178,33 @@ namespace Cubeglass.Unity.Rendering
             ApplySample(in sample);
         }
 
+        /// <summary>
+        /// Clears the head offset (S7 Task 4a, ADR-0011): the rig returns to
+        /// the player's forward immediately and the next sample is measured
+        /// relative to the recentred baseline. When the provider implements
+        /// <see cref="IRecenterablePoseProvider"/> its origin is recentred as
+        /// well (the source recentre path); otherwise the current sample
+        /// rotation becomes the local baseline (the offset reset path).
+        /// </summary>
+        public void Recentre()
+        {
+            if (provider is IRecenterablePoseProvider recenterable)
+            {
+                recenterable.Recentre();
+                recentreBaseline = Quat.Identity;
+            }
+            else if (hasSample)
+            {
+                recentreBaseline = lastRotation;
+            }
+            else
+            {
+                recentreBaseline = Quat.Identity;
+            }
+
+            ApplyRotation(Quat.Identity);
+        }
+
         private void HandlePreCull(Camera camera)
         {
             if (rig != null)
@@ -181,30 +231,33 @@ namespace Cubeglass.Unity.Rendering
 
         private void ApplySample(in BridgeHeadSample sample)
         {
-            var internalPose = new CorePose(
-                new Vec3(sample.Pose.Position.X, sample.Pose.Position.Y, sample.Pose.Position.Z),
-                Quat.FromComponents(
-                    sample.Pose.Rotation.W,
-                    sample.Pose.Rotation.X,
-                    sample.Pose.Rotation.Y,
-                    sample.Pose.Rotation.Z));
-            CorePose unityPose = UnityConvert.ToUnity(internalPose);
+            Quat sampleRotation = Quat.FromComponents(
+                sample.Pose.Rotation.W,
+                sample.Pose.Rotation.X,
+                sample.Pose.Rotation.Y,
+                sample.Pose.Rotation.Z);
+            lastRotation = sampleRotation;
 
-            Transform target = rig != null ? rig.transform : transform;
-            target.localPosition = new Vector3(
-                (float)unityPose.Position.X,
-                (float)unityPose.Position.Y,
-                (float)unityPose.Position.Z);
-            target.localRotation = new Quaternion(
-                (float)unityPose.Rotation.X,
-                (float)unityPose.Rotation.Y,
-                (float)unityPose.Rotation.Z,
-                (float)unityPose.Rotation.W);
+            // Relative to the recentre baseline, in the internal frame, then
+            // converted once. A sample position is intentionally not applied.
+            Quat relative = recentreBaseline.Inverse() * sampleRotation;
+            ApplyRotation(relative);
 
             if (rig != null)
             {
                 rig.ApplyEyeLayout();
             }
+        }
+
+        private void ApplyRotation(Quat internalRotation)
+        {
+            CorePose unityPose = UnityConvert.ToUnity(new CorePose(default, internalRotation));
+            Transform target = rig != null ? rig.transform : transform;
+            target.localRotation = new Quaternion(
+                (float)unityPose.Rotation.X,
+                (float)unityPose.Rotation.Y,
+                (float)unityPose.Rotation.Z,
+                (float)unityPose.Rotation.W);
         }
 
         private static PoseTrackingState MapState(TrackState state)

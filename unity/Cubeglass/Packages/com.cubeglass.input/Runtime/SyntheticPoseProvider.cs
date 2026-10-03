@@ -26,7 +26,7 @@ namespace Cubeglass.Unity.Input
     /// <see cref="LateLatchPose"/>.
     /// </remarks>
     [DisallowMultipleComponent]
-    public sealed class SyntheticPoseProvider : MonoBehaviour, IPoseProvider
+    public sealed class SyntheticPoseProvider : MonoBehaviour, IRecenterablePoseProvider
     {
         /// <summary>Default deterministic sample rate in Hz.</summary>
         public const float DefaultSampleRateHz = 90f;
@@ -138,12 +138,21 @@ namespace Cubeglass.Unity.Input
 
         /// <summary>
         /// Returns the script to the internal forward pose: base yaw/pitch/roll
-        /// zero at the current position and zero angular rates.
+        /// zero at the current position and zero angular rates. This is the
+        /// source-recentre path of <see cref="IRecenterablePoseProvider"/>: the
+        /// samples after the call are the new forward, so
+        /// <see cref="LateLatchPose.Recentre"/> keeps an identity baseline.
         /// </summary>
         public void Recenter()
         {
             SetOrientation(0f, 0f, 0f);
             SetRates(0f, 0f, 0f);
+        }
+
+        /// <inheritdoc />
+        void IRecenterablePoseProvider.Recentre()
+        {
+            Recenter();
         }
 
         /// <summary>The scripted position in the internal frame.</summary>
