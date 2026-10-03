@@ -153,4 +153,20 @@ TEST(ClockMapperTest, NonFiniteMapQueryIsZero) {
     EXPECT_EQ(empty.Map(kNan), 0);
 }
 
+TEST(ClockMapperTest, MapSaturatesHostileFiniteInputsAtTheHostTimeRange) {
+    ClockMapper mapper;
+
+    // Finite inputs whose product with 1e9 overflows int64 must saturate, not
+    // rely on llround's unrepresentable-result behaviour (M-11).
+    constexpr double kHuge = 1e300;
+    EXPECT_EQ(mapper.Map(kHuge), std::numeric_limits<HostTime>::max());
+    EXPECT_EQ(mapper.Map(-kHuge), std::numeric_limits<HostTime>::min());
+
+    // A large offset in the window does not change the saturation either.
+    mapper.AddSample(0.0, std::numeric_limits<HostTime>::max());
+    mapper.AddSample(0.0, std::numeric_limits<HostTime>::max());
+    EXPECT_EQ(mapper.Map(kHuge), std::numeric_limits<HostTime>::max());
+    EXPECT_EQ(mapper.Map(-kHuge), std::numeric_limits<HostTime>::min());
+}
+
 } // namespace

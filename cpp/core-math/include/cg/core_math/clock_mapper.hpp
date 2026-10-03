@@ -52,8 +52,9 @@ class ClockMapper {
     /// `round((sdk_seconds + OffsetSeconds()) * 1e9)`, rounding halfway cases
     /// away from zero (`std::llround`).
     ///
-    /// A non-finite `sdk_seconds` returns 0. Precondition for finite input:
-    /// the rounded result fits in `HostTime`. No allocation.
+    /// A non-finite `sdk_seconds` returns 0. A finite input whose result falls
+    /// outside `HostTime` saturates at `HostTime::min()/max()` instead of
+    /// invoking `llround` on an unrepresentable value (M-11). No allocation.
     [[nodiscard]] HostTime Map(double sdk_seconds) const noexcept;
 
     /// True once `SampleCount() >= kReadySampleCount`. No allocation.
