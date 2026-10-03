@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -119,6 +120,8 @@ class RawRegionView {
         auto *abi = reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version));
         std::memcpy(abi, &version, sizeof(version));
     }
+
+    [[nodiscard]] std::uint8_t *base() const noexcept { return base_; }
 
   private:
     void Close() noexcept {
@@ -275,6 +278,41 @@ TEST_F(ShmReaderTest, IncompatibleHeaderReportsUnsupportedAfterTheInitWindow) {
     void *handle = nullptr;
     EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
     EXPECT_EQ(handle, nullptr);
+}
+
+/// A legacy v1 writer (the pre-S6 layout without `cg_hand_frame`) must be
+/// detected through the region ABI, and the diagnostic must name both the
+/// observed and the expected versions (I-2).
+TEST_F(ShmReaderTest, LegacyAbiVersionIsRejectedNamingBothVersions) {
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+    view.SetAbiVersion(1);
+
+    void *handle = nullptr;
+    ASSERT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(handle, nullptr);
+    const std::string message = LastHeaderError();
+    EXPECT_NE(message.find("1"), std::string::npos) << "message was: " << message;
+    EXPECT_NE(message.find("2"), std::string::npos) << "message was: " << message;
+    EXPECT_NE(message.find("abi_version"), std::string::npos) << "message was: " << message;
+
+    // Restoring the version lets the same region open, and a successful open
+    // clears the diagnostic.
+    view.SetAbiVersion(kShmAbiVersion);
+    ASSERT_EQ(cg_bridge_open(&handle), CG_OK);
+    ASSERT_NE(handle, nullptr);
+    EXPECT_STREQ(LastHeaderError(), "");
+    cg_bridge_close(handle);
+}
+
+TEST_F(ShmReaderTest, TestWriterPublishesTheDeclaredAbiVersion) {
+    // The test writer asserts the region bytes it writes carry the ABI the
+    // layout header declares (kShmAbiVersion == 2 for the hand payload).
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+    auto *abi = reinterpret_cast<std::uint32_t *>(view.base() + offsetof(ShmHeader, abi_version));
+    EXPECT_EQ(std::atomic_ref<std::uint32_t>(*abi).load(std::memory_order_relaxed), kShmAbiVersion);
+    EXPECT_EQ(kShmAbiVersion, 2U);
 }
 
 TEST_F(ShmReaderTest, OpenRecoversWhenTheHeaderInitialisesWithinTheRetryWindow) {

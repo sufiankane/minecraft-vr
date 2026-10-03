@@ -113,6 +113,7 @@ ReplayHeadPoseSource::ReplayHeadPoseSource(std::filesystem::path csv, ManualCloc
 Result<void> ReplayHeadPoseSource::Load() {
     rows_.clear();
     next_index_ = 0;
+    next_seq_ = 1;
     has_published_.store(false, std::memory_order_relaxed);
     has_previous_ = false;
     loaded_ = false;
@@ -121,6 +122,9 @@ Result<void> ReplayHeadPoseSource::Load() {
     yaw_rate_deg_per_s_.store(0.0, std::memory_order_relaxed);
     pitch_rate_deg_per_s_.store(0.0, std::memory_order_relaxed);
     yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
+    // A reload is not a resume: the previous dataset's newest sample must not
+    // stay readable and its sequence numbers must not carry over (M-8).
+    slot_.Reset();
 
     std::ifstream file(csv_, std::ios::binary);
     if (!file.is_open()) {

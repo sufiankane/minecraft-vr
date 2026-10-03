@@ -1,7 +1,8 @@
 #pragma once
 
 // Shared-memory layout for the 5.6 head-pose and hand-frame region
-// (`Local\cubeglass.v1.state`). The region is little-endian with 64-byte
+// (`Local\cubeglass.v1.state`; the name keeps its v1 form per ADR-0010 even
+// though the region ABI is 2). The region is little-endian with 64-byte
 // aligned blocks; the writer is `cg-handservice` and readers are read-only.
 //
 // Writer protocol: bump `seq_a` to an odd value, write the payload, store
@@ -12,6 +13,22 @@
 // a stale head read keeps the sample but reports `CG_TRACK_LOST` instead of
 // the built-in tracking state, and a stale hand read reports
 // `CG_ERR_NOT_READY` (a lost hand frame is no frame).
+//
+// Header publication protocol (I-3): the writer initialises the header by
+// zeroing it, storing `writer_pid`, `abi_version`, `header_size`, heartbeat
+// and command/ack with relaxed stores, and only then publishing `magic` with
+// a release store. `magic` is always the last field a reader can observe, so
+// an acquire load of `magic` that reads `kShmMagic` happens-after every other
+// field store, and the reader can read the remaining fields with relaxed
+// loads. A reader that opens during initialisation never needs a fence of its
+// own. The short retry window in `cg_bridge_open` is belt-and-braces for a
+// reader that observed the region before the writer began initialising (or a
+// writer that died mid-init); it is not the synchronisation primitive.
+//
+// A mixed-version pair is detected through `abi_version` alone: the region ABI
+// is bumped whenever the payload shape changes (S6: the hand slot grew with
+// `cg_hand_frame`), and the reader rejects a mismatch with
+// `CG_ERR_UNSUPPORTED` naming both versions in `LastHeaderError()`.
 
 #include <atomic>
 #include <cstddef>
@@ -29,7 +46,12 @@ namespace cg::bridge {
 inline constexpr std::uint64_t kShmMagic = 0x3130304D48534743ull;
 
 /// Shared-memory ABI version at byte 8 (the region ABI, not `CG_ABI_VERSION`).
-inline constexpr std::uint32_t kShmAbiVersion = 1;
+///
+/// Version 2: the hand slot carries `cg_hand_frame` (`cg_hand` in `CG_ABI_VERSION`
+/// 2), so a pre-S6 writer/reader pair has a different slot payload shape. A
+/// version-1 reader or writer must be rejected rather than silently reading
+/// `seq_b` from the wrong offset (I-2).
+inline constexpr std::uint32_t kShmAbiVersion = 2;
 
 /// Size of the fixed header block, bytes 0..63.
 inline constexpr std::uint32_t kHeaderSize = 64;
@@ -51,7 +73,26 @@ inline constexpr std::int64_t kStaleAfterNs = 250'000'000;
 /// `now - heartbeat` is strictly greater than 250 ms, so exactly 250 ms is
 /// still fresh. `now` and `heartbeat` are nanoseconds from the same monotonic
 /// clock (`std::chrono::steady_clock`).
-inline bool is_stale(std::int64_t now, std::int64_t heartbeat) noexcept { return now - heartbeat > kStaleAfterNs; }
+///
+/// A heartbeat ahead of `now` (clock skew, or a writer on a second clock) is
+/// treated as fresh no matter how far ahead: a future stamp is not evidence of
+/// a dead writer. The comparison is done in unsigned arithmetic so an extreme
+/// pair (for example `now = INT64_MIN`, `heartbeat = INT64_MAX`) cannot
+/// overflow (M-6).
+inline bool is_stale(std::int64_t now, std::int64_t heartbeat) noexcept {
+    if (heartbeat >= now) {
+        return false; // future (or same-instant) heartbeat: fresh
+    }
+    const auto age = static_cast<std::uint64_t>(now) - static_cast<std::uint64_t>(heartbeat);
+    return age > static_cast<std::uint64_t>(kStaleAfterNs);
+}
+
+/// Human-readable diagnostic for the last header rejected by `cg_bridge_open`
+/// on the calling thread: names the observed and expected `abi_version` (or
+/// header-size) values, empty when the last open succeeded. This is bridge
+/// diagnostics, not part of the frozen 5.12 surface; tests and the C# wrapper
+/// can surface it for support logs.
+[[nodiscard]] const char *LastHeaderError() noexcept;
 
 /// Fixed 64-byte region header. Bytes 32..39 were reserved in 5.6; ADR-0010
 /// (R43) extends the reserved window with a command word and its ack, which

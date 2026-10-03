@@ -342,6 +342,31 @@ TEST(ReplaySource, RestartResumesAtTheNextRow) {
     source.Stop();
 }
 
+TEST(ReplaySource, LoadClearsThePreviousDatasetsPlaybackState) {
+    // A second Load() replaces the dataset: the previous playback's newest
+    // sample must not stay readable, and the new dataset starts a fresh
+    // sequence (M-8).
+    ManualClock clock;
+    ReplayHeadPoseSource source(CG_POSE_REPLAY_FIXTURE, clock);
+    ExpectLoadOk(source);
+    ASSERT_TRUE(source.Start().ok());
+    PublishNext(source, 3);
+    HeadSample before = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(before, Duration{0}));
+    EXPECT_EQ(before.seq, 3U);
+
+    source.Stop();
+    ExpectLoadOk(source);
+    HeadSample after = PlaceholderSample();
+    EXPECT_FALSE(source.TryGetLatest(after, Duration{0})) << "a reloaded dataset must not expose the old sample";
+    ASSERT_TRUE(source.Start().ok());
+    source.PublishNext();
+    ASSERT_TRUE(source.TryGetLatest(after, Duration{0}));
+    EXPECT_EQ(after.seq, 1U) << "a reloaded dataset starts a fresh sequence";
+    EXPECT_EQ(after.time, ExpectedHostTimeNs(0));
+    source.Stop();
+}
+
 TEST(ReplaySource, RecenterAppliesAReplayLocalYawOffset) {
     ManualClock clock;
     ReplayHeadPoseSource source(CG_POSE_REPLAY_FIXTURE, clock);

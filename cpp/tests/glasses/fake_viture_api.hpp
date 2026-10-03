@@ -52,9 +52,11 @@ template <typename T> [[nodiscard]] Result<T> PopResult(std::deque<Result<T>> &s
 ///
 /// A successful `CreateDevice` sets `device_alive`; `DestroyDevice` clears it.
 /// `StartPose`, `PollPose` and `ResetOriginCarina` fail with `NotReady` while
-/// no device is alive, like the real SDK. Display calls are deliberately not
-/// gated: the enforced display rule is "configure while the pose source is
-/// stopped", which includes the window before `Start` creates the device.
+/// no device is alive, like the real SDK. A successful `ResetOriginCarina`
+/// recentres the scripted feed (a rejected one leaves the origin unchanged).
+/// Display calls are deliberately not gated: the enforced display rule is
+/// "configure while the pose source is stopped", which includes the window
+/// before `Start` creates the device.
 ///
 /// The sample feed is either a plain list of `cg_head_sample`, returned
 /// verbatim one per successful poll, or a Task 1 `FakeScript` pattern advanced
@@ -101,10 +103,19 @@ class FakeVitureApi final : public IVitureApi {
     std::atomic<std::uint64_t> get_refresh_hz_calls{0};
     mutable std::atomic<std::uint64_t> sdk_version_calls{0};
 
+    /// Last display arguments. `SetDisplayMode`/`GetRefreshHz` are only called
+    /// from the thread driving the display control (the polling thread never
+    /// calls them), so these stay plain.
     std::uint32_t last_refresh_hz = 0;
     bool last_sbs = false;
+
+    /// The pose most recently forwarded to `ResetOriginCarina`, in the SDK
+    /// `float[7]` order. The polling thread writes the payload and then
+    /// release-stores `has_reset_pose`; a test reader must acquire-load
+    /// `has_reset_pose` before touching `last_reset_pose` (TSan-clean
+    /// handshake, not an unordered flag/payload pair).
     float last_reset_pose[7] = {};
-    bool has_reset_pose = false;
+    std::atomic<bool> has_reset_pose{false};
 
     // --- IVitureApi -------------------------------------------------------
     Result<void> CreateDevice() override {
@@ -168,14 +179,17 @@ class FakeVitureApi final : public IVitureApi {
         for (std::size_t i = 0; i < 7; ++i) {
             last_reset_pose[i] = pose[i];
         }
-        has_reset_pose = true;
-        if (use_script_ && script_source_ != nullptr) {
+        // Publish the payload before the flag; readers acquire the flag first.
+        has_reset_pose.store(true, std::memory_order_release);
+        const Result<void> result = NextResult(reset_origin_script, reset_origin_result);
+        if (result.ok() && use_script_ && script_source_ != nullptr) {
             // The scripted feed is recentred like a real device: the origin
             // becomes the current heading, so subsequent samples read relative
-            // to the reset pose.
+            // to the reset pose. A rejected reset changes nothing, exactly like
+            // the SDK: the stream stays in its pre-recentre frame.
             static_cast<void>(script_source_->Recenter());
         }
-        return NextResult(reset_origin_script, reset_origin_result);
+        return result;
     }
 
     Result<void> SetDisplayMode(std::uint32_t refresh_hz, bool sbs) override {

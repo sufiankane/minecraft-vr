@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <type_traits>
 
@@ -120,7 +121,11 @@ TEST(ShmLayout, SlotOffsetsMatchDossier56) {
 }
 
 TEST(ShmLayout, ProtocolConstantsMatchDossier56) {
-    EXPECT_EQ(kShmAbiVersion, 1U);
+    // The hand payload (cg_hand_frame) grew the region's payload shape, so the
+    // region ABI must move with it: a mixed-version reader/writer pair can only
+    // be detected through this field (the region name stays v1 for the command
+    // channel's additive reserved bytes; ADR-0010).
+    EXPECT_EQ(kShmAbiVersion, 2U);
     EXPECT_EQ(kStaleAfterNs, 250'000'000);
     EXPECT_STREQ(kStateName, "Local\\cubeglass.v1.state");
 }
@@ -131,6 +136,20 @@ TEST(ShmLayout, StaleRuleIsStrictlyAfterThe250MsBoundary) {
     EXPECT_FALSE(is_stale(now, now - kStaleAfterNs));    // exactly 250 ms: still fresh
     EXPECT_TRUE(is_stale(now, now - kStaleAfterNs - 1)); // one nanosecond past the boundary
     EXPECT_FALSE(is_stale(now, now + kStaleAfterNs));    // future heartbeat: fresh
+}
+
+TEST(ShmLayout, FutureHeartbeatIsFreshAndExtremeStampsCannotOverflow) {
+    // A heartbeat ahead of the reader's clock (skew, or a second clock) is not
+    // stale no matter how far ahead, and it must not wrap the subtraction.
+    constexpr std::int64_t kInt64Max = std::numeric_limits<std::int64_t>::max();
+    constexpr std::int64_t kInt64Min = std::numeric_limits<std::int64_t>::min();
+    EXPECT_FALSE(is_stale(0, kInt64Max));
+    EXPECT_FALSE(is_stale(kInt64Min, kInt64Max));
+    EXPECT_FALSE(is_stale(0, 1)); // a heartbeat one nanosecond in the future
+
+    // A heartbeat decades in the past is stale without signed overflow.
+    EXPECT_TRUE(is_stale(kInt64Max, kInt64Min));
+    EXPECT_TRUE(is_stale(kInt64Max, kInt64Min + 1));
 }
 
 TEST(ShmLayout, PayloadSizesDocumentTheCompilerPadding) {

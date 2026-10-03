@@ -27,7 +27,10 @@ Result<DisplayMode> VitureDisplayControl::Get() const {
     if (!refresh_hz.ok()) {
         return Err<DisplayMode>(refresh_hz.status());
     }
-    return Ok(DisplayMode{*refresh_hz, sbs_.load(std::memory_order_relaxed)});
+    // Acquire pairs with the release store in `Set`: a reader that observes a
+    // cached SBS value ordered after the `stopped_` acquire in a later `Get`
+    // cannot observe a pre-`Stop` SBS store out of order (M-5).
+    return Ok(DisplayMode{*refresh_hz, sbs_.load(std::memory_order_acquire)});
 }
 
 Result<void> VitureDisplayControl::Set(DisplayMode mode) {
@@ -39,7 +42,7 @@ Result<void> VitureDisplayControl::Set(DisplayMode mode) {
     }
     const Result<void> result = api_.SetDisplayMode(mode.refresh_hz, mode.sbs);
     if (result.ok()) {
-        sbs_.store(mode.sbs, std::memory_order_relaxed);
+        sbs_.store(mode.sbs, std::memory_order_release);
     }
     return result;
 }

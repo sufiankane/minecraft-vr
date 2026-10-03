@@ -1,6 +1,7 @@
 #include "cg/core_math/time.hpp"
 
 #include <cstdlib>
+#include <limits>
 
 #include <gtest/gtest.h>
 
@@ -27,6 +28,18 @@ TEST(Time, ToNanosecondsRoundsToNearestNanosecond) {
 TEST(TimeTest, ToNanosecondsRoundsHalfwayAwayFromZero) {
     EXPECT_EQ(ToNanoseconds(0.5e-9), 1);
     EXPECT_EQ(ToNanoseconds(-0.5e-9), -1);
+}
+
+TEST(Time, ToNanosecondsSaturatesAtTheHostTimeRange) {
+    constexpr double kHuge = 1e300;
+    EXPECT_EQ(ToNanoseconds(kHuge), std::numeric_limits<HostTime>::max());
+    EXPECT_EQ(ToNanoseconds(-kHuge), std::numeric_limits<HostTime>::min());
+    EXPECT_EQ(ToNanoseconds(std::numeric_limits<double>::infinity()), std::numeric_limits<HostTime>::max());
+    EXPECT_EQ(ToNanoseconds(-std::numeric_limits<double>::infinity()), std::numeric_limits<HostTime>::min());
+    EXPECT_EQ(ToNanoseconds(std::numeric_limits<double>::quiet_NaN()), 0);
+    // The exact representable bounds round-trip.
+    EXPECT_EQ(ToNanoseconds(ToSeconds(std::numeric_limits<HostTime>::max())), std::numeric_limits<HostTime>::max());
+    EXPECT_EQ(ToNanoseconds(ToSeconds(std::numeric_limits<HostTime>::min())), std::numeric_limits<HostTime>::min());
 }
 
 TEST(Time, RoundTripStaysWithinOneNanosecond) {

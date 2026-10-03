@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -42,12 +41,16 @@ namespace cg::glasses {
 /// 100 ms, without locks or allocation.
 ///
 /// `Recenter` is serviced by the polling thread (the only thread allowed to
-/// call the API): it passes the newest pose to `ResetOriginCarina` and arms an
-/// inverse-yaw read-time correction for samples published before the reset, so
-/// the newest sample reads back recentred as soon as `Recenter` returns, while
-/// later samples come from the already-recentred SDK stream. It is `NotReady`
-/// before the first sample and while no device is alive (during a backoff or a
-/// failed recreate); the destroyed-device state never calls the seam.
+/// call the API): it captures the newest slot sample, posts the request and
+/// returns `Ok` as soon as the request is posted, without waiting for the
+/// polling thread. It additionally arms the inverse-yaw read-time correction
+/// for the captured sample immediately, so the newest pre-reset sample reads
+/// recentred as soon as `Recenter` returns; the polling thread applies
+/// `ResetOriginCarina` between polls on its next pass, and later samples come
+/// from the already-recentred SDK stream. A failed `ResetOriginCarina`
+/// withdraws the correction in the polling thread. It is `NotReady` before the
+/// first sample and while no device is alive (during a backoff or a failed
+/// recreate); the destroyed-device state never calls the seam.
 class VitureHeadPoseSource final : public IHeadPoseSource {
   public:
     /// Runs on the polling thread right after it is named (Windows
@@ -65,8 +68,6 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     static constexpr Duration kUnstableAfter{500'000'000};
     /// Quiet time after which the source publishes `Lost`.
     static constexpr Duration kLostAfter{1'000'000'000};
-    /// How long the polling thread waits for a reader after a recentre.
-    static constexpr Duration kRecentreReadTimeout{1'000'000'000};
     /// Prediction horizon cap (100 ms).
     static constexpr std::int64_t kMaxPredictNs = 100'000'000;
 
@@ -100,9 +101,13 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
   private:
     void PollLoop(std::stop_token stop) noexcept;
     void SetupThread() noexcept;
-    void ServiceRecentre(std::stop_token stop) noexcept;
-    void HandleRecentre() noexcept;
-    void WaitForRecentreRead(std::stop_token stop) noexcept;
+
+    /// Polling-thread half of `Recenter`: consumes a posted request and calls
+    /// `ResetOriginCarina` with the pose captured by the poster, then extends
+    /// the read-time correction over every sample published before this pass.
+    void ServiceRecentre() noexcept;
+    void HandleRecentre(const float pose[7]) noexcept;
+
     [[nodiscard]] bool WaitBackoff(Duration duration, std::stop_token stop) noexcept;
     [[nodiscard]] bool StopRequested(const std::stop_token &stop) const noexcept;
     void PublishQuiet(HostTime now) noexcept;
@@ -119,12 +124,14 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
 
+    // Recentre hand-off from any caller thread to the polling thread. The
+    // poster stores the captured pose under `recentre_mutex_` and then sets
+    // `recentre_requested_`; the polling thread exchanges the flag and copies
+    // the pose. `recentre_call_mutex_` serialises callers.
     std::mutex recentre_call_mutex_;
     std::mutex recentre_mutex_;
-    std::condition_variable recentre_cv_;
     std::atomic<bool> recentre_requested_{false};
-    bool recentre_done_ = false;
-    Result<void> recentre_result_{};
+    float recentre_pose_[7] = {};
 
     // Device lifetime (create success sets it, before every destroy it is
     // cleared) and "a pose was published" (readable by `Recenter` from any
@@ -142,13 +149,13 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     double previous_pitch_deg_ = 0.0;
     HostTime previous_time_ = 0;
 
-    // Reader-visible state. The hold is cleared by `TryGetLatest` (const), so
-    // it is mutable.
+    // Reader-visible state. The correction applies to samples up to
+    // `recentre_until_seq_`; the reader acquires that sequence before reading
+    // `yaw_offset_deg_`, and both writers store the offset before the sequence.
     std::atomic<double> yaw_rate_deg_per_s_{0.0};
     std::atomic<double> pitch_rate_deg_per_s_{0.0};
     std::atomic<double> yaw_offset_deg_{0.0};
     std::atomic<std::uint32_t> recentre_until_seq_{0};
-    mutable std::atomic<bool> recentre_hold_{false};
 
     // Diagnostics-only SDK stamp (see `LastSdkSeconds`). Written by the polling
     // thread before the matching publish; `has_sdk_seconds_` is the release

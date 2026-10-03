@@ -337,3 +337,36 @@ is green on `62b2c21` (TSan, ASan, coverage, Windows, dotnet, python,
 depcheck) and covers the base `f3a97fa` tree only. None of the Task-4 commits
 (`b5dcc36`, `778dda4`, the soak lane and this evidence) has been CI-verified
 yet; the PR run will verify them.
+
+## 12. Programme review 2026-10-03 — deferred
+
+Native C++/contracts findings from the 2026-10-03 programme review
+(`.superpowers/reviews/2026-10-03-cpp.md`) that the `review/native-fixes` wave
+does **not** fix. Each line is a recorded deferral, not an accepted risk:
+
+- **M-1 — fake predict drops roll.** `FakeHeadPoseSource`'s prediction composes
+  a yaw/pitch delta without the replay source's roll-preserving composition;
+  the contract suite only sweeps yaw/pitch, so roll is not pinned.
+- **M-2 — global test hook.** `PoseSlot::SetTestPublishHook` is process-wide
+  static state; arming it is only safe while no publish is in flight.
+- **M-3 — no re-validation on read.** `cg_bridge_read_head`/`read_hand` do not
+  re-check the header after open; a writer replaced mid-session is not seen.
+- **M-4 — test writer in the production DLL.** `cg_test_writer_*` is exported
+  from `cg_unity_bridge.dll` alongside production symbols (R44 forbids export
+  macros in the frozen header); it is documented test-only and unused by every
+  production entry point.
+- **M-7 — seq invariant.** `HostSample.seq` monotonicity relies on a single
+  publisher; the layout does not encode a wrap/reuse rule.
+- **M-9 — `send_command` ignores its handle.** Valid-command calls never
+  dereference the handle; a null handle with a valid command returns
+  `CG_ERR_INVALID_ARG` rather than being rejected as a handle error.
+- **M-12 — soak gate scope.** The nightly soak is a leak gate only, with no
+  latency or regression threshold.
+
+Rationale: each item is a documented, non-blocking hardening whose fix would
+expand the frozen S5 surface, add platform glue, or weaken a deliberate test
+seam; none is an S5 exit-gate criterion. Fixed in this wave instead: I-2
+(region ABI 2 + mixed-pair rejection), I-3 (magic-last publication), I-1
+(non-stalling recentre), M-5 (display SBS ordering + latch note), M-6 (future
+heartbeat fresh/overflow-safe), M-8 (replay reload clears playback state), and
+M-11 (saturating clock conversions).

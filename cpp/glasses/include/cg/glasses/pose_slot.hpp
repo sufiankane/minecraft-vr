@@ -99,6 +99,13 @@ class PoseSlot {
         test_publish_context_ = context;
     }
 
+    /// Returns the slot to its before-first-publish state: `TryRead` fails
+    /// until the next `Publish` (the version counter stays monotonic, so a
+    /// reader that already copied the payload can only fail the `published_`
+    /// acquire). Single writer only, and only while no reader may depend on
+    /// the previous contents: a dataset reload, never a live hand-off.
+    void Reset() noexcept { published_.store(false, std::memory_order_release); }
+
   private:
     static_assert(std::is_trivially_copyable_v<HeadSample>, "the seqlock payload must be trivially copyable");
     static_assert(sizeof(HeadSample) % sizeof(std::uint64_t) == 0, "the seqlock payload must be 8-byte sized");

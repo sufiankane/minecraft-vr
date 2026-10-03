@@ -34,6 +34,7 @@ namespace {
 /// the region size the layout tests cap the slots at.
 constexpr std::size_t kTestRegionSize = 1024;
 static_assert(kHandSlotOffset + sizeof(HandSlot) <= kTestRegionSize, "the test region must cover both slots");
+static_assert(kShmAbiVersion == 2, "the test writer must publish the region ABI version it declares");
 
 #if defined(_WIN32)
 constexpr wchar_t kStateNameW[] = L"Local\\cubeglass.v1.state";
@@ -92,12 +93,16 @@ void publish_payload(std::atomic<std::uint64_t> &seq_a, std::atomic<std::uint64_
 }
 
 void initialize_region(std::uint8_t *base) noexcept {
+    // Header publication protocol (shm_layout.hpp, I-3): clear the region,
+    // store every header field with relaxed stores, then publish `magic` last
+    // with a release store. A reader that acquire-loads `magic` first
+    // happens-after these stores and needs no further ordering.
     std::memset(base, 0, kTestRegionSize);
     auto *header = reinterpret_cast<ShmHeader *>(base);
-    header->magic = kShmMagic;
-    header->abi_version = kShmAbiVersion;
-    header->header_size = kHeaderSize;
-    header->writer_pid = current_pid();
+    std::atomic_ref<std::uint64_t>(header->writer_pid).store(current_pid(), std::memory_order_relaxed);
+    std::atomic_ref<std::uint32_t>(header->abi_version).store(kShmAbiVersion, std::memory_order_relaxed);
+    std::atomic_ref<std::uint32_t>(header->header_size).store(kHeaderSize, std::memory_order_relaxed);
+    std::atomic_ref<std::uint64_t>(header->magic).store(kShmMagic, std::memory_order_release);
 }
 
 } // namespace
@@ -211,8 +216,13 @@ cg_status cg_test_writer_open(void) {
     return CG_ERR_UNSUPPORTED;
 #endif
     cg::bridge::g_writer = writer;
+    // Assert the region's version before publishing through it: a foreign
+    // region (legacy v1, or a future layout) must never be written with this
+    // layout. Magic is acquired first, matching the reader protocol.
     const auto *header = reinterpret_cast<const cg::bridge::ShmHeader *>(writer->base);
-    if (header->magic != cg::bridge::kShmMagic) {
+    const std::uint64_t magic = std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_acquire);
+    const std::uint32_t abi = std::atomic_ref<const std::uint32_t>(header->abi_version).load(std::memory_order_relaxed);
+    if (magic != cg::bridge::kShmMagic || abi != cg::bridge::kShmAbiVersion) {
         cg_test_writer_close();
         return CG_ERR_UNSUPPORTED;
     }

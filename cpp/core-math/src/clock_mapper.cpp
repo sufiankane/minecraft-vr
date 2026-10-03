@@ -38,9 +38,10 @@ HostTime ClockMapper::Map(double sdk_seconds) const noexcept {
         return 0;
     }
 
-    const double offset_seconds = OffsetSeconds();
-    return static_cast<HostTime>(
-        std::llround((sdk_seconds + offset_seconds) * static_cast<double>(kNanosecondsPerSecond)));
+    // The saturating conversion (M-11) clamps a hostile finite stamp or a
+    // corrupt offset at the HostTime range instead of leaving the rounding of
+    // an unrepresentable value to llround.
+    return ToNanoseconds(sdk_seconds + OffsetSeconds());
 }
 
 bool ClockMapper::IsReady() const noexcept { return sample_count_ >= kReadySampleCount; }

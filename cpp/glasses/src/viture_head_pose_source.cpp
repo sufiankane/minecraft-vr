@@ -76,7 +76,6 @@ Result<void> VitureHeadPoseSource::Start() {
 
     stop_requested_.store(false, std::memory_order_release);
     recentre_requested_.store(false, std::memory_order_release);
-    recentre_hold_.store(false, std::memory_order_release);
     running_.store(true, std::memory_order_release);
     try {
         thread_ = std::jthread([this](std::stop_token stop) { PollLoop(stop); });
@@ -102,32 +101,42 @@ void VitureHeadPoseSource::Stop() noexcept {
     device_alive_.store(false, std::memory_order_release);
     api_.DestroyDevice();
     running_.store(false, std::memory_order_release);
-    {
-        // Wake a Recenter that raced with the shutdown so it cannot park here.
-        const std::lock_guard<std::mutex> recentre_lock(recentre_mutex_);
-        recentre_cv_.notify_all();
-    }
 }
 
 Result<void> VitureHeadPoseSource::Recenter() {
     const std::lock_guard<std::mutex> call_lock(recentre_call_mutex_);
-    std::unique_lock<std::mutex> lock(recentre_mutex_);
     if (!running_.load(std::memory_order_acquire)) {
         return Err<void>(Status{StatusCode::NotReady, "viture: source is not running"});
-    }
-    if (!has_published_.load(std::memory_order_acquire)) {
-        return Err<void>(Status{StatusCode::NotReady, "viture: no pose to recentre"});
     }
     if (!device_alive_.load(std::memory_order_acquire)) {
         return Err<void>(Status{StatusCode::NotReady, "viture: device is not alive"});
     }
-    recentre_requested_.store(true, std::memory_order_release);
-    recentre_cv_.wait(lock, [this] { return recentre_done_ || !running_.load(std::memory_order_acquire); });
-    if (!recentre_done_) {
-        return Err<void>(Status{StatusCode::NotReady, "viture: source stopped before the recentre completed"});
+
+    // Capture the newest published pose from the wait-free slot (the polling
+    // thread's `last_published_` is not safe to read from a caller thread).
+    HeadSample target{0, core_math::Pose{core_math::Vec3{0.0, 0.0, 0.0}, core_math::Quat::kIdentity},
+                      TrackState::Stable, 0};
+    if (!slot_.TryRead(target)) {
+        return Err<void>(Status{StatusCode::NotReady, "viture: no pose to recentre"});
     }
-    recentre_done_ = false;
-    return recentre_result_;
+    float pose[7] = {static_cast<float>(target.pose.position.x),   static_cast<float>(target.pose.position.y),
+                     static_cast<float>(target.pose.position.z),   static_cast<float>(target.pose.rotation.w()),
+                     static_cast<float>(target.pose.rotation.x()), static_cast<float>(target.pose.rotation.y()),
+                     static_cast<float>(target.pose.rotation.z())};
+    {
+        const std::lock_guard<std::mutex> lock(recentre_mutex_);
+        std::copy(pose, pose + 7, recentre_pose_);
+    }
+
+    // Arm the read-time correction before posting: the newest pre-reset sample
+    // reads recentred from this call's return, while the polling thread applies
+    // `ResetOriginCarina` on its next pass. The sequence store releases the
+    // offset stored above. No reader call is needed and the poll loop is not
+    // stalled.
+    yaw_offset_deg_.store(-YawDegrees(target.pose), std::memory_order_relaxed);
+    recentre_until_seq_.store(target.seq, std::memory_order_release);
+    recentre_requested_.store(true, std::memory_order_release);
+    return Ok();
 }
 
 std::optional<double> VitureHeadPoseSource::LastSdkSeconds() const noexcept {
@@ -165,11 +174,6 @@ bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
             out.time = newest.time + capped_ns;
         }
     }
-
-    if (recentre_hold_.load(std::memory_order_acquire)) {
-        // A recentre is waiting for a reader to observe the corrected sample.
-        recentre_hold_.store(false, std::memory_order_release);
-    }
     return true;
 }
 
@@ -185,7 +189,7 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
         if (StopRequested(stop)) {
             break;
         }
-        ServiceRecentre(stop);
+        ServiceRecentre();
 
         const Result<cg_head_sample> polled = api_.PollPose();
         if (StopRequested(stop)) {
@@ -267,52 +271,52 @@ bool VitureHeadPoseSource::StopRequested(const std::stop_token &stop) const noex
     return stop.stop_requested() || stop_requested_.load(std::memory_order_relaxed);
 }
 
-void VitureHeadPoseSource::ServiceRecentre(std::stop_token stop) noexcept {
+void VitureHeadPoseSource::ServiceRecentre() noexcept {
     if (!recentre_requested_.exchange(false, std::memory_order_acq_rel)) {
         return;
     }
-    HandleRecentre();
-    WaitForRecentreRead(stop);
-}
-
-void VitureHeadPoseSource::HandleRecentre() noexcept {
-    Result<void> result = Err<void>(Status{StatusCode::NotReady, "viture: no pose to recentre"});
-    if (last_published_.has_value() && device_alive_.load(std::memory_order_acquire)) {
-        const HeadSample &newest = *last_published_;
-        const float pose[7] = {
-            static_cast<float>(newest.pose.position.x),   static_cast<float>(newest.pose.position.y),
-            static_cast<float>(newest.pose.position.z),   static_cast<float>(newest.pose.rotation.w()),
-            static_cast<float>(newest.pose.rotation.x()), static_cast<float>(newest.pose.rotation.y()),
-            static_cast<float>(newest.pose.rotation.z())};
-        result = api_.ResetOriginCarina(pose);
-        if (result.ok()) {
-            const double yaw_deg = YawDegrees(newest.pose);
-            yaw_offset_deg_.store(-yaw_deg, std::memory_order_relaxed);
-            recentre_until_seq_.store(newest.seq, std::memory_order_release);
-            recentre_hold_.store(true, std::memory_order_release);
-            // Later quiet synthetics must carry the recentred pose, and the
-            // next real sample's rate is measured from the corrected heading.
-            last_published_->pose.rotation =
-                core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, -yaw_deg * kDegreesToRadians) *
-                last_published_->pose.rotation;
-            previous_yaw_deg_ = YawDegrees(last_published_->pose);
-            previous_pitch_deg_ = PitchDegrees(last_published_->pose);
-        }
-    }
+    float pose[7] = {};
     {
         const std::lock_guard<std::mutex> lock(recentre_mutex_);
-        recentre_result_ = result;
-        recentre_done_ = true;
-        recentre_cv_.notify_all();
+        std::copy(std::begin(recentre_pose_), std::end(recentre_pose_), pose);
     }
+    HandleRecentre(pose);
 }
 
-void VitureHeadPoseSource::WaitForRecentreRead(std::stop_token stop) noexcept {
-    const HostTime deadline = clock_.Now() + kRecentreReadTimeout.ns;
-    while (recentre_hold_.load(std::memory_order_acquire) && !StopRequested(stop) && clock_.Now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+void VitureHeadPoseSource::HandleRecentre(const float pose[7]) noexcept {
+    if (!last_published_.has_value() || !device_alive_.load(std::memory_order_acquire)) {
+        // The device died after the request was posted: there is no seam to
+        // call, and the correction the poster armed is withdrawn.
+        yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
+        recentre_until_seq_.store(0, std::memory_order_release);
+        return;
     }
-    recentre_hold_.store(false, std::memory_order_release);
+
+    const Result<void> result = api_.ResetOriginCarina(pose);
+    if (!result.ok()) {
+        // The SDK did not recentre: withdraw the poster's read-time correction
+        // and leave the stream in its pre-recentre frame.
+        yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
+        recentre_until_seq_.store(0, std::memory_order_release);
+        return;
+    }
+
+    // The SDK now produces samples relative to the origin captured by the
+    // poster. Re-derive the same inverse-yaw correction (idempotent with the
+    // poster's arm, but robust to interleaved requests) and extend it over
+    // every sample published before this pass: one may have been published
+    // between the post and the service pass. The sequence store releases the
+    // offset store.
+    const double yaw_deg = YawDegrees(core_math::PoseFromSdk(pose));
+    yaw_offset_deg_.store(-yaw_deg, std::memory_order_relaxed);
+    recentre_until_seq_.store(last_published_->seq, std::memory_order_release);
+    // Later quiet synthetics must carry the recentred pose, and the next real
+    // sample's rate is measured from the corrected heading.
+    last_published_->pose.rotation =
+        core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, -yaw_deg * kDegreesToRadians) *
+        last_published_->pose.rotation;
+    previous_yaw_deg_ = YawDegrees(last_published_->pose);
+    previous_pitch_deg_ = PitchDegrees(last_published_->pose);
 }
 
 bool VitureHeadPoseSource::WaitBackoff(Duration duration, std::stop_token stop) noexcept {
@@ -321,7 +325,7 @@ bool VitureHeadPoseSource::WaitBackoff(Duration duration, std::stop_token stop) 
         if (StopRequested(stop)) {
             return false;
         }
-        ServiceRecentre(stop);
+        ServiceRecentre();
         const HostTime now = clock_.Now();
         PublishQuiet(now);
         if (now >= deadline) {
