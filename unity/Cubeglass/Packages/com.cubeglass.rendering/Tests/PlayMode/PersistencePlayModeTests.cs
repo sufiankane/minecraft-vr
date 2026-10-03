@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Cubeglass.CoreMath;
@@ -76,7 +77,8 @@ namespace Cubeglass.Unity.Rendering.Tests
                         Directory.Delete(directory, true);
                     }
                 }
-                catch (IOException)
+                catch (Exception exception) when (
+                    exception is IOException || exception is UnauthorizedAccessException)
                 {
                     // A leftover unique test world never affects other tests.
                 }
@@ -291,13 +293,215 @@ namespace Cubeglass.Unity.Rendering.Tests
                 slowestFrameMs);
 
             float deadline = Time.realtimeSinceStartup + 5f;
-            while (!store.HasSavedChunk(coord) && Time.realtimeSinceStartup < deadline)
+            while (store.SuccessfulWrites == 0 && Time.realtimeSinceStartup < deadline)
             {
                 yield return null;
             }
 
-            Assert.IsTrue(store.HasSavedChunk(coord), "the delayed background write eventually lands");
+            Assert.AreEqual(1, store.SuccessfulWrites, "the delayed background write eventually lands");
+            Assert.IsTrue(store.HasSavedChunk(coord), "the delayed background write created the file");
+        }
+
+        [UnityTest]
+        public IEnumerator EditsSurviveAcrossSessions()
+        {
+            var coord = new ChunkCoord(0, 0, 0);
+            var cellA = new Int3(1, 2, 3);
+            var cellB = new Int3(4, 5, 6);
+            var wood = new BlockId(5);
+            var sand = new BlockId(4);
+
+            // Session 1: place A and flush it to disk.
+            var saves1 = CreateSaveBatches();
+            var manager1 = NewManager(saves1);
+            manager1.OnLoad(coord);
+            TrackedEditOn(manager1.World, saves1, cellA, wood);
+            Assert.AreEqual(1, saves1.Flush());
+
+            // Session 2: boot from the store, see A, place B, flush.
+            var saves2 = CreateSaveBatches();
+            var manager2 = NewManager(saves2);
+            manager2.OnLoad(coord);
+            Assert.AreEqual(wood, manager2.World.Get(cellA), "session 2 must boot the stored edit");
+            Assert.AreEqual(1, manager2.DeltasLoaded, "session 2 loaded the stored delta");
+            TrackedEditOn(manager2.World, saves2, cellB, sand);
+            Assert.AreEqual(1, saves2.Flush());
+
+            // Session 3: both sessions' cells must persist.
+            var saves3 = CreateSaveBatches();
+            var manager3 = NewManager(saves3);
+            manager3.OnLoad(coord);
+            Assert.AreEqual(wood, manager3.World.Get(cellA), "the earlier session's edit was overwritten by the new flush");
+            Assert.AreEqual(sand, manager3.World.Get(cellB));
+
+            ChunkDelta delta = null;
+            yield return LoadDelta(coord, value => delta = value);
+            Assert.IsNotNull(delta);
+            Assert.AreEqual(wood, delta.Edits[cellA]);
+            Assert.AreEqual(sand, delta.Edits[cellB]);
+        }
+
+        [UnityTest]
+        public IEnumerator FlushWaitsForEveryChunkWhenCoalescingReordersTheQueue()
+        {
+            store.WriteDelay = TimeSpan.FromMilliseconds(150);
+            store.WriteGate = new ManualResetEventSlim(false);
+
+            var a = new ChunkCoord(0, 0, 0);
+            var b = new ChunkCoord(1, 0, 0);
+            store.SaveAsync(a, DeltaFor(a, new Int3(0, 0, 0), new BlockId(1)), CancellationToken.None);
+            store.SaveAsync(b, DeltaFor(b, new Int3(0, 0, 0), new BlockId(2)), CancellationToken.None);
+
+            // Coalesce A to a newer payload while both are still queued: the
+            // queue is [A(newer), B(older)]. A version-based drain completes
+            // after A and leaves B unwritten; outstanding-write accounting must
+            // wait for both.
+            store.SaveAsync(a, DeltaFor(a, new Int3(0, 0, 0), new BlockId(3)), CancellationToken.None);
+
+            Task flush = store.FlushAsync();
+            Assert.IsFalse(flush.IsCompleted, "the flush must wait for the queued chunks");
+            Assert.GreaterOrEqual(store.QueuedWrites, 2, "both chunks are outstanding");
+
+            store.WriteGate.Set();
+            Assert.IsTrue(flush.Wait(TimeSpan.FromSeconds(10)), "the flush must complete");
+            Assert.IsTrue(File.Exists(store.ChunkPath(a)), "A must exist when the flush completes");
+            Assert.IsTrue(
+                File.Exists(store.ChunkPath(b)),
+                "B must exist when the flush completes; a max-version drain returns before this");
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator QueuedWritesIncludesTheInFlightWrite()
+        {
+            store.WriteDelay = TimeSpan.FromMilliseconds(200);
+            var a = new ChunkCoord(0, 0, 0);
+            store.SaveAsync(a, DeltaFor(a, new Int3(0, 0, 0), new BlockId(1)), CancellationToken.None);
+
+            float deadline = Time.realtimeSinceStartup + 3f;
+            while (store.InFlightWrites == 0 && Time.realtimeSinceStartup < deadline)
+            {
+                yield return null;
+            }
+
+            Assert.AreEqual(1, store.InFlightWrites, "the pump dequeued the write");
+            Assert.GreaterOrEqual(store.QueuedWrites, 1, "QueuedWrites must include the write being performed");
+
+            yield return AwaitTask(store.FlushAsync());
             Assert.AreEqual(1, store.SuccessfulWrites);
+        }
+
+        [UnityTest]
+        public IEnumerator UnflushedEditsSurviveUnloadAndRegeneration()
+        {
+            var saves = CreateSaveBatches();
+            var manager = NewManager(saves);
+            var coord = new ChunkCoord(0, 0, 0);
+            manager.OnLoad(coord);
+            Chunk first = manager.World.TryGetChunk(coord);
+
+            var cell = new Int3(2, 3, 4);
+            TrackedEditOn(manager.World, saves, cell, new BlockId(5));
+            Assert.AreEqual(new BlockId(5), manager.World.Get(cell));
+            Assert.AreEqual(0, store.SuccessfulWrites);
+
+            manager.OnUnload(coord);
+            yield return null;
+            manager.OnLoad(coord);
+
+            Chunk second = manager.World.TryGetChunk(coord);
+            Assert.IsFalse(ReferenceEquals(first, second), "the chunk must have been regenerated");
+            Assert.AreEqual(new BlockId(5), manager.World.Get(cell), "unflushed edits must survive a regeneration");
+            Assert.AreEqual(0, store.SuccessfulWrites, "nothing was flushed");
+            Assert.AreEqual(1, manager.LiveDeltasReapplied);
+        }
+
+        [UnityTest]
+        public IEnumerator BootLoadAppliesStoredDeltaAtWorldCells()
+        {
+            var coord = new ChunkCoord(2, 0, -1);
+            var local = new Int3(3, 4, 5);
+            var block = new BlockId(4);
+            store.SaveAsync(coord, DeltaFor(coord, local, block), CancellationToken.None);
+            yield return AwaitTask(store.FlushAsync());
+
+            var saves = CreateSaveBatches();
+            var manager = NewManager(saves);
+            manager.OnLoad(coord);
+
+            Int3 worldCell = ChunkMath.ToWorld(coord, local);
+            Assert.AreEqual(new Int3(35, 4, -11), worldCell, "fixture assumption: a local cell distinct from its world cell");
+            Assert.AreEqual(block, manager.World.Get(worldCell), "the stored delta must be applied at world coordinates");
+            Assert.AreEqual(1, manager.DeltasLoaded);
+            Assert.AreEqual(1, manager.DeltaEditsApplied, "a wrong chunk->world mapping would apply zero edits");
+        }
+
+        [UnityTest]
+        public IEnumerator DisposeCompletesPendingFlushWaiters()
+        {
+            store.WriteDelay = TimeSpan.FromSeconds(1);
+            store.DisposeTimeout = TimeSpan.FromMilliseconds(100);
+            var a = new ChunkCoord(0, 0, 0);
+            store.SaveAsync(a, DeltaFor(a, new Int3(0, 0, 0), new BlockId(1)), CancellationToken.None);
+
+            float deadline = Time.realtimeSinceStartup + 3f;
+            while (store.InFlightWrites == 0 && Time.realtimeSinceStartup < deadline)
+            {
+                yield return null;
+            }
+
+            Task flush = store.FlushAsync();
+            Assert.IsFalse(flush.IsCompleted, "the flush is waiting for the slow write");
+
+            store.Dispose();
+
+            Assert.IsTrue(flush.IsCompleted, "Dispose must complete pending flush waiters on timeout");
+        }
+
+        [UnityTest]
+        public IEnumerator EditObserverOverflowIsLoud()
+        {
+            var bridgeObject = new GameObject("OverflowBridge");
+            bridgeObject.transform.SetParent(root.transform, false);
+            var overflowBridge = bridgeObject.AddComponent<GameplayBridge>();
+
+            FieldInfo observerField = typeof(GameplayBridge).GetField(
+                "editObserver", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(observerField, "GameplayBridge.editObserver must exist");
+            object observer = observerField.GetValue(overflowBridge);
+            Type observerType = observer.GetType();
+
+            // Prove the observer records the drop rather than silently losing it.
+            var probeWorld = new World();
+            probeWorld.LoadChunk(new TerrainGenerator().Generate(new ChunkCoord(0, 0, 0), Seed));
+            object probe = Activator.CreateInstance(observerType, true);
+            observerType.GetField("Inner", BindingFlags.Instance | BindingFlags.Public)
+                .SetValue(probe, probeWorld);
+            MethodInfo apply = observerType.GetMethod("Apply");
+            for (int i = 0; i < 3; i++)
+            {
+                var cell = new Int3(i, 0, 0);
+                object command = Activator.CreateInstance(
+                    typeof(EditCommand),
+                    new object[] { cell, probeWorld.Get(cell), new BlockId(5), 0L });
+                apply.Invoke(probe, new[] { command });
+            }
+
+            Assert.AreEqual(2, observerType.GetProperty("RecordedCount").GetValue(probe), "two edits fit the buffer");
+            Assert.AreEqual(true, observerType.GetProperty("Overflowed").GetValue(probe));
+            Assert.AreEqual(1, observerType.GetProperty("DroppedEdits").GetValue(probe));
+
+            // And the bridge dispatch logs loudly instead of dropping silently.
+            observerType.GetField("overflowed", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(observer, true);
+            observerType.GetField("droppedEdits", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(observer, 1);
+            LogAssert.Expect(LogType.Error, new Regex("dropped 1 applied edit"));
+            MethodInfo dispatch = typeof(GameplayBridge).GetMethod(
+                "DispatchAppliedEdits", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(dispatch, "GameplayBridge.DispatchAppliedEdits must exist");
+            dispatch.Invoke(overflowBridge, null);
+            yield return null;
         }
 
         private IEnumerator BuildStreamedBridge(long seed)
@@ -365,9 +569,10 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             CreateSaveBatches();
             bridge.SaveBatches = saves;
+            runtime.AppliedEdits = saves;
         }
 
-        private void CreateSaveBatches()
+        private SaveBatches CreateSaveBatches()
         {
             var savesObject = new GameObject("SaveBatches");
             savesObject.transform.SetParent(root.transform, false);
@@ -375,13 +580,47 @@ namespace Cubeglass.Unity.Rendering.Tests
             saves.Store = store;
             saves.EditsPerFlush = SaveBatches.DefaultEditsPerFlush;
             saves.FlushIntervalSeconds = 600f;
+            return saves;
+        }
+
+        private ChunkViewManager NewManager(SaveBatches sink)
+        {
+            var managerObject = new GameObject("PersistenceManager");
+            managerObject.transform.SetParent(root.transform, false);
+            var manager = managerObject.AddComponent<ChunkViewManager>();
+            manager.Store = store;
+            manager.AppliedEdits = sink;
+            manager.Initialize(new StreamingConfig(), Seed, 64);
+            return manager;
         }
 
         private void TrackedEdit(Int3 cell, BlockId block)
         {
-            EditResult result = world.Apply(new EditCommand(cell, world.Get(cell), block, 0L));
+            TrackedEditOn(world, saves, cell, block);
+        }
+
+        private static void TrackedEditOn(World target, SaveBatches sink, Int3 cell, BlockId block)
+        {
+            EditResult result = target.Apply(new EditCommand(cell, target.Get(cell), block, 0L));
             Assert.AreEqual(EditResult.Applied, result, "fixture edit at {0} was rejected", cell);
-            saves.TrackEdit(cell, block);
+            sink.TrackEdit(cell, block);
+        }
+
+        private static ChunkDelta DeltaFor(ChunkCoord coord, Int3 local, BlockId block)
+        {
+            return new ChunkDelta(
+                coord,
+                new Dictionary<Int3, BlockId> { { local, block } });
+        }
+
+        private static IEnumerator AwaitTask(Task task)
+        {
+            while (!task.IsCompleted)
+            {
+                yield return null;
+            }
+
+            Assert.IsFalse(task.IsFaulted, "task faulted: {0}", task.Exception);
         }
 
         private IEnumerator FlushAll()

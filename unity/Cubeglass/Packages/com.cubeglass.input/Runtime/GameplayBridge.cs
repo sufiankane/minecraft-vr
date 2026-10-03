@@ -494,6 +494,14 @@ namespace Cubeglass.Unity.Input
 
         private void DispatchAppliedEdits()
         {
+            if (editObserver.Overflowed)
+            {
+                Debug.LogError(
+                    "[GameplayBridge] the edit observer dropped " + editObserver.DroppedEdits
+                        + " applied edit(s) in one tick; persistence may miss them. "
+                        + "Grow EditObserver's buffer if the interaction service can exceed two edits per tick.");
+            }
+
             int count = editObserver.RecordedCount;
             for (int i = 0; i < count; i++)
             {
@@ -546,6 +554,8 @@ namespace Cubeglass.Unity.Input
             public void Reset()
             {
                 AppliedCount = 0;
+                overflowed = false;
+                droppedEdits = 0;
             }
 
             public BlockId Get(Int3 cell)
@@ -568,6 +578,11 @@ namespace Cubeglass.Unity.Input
                         cells[AppliedCount] = cmd.Cell;
                         blocks[AppliedCount] = cmd.New;
                     }
+                    else
+                    {
+                        overflowed = true;
+                        droppedEdits++;
+                    }
 
                     AppliedCount++;
                 }
@@ -579,6 +594,19 @@ namespace Cubeglass.Unity.Input
             {
                 cell = cells[index];
                 block = blocks[index];
+            }
+
+            private bool overflowed;
+            private int droppedEdits;
+
+            public bool Overflowed
+            {
+                get { return overflowed; }
+            }
+
+            public int DroppedEdits
+            {
+                get { return droppedEdits; }
             }
         }
     }

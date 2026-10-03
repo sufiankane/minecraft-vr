@@ -39,9 +39,18 @@ namespace Cubeglass.Unity.Rendering
     /// <see cref="ChunkDelta"/>-sized dictionary per edited chunk, which is the
     /// same order as the world edits themselves.
     /// </para>
+    /// <para>
+    /// <b>Loaded deltas.</b> As an <see cref="IAppliedEditCache"/>, the
+    /// component also seeds that map with deltas a manager loaded from disk or
+    /// re-applies after an unload/reload (see
+    /// <see cref="TrackLoadedDelta"/> and
+    /// <see cref="TryGetAccumulatedDelta"/>), so a later flush merges the
+    /// session's edits with the persisted ones instead of replacing them, and
+    /// in-session regeneration keeps edits that have not been flushed yet.
+    /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
-    public sealed class SaveBatches : MonoBehaviour
+    public sealed class SaveBatches : MonoBehaviour, IAppliedEditCache
     {
         /// <summary>Default edits accumulated per chunk before a flush.</summary>
         public const int DefaultEditsPerFlush = 32;
@@ -55,6 +64,8 @@ namespace Cubeglass.Unity.Rendering
         [SerializeField] private int editsPerFlush = DefaultEditsPerFlush;
         [SerializeField] private float flushIntervalSeconds = DefaultFlushIntervalSeconds;
         [SerializeField] private int flushWaitMilliseconds = DefaultFlushWaitMilliseconds;
+
+        private static readonly Func<double> DefaultClockDelegate = DefaultClock;
 
         private readonly Dictionary<ChunkCoord, PendingChunk> pending =
             new Dictionary<ChunkCoord, PendingChunk>();
@@ -99,7 +110,7 @@ namespace Cubeglass.Unity.Rendering
         /// </summary>
         public Func<double> Clock
         {
-            get { return clock != null ? clock : new Func<double>(DefaultClock); }
+            get { return clock != null ? clock : DefaultClockDelegate; }
             set { clock = value; }
         }
 
@@ -132,13 +143,7 @@ namespace Cubeglass.Unity.Rendering
         {
             ChunkCoord coord = ChunkMath.ToChunk(cell);
             Int3 local = ChunkMath.ToLocal(cell);
-
-            PendingChunk state;
-            if (!pending.TryGetValue(coord, out state))
-            {
-                state = new PendingChunk();
-                pending.Add(coord, state);
-            }
+            PendingChunk state = GetOrCreate(coord);
 
             BlockId existing;
             if (state.Edits.TryGetValue(local, out existing) && existing == block)
@@ -159,6 +164,50 @@ namespace Cubeglass.Unity.Rendering
             {
                 FlushChunk(coord, state);
             }
+        }
+
+        /// <summary>
+        /// Seeds the accumulated map for <paramref name="coord"/> with the cells
+        /// of a delta loaded from the store, without counting them as unsaved
+        /// edits (they are already on disk) and without overwriting cells this
+        /// session has edited (those are newer). This is what lets a later flush
+        /// write the session's cells plus the persisted ones instead of
+        /// replacing the file with only the current session.
+        /// </summary>
+        public void TrackLoadedDelta(ChunkCoord coord, ChunkDelta delta)
+        {
+            if (delta == null || delta.Edits.Count == 0)
+            {
+                return;
+            }
+
+            PendingChunk state = GetOrCreate(coord);
+            foreach (KeyValuePair<Int3, BlockId> edit in delta.Edits)
+            {
+                if (!state.Edits.ContainsKey(edit.Key))
+                {
+                    state.Edits.Add(edit.Key, edit.Value);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Returns the chunk's complete in-memory edit map, including loaded
+        /// cells and edits not yet flushed. A manager re-applies it after
+        /// regenerating a chunk so an unload/reload cannot revert edits whose
+        /// file has not been written yet.
+        /// </summary>
+        public bool TryGetAccumulatedDelta(ChunkCoord coord, out ChunkDelta delta)
+        {
+            PendingChunk state;
+            if (pending.TryGetValue(coord, out state) && state.Edits.Count > 0)
+            {
+                delta = new ChunkDelta(coord, state.Edits);
+                return true;
+            }
+
+            delta = null;
+            return false;
         }
 
         /// <summary>
@@ -282,6 +331,18 @@ namespace Cubeglass.Unity.Rendering
                     "[SaveBatches] could not queue the delta for chunk (" + coord.X + ", "
                         + coord.Y + ", " + coord.Z + "): " + exception.Message);
             }
+        }
+
+        private PendingChunk GetOrCreate(ChunkCoord coord)
+        {
+            PendingChunk state;
+            if (!pending.TryGetValue(coord, out state))
+            {
+                state = new PendingChunk();
+                pending.Add(coord, state);
+            }
+
+            return state;
         }
 
         private static double DefaultClock()

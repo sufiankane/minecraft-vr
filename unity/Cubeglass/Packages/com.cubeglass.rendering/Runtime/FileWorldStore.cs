@@ -43,11 +43,15 @@ namespace Cubeglass.Unity.Rendering
     /// returns null, so the caller falls back to the generated baseline.
     /// </para>
     /// <para>
-    /// <b>Lifecycle.</b> <see cref="FlushAsync"/> completes when every write
-    /// enqueued up to the call has finished (failed writes count as finished);
-    /// <see cref="WaitForPendingWrites"/> is the bounded synchronous form used
-    /// by the quit path. <see cref="Dispose"/> stops the pump after draining
-    /// what is already queued; a store must not be used after disposal.
+    /// <b>Lifecycle.</b> <see cref="FlushAsync"/> completes when no queued or
+    /// in-flight write remains (failed writes count as finished), regardless of
+    /// payload versions, so a coalesced save can never satisfy a flush while an
+    /// older chunk file is still missing. <see cref="WaitForPendingWrites"/> is
+    /// the bounded synchronous form used by the quit path, where
+    /// <see cref="QueuedWrites"/> reports the writes that may be lost on
+    /// timeout. <see cref="Dispose"/> stops the pump after draining what is
+    /// already queued and force-completes any flush waiter if the pump cannot
+    /// finish within five seconds; a store must not be used after disposal.
     /// </para>
     /// </remarks>
     public sealed class FileWorldStore : IWorldStore, IDisposable
@@ -64,12 +68,12 @@ namespace Cubeglass.Unity.Rendering
         private readonly object gate = new object();
         private readonly Dictionary<ChunkCoord, PendingWrite> pending = new Dictionary<ChunkCoord, PendingWrite>();
         private readonly Queue<ChunkCoord> queue = new Queue<ChunkCoord>();
-        private readonly List<DrainWaiter> drainWaiters = new List<DrainWaiter>();
+        private readonly List<TaskCompletionSource<bool>> drainWaiters = new List<TaskCompletionSource<bool>>();
         private readonly SemaphoreSlim signal = new SemaphoreSlim(0);
         private readonly Task pump;
 
-        private long enqueued;
-        private long completed;
+        private long outstandingWrites;
+        private int inFlightWrites;
         private long successfulWrites;
         private long failedWrites;
         private long rejectedLoads;
@@ -99,6 +103,8 @@ namespace Cubeglass.Unity.Rendering
             WorldName = ValidateWorldName(worldName);
             WorldDirectory = Path.Combine(rootDirectory, WorldName);
             Directory.CreateDirectory(WorldDirectory);
+            WriteDelay = TimeSpan.Zero;
+            DisposeTimeout = TimeSpan.FromSeconds(5);
             pump = Task.Run(new Func<Task>(PumpAsync));
         }
 
@@ -141,16 +147,21 @@ namespace Cubeglass.Unity.Rendering
             get { return Interlocked.Read(ref failedLoads); }
         }
 
-        /// <summary>Payloads queued but not yet written; a coalesced save counts once.</summary>
+        /// <summary>
+        /// Writes not yet finished: one per queued payload plus the payload
+        /// currently being written. A coalesced save (same chunk queued again
+        /// before it starts) counts once, and a save of a chunk whose previous
+        /// payload is in flight counts as one more.
+        /// </summary>
         public int QueuedWrites
         {
-            get
-            {
-                lock (gate)
-                {
-                    return queue.Count;
-                }
-            }
+            get { return (int)Volatile.Read(ref outstandingWrites); }
+        }
+
+        /// <summary>Writes dequeued and currently being performed (0 or 1).</summary>
+        public int InFlightWrites
+        {
+            get { return Volatile.Read(ref inFlightWrites); }
         }
 
         /// <summary>
@@ -159,6 +170,20 @@ namespace Cubeglass.Unity.Rendering
         /// asynchronous write window observable.
         /// </summary>
         public TimeSpan WriteDelay { get; set; }
+
+        /// <summary>
+        /// Test/diagnostic hook: when set, the writer pump waits on this gate
+        /// before draining the queue. Default null (no gate). <see cref="Dispose"/>
+        /// releases the gate so a stuck pump cannot outlive the store.
+        /// </summary>
+        public ManualResetEventSlim WriteGate { get; set; }
+
+        /// <summary>
+        /// How long <see cref="Dispose"/> waits for the pump to drain before it
+        /// abandons it and completes any pending <see cref="FlushAsync"/>
+        /// waiters. Default five seconds; tests shrink it.
+        /// </summary>
+        public TimeSpan DisposeTimeout { get; set; }
 
         /// <summary>The path of the delta file for <paramref name="coord"/>.</summary>
         public string ChunkPath(ChunkCoord coord)
@@ -249,19 +274,22 @@ namespace Cubeglass.Unity.Rendering
         }
 
         /// <summary>
-        /// Completes when every write enqueued up to this call has finished
-        /// (successfully or not). Safe to await from any thread.
+        /// Completes when every queued and in-flight write has finished
+        /// (successfully or not). Coalescing cannot make this return early:
+        /// waiters are released only when <see cref="QueuedWrites"/> reaches
+        /// zero, never when a particular payload version has been written.
+        /// Safe to await from any thread.
         /// </summary>
         public Task FlushAsync()
         {
             lock (gate)
             {
-                if (completed >= enqueued)
+                if (outstandingWrites == 0)
                 {
                     return Task.CompletedTask;
                 }
 
-                var waiter = new DrainWaiter(enqueued);
+                var waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 drainWaiters.Add(waiter);
                 return waiter.Task;
             }
@@ -287,7 +315,9 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>
         /// Stops the pump after it has drained the writes already queued.
-        /// Best-effort: a pump still blocked on IO is abandoned.
+        /// Best-effort: if the pump is still stuck after five seconds it is
+        /// abandoned and any pending <see cref="FlushAsync"/> waiters are
+        /// completed so callers cannot hang on a store that is going away.
         /// </summary>
         public void Dispose()
         {
@@ -301,16 +331,24 @@ namespace Cubeglass.Unity.Rendering
                 disposed = true;
             }
 
+            ManualResetEventSlim writeGate = WriteGate;
+            if (writeGate != null)
+            {
+                writeGate.Set();
+            }
+
             signal.Release();
             try
             {
-                pump.Wait(TimeSpan.FromSeconds(5));
+                pump.Wait(DisposeTimeout);
             }
             catch (AggregateException)
             {
                 // The pump catches its own IO failures; a fault here is a bug
                 // best surfaced by the failed-write counters, not by Dispose.
             }
+
+            CompleteAllWaiters();
         }
 
         private void Enqueue(ChunkCoord coord, byte[] bytes)
@@ -322,18 +360,18 @@ namespace Cubeglass.Unity.Rendering
                     throw new ObjectDisposedException(nameof(FileWorldStore));
                 }
 
-                long version = ++enqueued;
                 PendingWrite existing;
                 if (pending.TryGetValue(coord, out existing))
                 {
-                    // Last write wins while the older payload is still queued.
+                    // Last write wins while the older payload is still queued;
+                    // the queue slot and the outstanding count are unchanged.
                     existing.Bytes = bytes;
-                    existing.Version = version;
                 }
                 else
                 {
-                    pending.Add(coord, new PendingWrite(bytes, version));
+                    pending.Add(coord, new PendingWrite(bytes));
                     queue.Enqueue(coord);
+                    outstandingWrites++;
                 }
             }
 
@@ -345,6 +383,12 @@ namespace Cubeglass.Unity.Rendering
             while (true)
             {
                 await signal.WaitAsync().ConfigureAwait(false);
+                ManualResetEventSlim writeGate = WriteGate;
+                if (writeGate != null)
+                {
+                    writeGate.Wait();
+                }
+
                 try
                 {
                     WriteQueued();
@@ -383,6 +427,7 @@ namespace Cubeglass.Unity.Rendering
                     coord = queue.Dequeue();
                     write = pending[coord];
                     pending.Remove(coord);
+                    inFlightWrites++;
                 }
 
                 WriteOne(coord, write);
@@ -407,10 +452,15 @@ namespace Cubeglass.Unity.Rendering
                     {
                         File.Replace(temp, path, null);
                     }
-                    catch (FileNotFoundException)
+                    catch (Exception exception) when (
+                        exception is FileNotFoundException
+                        || exception is IOException
+                        || exception is PlatformNotSupportedException)
                     {
-                        // The destination vanished between the check and the
-                        // replace; a plain move is still atomic enough here.
+                        // File.Replace can fail on file systems without replace
+                        // support or because the destination vanished; delete
+                        // the old file and move the complete temp into place.
+                        File.Delete(path);
                         File.Move(temp, path);
                     }
                 }
@@ -431,49 +481,55 @@ namespace Cubeglass.Unity.Rendering
             }
             finally
             {
-                FinishWrite(write.Version);
+                FinishWrite();
             }
         }
 
-        private void FinishWrite(long version)
+        private void FinishWrite()
         {
-            DrainWaiter[] ready;
+            TaskCompletionSource<bool>[] ready = null;
             lock (gate)
             {
-                if (version > completed)
+                inFlightWrites--;
+                outstandingWrites--;
+                if (outstandingWrites < 0)
                 {
-                    completed = version;
+                    outstandingWrites = 0;
                 }
 
-                int count = 0;
-                for (int i = 0; i < drainWaiters.Count; i++)
+                if (outstandingWrites == 0 && drainWaiters.Count > 0)
                 {
-                    if (drainWaiters[i].Target <= completed)
-                    {
-                        count++;
-                    }
+                    ready = drainWaiters.ToArray();
+                    drainWaiters.Clear();
                 }
+            }
 
-                if (count == 0)
+            if (ready != null)
+            {
+                for (int i = 0; i < ready.Length; i++)
+                {
+                    ready[i].TrySetResult(true);
+                }
+            }
+        }
+
+        private void CompleteAllWaiters()
+        {
+            TaskCompletionSource<bool>[] ready;
+            lock (gate)
+            {
+                if (drainWaiters.Count == 0)
                 {
                     return;
                 }
 
-                ready = new DrainWaiter[count];
-                int index = 0;
-                for (int i = drainWaiters.Count - 1; i >= 0; i--)
-                {
-                    if (drainWaiters[i].Target <= completed)
-                    {
-                        ready[index++] = drainWaiters[i];
-                        drainWaiters.RemoveAt(i);
-                    }
-                }
+                ready = drainWaiters.ToArray();
+                drainWaiters.Clear();
             }
 
             for (int i = 0; i < ready.Length; i++)
             {
-                ready[i].Complete();
+                ready[i].TrySetResult(true);
             }
         }
 
@@ -514,38 +570,12 @@ namespace Cubeglass.Unity.Rendering
 
         private sealed class PendingWrite
         {
-            public PendingWrite(byte[] bytes, long version)
+            public PendingWrite(byte[] bytes)
             {
                 Bytes = bytes;
-                Version = version;
             }
 
             public byte[] Bytes { get; set; }
-
-            public long Version { get; set; }
-        }
-
-        private sealed class DrainWaiter
-        {
-            private readonly TaskCompletionSource<bool> source =
-                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            public DrainWaiter(long target)
-            {
-                Target = target;
-            }
-
-            public long Target { get; }
-
-            public Task Task
-            {
-                get { return source.Task; }
-            }
-
-            public void Complete()
-            {
-                source.TrySetResult(true);
-            }
         }
     }
 }
