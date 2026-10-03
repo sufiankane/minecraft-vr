@@ -290,6 +290,26 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(first + 0, indices[firstIndex + 3]);
             Assert.AreEqual(first + 2, indices[firstIndex + 4]);
             Assert.AreEqual(first + 3, indices[firstIndex + 5]);
+
+            int sideVertex = -1;
+            for (int i = 0; i < normals.Count; i++)
+            {
+                if (normals[i] == Vector3.right)
+                {
+                    sideVertex = i;
+                    break;
+                }
+            }
+
+            Assert.GreaterOrEqual(sideVertex, 0, "the uploaded mesh has no +X-facing vertex");
+            int sideFirst = sideVertex - (sideVertex % 4);
+            Vector3 sideCross = Vector3.Cross(
+                vertices[sideFirst + 1] - vertices[sideFirst],
+                vertices[sideFirst + 2] - vertices[sideFirst]);
+            Assert.Greater(
+                Vector3.Dot(sideCross.normalized, Vector3.right),
+                0.9999f,
+                "the +X side quad does not wind outward in Unity (cross product does not match its +X normal)");
         }
 
         private static StreamingConfig SmallConfig(int uploadBudget)

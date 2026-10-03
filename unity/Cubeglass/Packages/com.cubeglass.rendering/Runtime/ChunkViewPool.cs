@@ -18,13 +18,22 @@ namespace Cubeglass.Unity.Rendering
     /// </remarks>
     public sealed class ChunkView
     {
-        internal ChunkView(GameObject gameObject, MeshFilter filter, MeshRenderer renderer, UnityEngine.Mesh mesh)
+        internal ChunkView(
+            ChunkViewPool owner,
+            GameObject gameObject,
+            MeshFilter filter,
+            MeshRenderer renderer,
+            UnityEngine.Mesh mesh)
         {
+            Owner = owner;
             GameObject = gameObject;
             Filter = filter;
             Renderer = renderer;
             Mesh = mesh;
         }
+
+        /// <summary>The pool that created (and only may release) this view.</summary>
+        internal ChunkViewPool Owner { get; }
 
         /// <summary>The view GameObject (parented under the pool's parent).</summary>
         public GameObject GameObject { get; }
@@ -75,9 +84,10 @@ namespace Cubeglass.Unity.Rendering
     /// </para>
     /// <para>
     /// <see cref="Upload"/> takes ownership of the <see cref="MeshData"/> and
-    /// releases it exactly once, even when the mesh copy throws; the
-    /// <see cref="MeshDataBuilds"/> / <see cref="MeshDataReleases"/> counters
-    /// pin that contract for tests.
+    /// releases it exactly once, including when the view is foreign or already
+    /// released; the <see cref="MeshDataBuilds"/> / <see cref="MeshDataReleases"/>
+    /// counters pin that contract for tests. Views are bound to their creating
+    /// pool, so only that pool can release them.
     /// </para>
     /// </remarks>
     public sealed class ChunkViewPool : IDisposable
@@ -200,15 +210,24 @@ namespace Cubeglass.Unity.Rendering
         }
 
         /// <summary>
-        /// Returns an active view to the pool and hides it.
+        /// Returns an active view to the pool and hides it. Only the pool that
+        /// created the view may release it.
         /// </summary>
         /// <exception cref="ArgumentNullException"><paramref name="view"/> is null.</exception>
-        /// <exception cref="InvalidOperationException">The view is not active (already released or foreign).</exception>
+        /// <exception cref="InvalidOperationException">
+        /// The view belongs to a different pool, or is not active (already
+        /// released).
+        /// </exception>
         public void Release(ChunkView view)
         {
             if (view == null)
             {
                 throw new ArgumentNullException(nameof(view));
+            }
+
+            if (!ReferenceEquals(view.Owner, this))
+            {
+                throw new InvalidOperationException("The chunk view belongs to a different pool and cannot be released here.");
             }
 
             if (!view.IsActive)
@@ -225,10 +244,12 @@ namespace Cubeglass.Unity.Rendering
         /// <summary>
         /// Copies <paramref name="meshData"/> into the view's mesh and releases
         /// the mesh data exactly once (see the type remarks for the winding
-        /// contract). The caller must not use the mesh data afterwards.
+        /// contract). The caller must not use the mesh data afterwards. The
+        /// mesh data is released on every path once ownership is taken,
+        /// including a foreign or already-released view.
         /// </summary>
         /// <exception cref="ArgumentNullException">Either argument is null.</exception>
-        /// <exception cref="InvalidOperationException">The view is not active.</exception>
+        /// <exception cref="InvalidOperationException">The view does not belong to this pool or is not active.</exception>
         public void Upload(ChunkView view, MeshData meshData)
         {
             if (view == null)
@@ -241,14 +262,19 @@ namespace Cubeglass.Unity.Rendering
                 throw new ArgumentNullException(nameof(meshData));
             }
 
-            if (!view.IsActive)
-            {
-                throw new InvalidOperationException("Cannot upload into a released chunk view.");
-            }
-
             meshDataBuilds++;
             try
             {
+                if (!ReferenceEquals(view.Owner, this))
+                {
+                    throw new InvalidOperationException("Cannot upload into a chunk view owned by a different pool.");
+                }
+
+                if (!view.IsActive)
+                {
+                    throw new InvalidOperationException("Cannot upload into a released chunk view.");
+                }
+
                 CopyToMesh(view.Mesh, meshData);
             }
             finally
@@ -290,7 +316,7 @@ namespace Cubeglass.Unity.Rendering
             filter.sharedMesh = mesh;
             renderer.sharedMaterial = material;
             gameObject.SetActive(false);
-            return new ChunkView(gameObject, filter, renderer, mesh);
+            return new ChunkView(this, gameObject, filter, renderer, mesh);
         }
 
         private void CopyToMesh(UnityEngine.Mesh mesh, MeshData data)
