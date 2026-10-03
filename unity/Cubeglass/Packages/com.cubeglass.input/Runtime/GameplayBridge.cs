@@ -42,6 +42,13 @@ namespace Cubeglass.Unity.Input
     /// </list>
     /// </para>
     /// <para>
+    /// <b>Execution order.</b> The class order is pinned to -100 so the game
+    /// scene's <see cref="StreamingRuntime"/> (-200) has already run its
+    /// streaming tick when the bridge resolves the world, and <see
+    /// cref="WorldUi"/> refreshes in <c>LateUpdate</c> after both. See
+    /// <see cref="StreamingRuntime"/> for the other end of the pair.
+    /// </para>
+    /// <para>
     /// <b>Live world.</b> <see cref="ChunkViewManager"/> replaces its world
     /// instance when it compacts (see
     /// <see cref="ChunkViewManager.WorldCompactions"/>), so <see cref="Tick"/>
@@ -62,6 +69,7 @@ namespace Cubeglass.Unity.Input
     /// records applied commands, so the pure Gameplay module needs no change.
     /// </para>
     /// </remarks>
+    [DefaultExecutionOrder(-100)]
     [DisallowMultipleComponent]
     public sealed class GameplayBridge : MonoBehaviour
     {
@@ -131,6 +139,17 @@ namespace Cubeglass.Unity.Input
         {
             get { return inputSource != null ? inputSource : inputProvider; }
             set { inputSource = value; }
+        }
+
+        /// <summary>
+        /// The serialized input provider sampled when no runtime
+        /// <see cref="InputSource"/> is injected; scene builders set this so
+        /// the committed scene carries the reference.
+        /// </summary>
+        public UnityInputProvider InputProvider
+        {
+            get { return inputProvider; }
+            set { inputProvider = value; }
         }
 
         /// <summary>
