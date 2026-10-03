@@ -18,9 +18,11 @@ apply.
 This ADR changes contracts, so the version bump is part of the decision
 (section 0): `contracts/cg_types.h` gains `cg_hand` and `cg_hand_frame` from
 5.6 and `CG_ABI_VERSION` rises from 1 to 2 (R42); `contracts/cg_unity_bridge.h`
-reproduces the 5.12 declarations verbatim. The shared-memory region keeps
-`abi_version = 1` because the command channel is an additive use of previously
-reserved header bytes (R43, detailed below).
+reproduces the 5.12 declarations verbatim. The shared-memory region's
+`abi_version` (the `ShmHeader` field at byte 8, distinct from `CG_ABI_VERSION`)
+also rises from 1 to 2: the hand slot payload grew from the pre-S6 shorthand to
+`cg_hand_frame`, so the region's payload shape is no longer the v1 shape and a
+mixed-version pair must be rejected (programme review 2026-10-03, I-2).
 
 Two dossier unknowns live here and are **not** answered by this ADR:
 **U-09** (is per-eye distortion correction needed, and what are the real FOV
@@ -178,11 +180,28 @@ ABI in CI.
 
 ### Shared-memory layout extension (R43)
 
-The region name stays `Local\cubeglass.v1.state` and `abi_version` stays 1.
+The region name stays `Local\cubeglass.v1.state`, but the region
+`abi_version` moves to **2**: the hand slot payload is `cg_hand_frame`, not the
+pre-S6 shorthand, so the v1 payload shape no longer describes this region.
 Bytes 32..39 of the 32-byte reserved window carry two `uint32_t` words: the
 command word at 32 and its ack at 36. A pre-existing reader never interprets
-the reserved window, so no reader can misparse the extension; no shm ABI bump
-is needed. The remaining reserved tail is bytes 40..63.
+the reserved window, so the command channel itself needs no ABI bump; the bump
+is driven solely by the hand payload growth.
+
+A mixed-version pair is detected through `abi_version`: `cg_bridge_open`
+rejects a header whose ABI is not `kShmAbiVersion` with `CG_ERR_UNSUPPORTED`
+and records a diagnostic naming the observed and expected versions (internal
+`cg::bridge::LastHeaderError()`), and the test-only writer refuses to open a
+region whose ABI is not the one it writes. A v1 reader opening a v2 region (and
+the reverse) therefore fails closed instead of reading `seq_b` from the wrong
+offset. The remaining reserved tail is bytes 40..63.
+
+Header publication is ordered: the writer stores every header field with
+relaxed stores and publishes `magic` **last** with a release store; the reader
+acquire-loads `magic` first and only then reads `abi_version`, `header_size`
+and the rest. The 50 ms open retry remains as belt-and-braces for a reader that
+opened before the writer's first store (or a writer that died mid-init), not as
+the synchronisation primitive (programme review 2026-10-03, I-3).
 
 The 5.6 offsets are unchanged, and the slot sizes are pinned relative to the
 payloads rather than to the table's shorthand byte counts:
@@ -215,14 +234,17 @@ while a new publish is in flight, ABA), so the reader additionally re-reads the
 monotonic `seq_a` and accepts only when it is unchanged.
 
 Staleness uses the same 250 ms heartbeat rule for both slots, exclusive at the
-boundary: `cg::bridge::is_stale(now, heartbeat)` is
-`now - heartbeat > kStaleAfterNs`, so exactly 250 ms is still fresh. A stale
-head read keeps the sample and forces `state = CG_TRACK_LOST`; a stale hand
-read has no per-hand tracking state, so it reports `CG_ERR_NOT_READY` and
-returns no frame — the hand equivalent of "lost", so stale joints can never
-reach a consumer. A reader with no valid sample (never published) also reports
-`CG_ERR_NOT_READY`. The writer updates the heartbeat at least every 100 ms
-(5.6).
+boundary: `cg::bridge::is_stale(now, heartbeat)` is an unsigned
+`now - heartbeat > kStaleAfterNs`, so exactly 250 ms is still fresh and a
+heartbeat ahead of the reader's clock (skew, or a writer on a second clock) is
+fresh no matter how far ahead; the unsigned comparison also keeps an extreme
+pair (`INT64_MIN`/`INT64_MAX`) from overflowing (programme review 2026-10-03,
+M-6). A stale head read keeps the sample and forces
+`state = CG_TRACK_LOST`; a stale hand read has no per-hand tracking state, so it
+reports `CG_ERR_NOT_READY` and returns no frame — the hand equivalent of
+"lost", so stale joints can never reach a consumer. A reader with no valid
+sample (never published) also reports `CG_ERR_NOT_READY`. The writer updates
+the heartbeat at least every 100 ms (5.6).
 
 `cg_bridge_open` validates the region before returning a handle:
 
@@ -232,13 +254,16 @@ reach a consumer. A reader with no valid sample (never published) also reports
   pagefile-backed section is page-granular, so Windows checks the mapped
   view's region size (`VirtualQuery`) and the guard is exact only to page
   granularity.
-- Header init race: a writer stores the magic, ABI and header size one by
-  one, so a reader that opens mid-initialisation would otherwise fail hard.
-  Open retries the header check for a bounded 50 ms window; a header that
-  completes inside the window is accepted. If the header is still invalid
-  after the window, a zero magic reports `CG_ERR_NOT_READY` (the region
-  exists but the writer has not initialised it), while any other invalid
-  header reports `CG_ERR_UNSUPPORTED` (a foreign or incompatible region).
+  - Header init race: the writer publishes `magic` last with a release store
+    and the reader acquire-loads `magic` before any other field, so a reader
+    that sees `kShmMagic` already sees a complete header (see the R43 section).
+    The bounded 50 ms open retry remains belt-and-braces for a reader that
+    opened before the writer's first store (or a writer that died mid-init); a
+    header that completes inside the window is accepted. If the header is still
+    invalid after the window, a zero magic reports `CG_ERR_NOT_READY` (the
+    region exists but the writer has not initialised it), while an ABI or
+    header-size mismatch reports `CG_ERR_UNSUPPORTED` with
+    `cg::bridge::LastHeaderError()` naming both versions.
 - Command encoding: `cg_bridge_send_command(h, cmd)` stores `cmd + 1` at
   header byte 32 because 0 is the reserved idle word; `cmd == 0` and
   `cmd == UINT32_MAX` (which would wrap to idle) are rejected with
@@ -260,10 +285,16 @@ bridge functions.
   reproducible; the Built-in RP keeps the dependency surface unchanged.
 - Good: a single conversion source removes a whole class of eye/axis bugs; the
   S1 golden fixtures cover it.
-- Good: the command channel and the hand ABI are additive, documented and
-  versioned, and layout drift fails at compile time.
-- Bad: `CG_ABI_VERSION` 2 means any stale C consumer must be rebuilt against
-  the new header; in this repository nothing consumes 5.12 before S6.
+  - Good: the command channel and the hand ABI are additive, documented and
+    versioned, and layout drift fails at compile time.
+  - Good: the region ABI moves to 2 with the hand payload, so a v1/v2 mixed
+    pair is rejected with `CG_ERR_UNSUPPORTED` instead of reading a v1 header's
+    bytes as a `cg_hand_frame`.
+  - Bad: `CG_ABI_VERSION` 2 means any stale C consumer must be rebuilt against
+    the new header; in this repository nothing consumes 5.12 before S6.
+  - Bad: a region left over from a v1 writer is rejected until the writer is
+    upgraded, so a partial deployment of hand service/readers fails closed
+    (intended; upgrade both sides together).
 - Bad: distortion is off until U-09 is answered, so the HIL checklist may
   reject the image and require a correction pass before the S6 tag.
 - Follow-up: U-09 (distortion/FOV) is answered by the S6 HIL run
@@ -272,19 +303,21 @@ bridge functions.
 
 ## Confirmation
 
-- `cpp/tests/bridge/layout_tests.cpp` pins every 5.6 offset, the command/ack
-  offsets, the payload sizes including compiler padding, the little-endian
-  `CGSHM001` bytes, `CG_ABI_VERSION == 2` and the exclusive 250 ms staleness
-  boundary through `cg::bridge::is_stale`; it is registered as the
-  `bridge_layout` ctest entry.
-- `contracts/cg_unity_bridge.h` is a verbatim copy of 5.12; Task 1b's reader
-  and Task 2's C# wrapper are tested against the test-only writer.
-- `cpp/tests/bridge/shm_reader_tests.cpp` covers the `UINT32_MAX` command
-  rejection, the stale-hand `CG_ERR_NOT_READY` rule and the init-race
-  outcomes (zero magic → `CG_ERR_NOT_READY`, incompatible header →
-  `CG_ERR_UNSUPPORTED`, a header that completes inside the window → `CG_OK`);
-  `shm_stress_tests.cpp` keeps a far-future heartbeat for the hand stress
-  because staleness now applies to both slots.
+  - `cpp/tests/bridge/layout_tests.cpp` pins every 5.6 offset, the command/ack
+    offsets, the payload sizes including compiler padding, the little-endian
+    `CGSHM001` bytes, `CG_ABI_VERSION == 2`, the region `kShmAbiVersion == 2`
+    and the exclusive 250 ms staleness boundary through `cg::bridge::is_stale`,
+    including the future-heartbeat/overflow cases; it is registered as the
+    `bridge_layout` ctest entry.
+  - `contracts/cg_unity_bridge.h` is a verbatim copy of 5.12; Task 1b's reader
+    and Task 2's C# wrapper are tested against the test-only writer.
+  - `cpp/tests/bridge/shm_reader_tests.cpp` covers the `UINT32_MAX` command
+    rejection, the stale-hand `CG_ERR_NOT_READY` rule, the legacy v1 ABI
+    rejection with a diagnostic naming both versions, the test writer's ABI
+    assertion, and the init-race outcomes (zero magic → `CG_ERR_NOT_READY`,
+    incompatible header → `CG_ERR_UNSUPPORTED`, a header that completes inside
+    the window → `CG_OK`); `shm_stress_tests.cpp` keeps a far-future heartbeat
+    for the hand stress because staleness now applies to both slots.
 - `python -m depcheck --root .` enforces the `bridge` layer's ONNX Runtime ban
   from `contracts/layers.json`.
 - The C# P/Invoke wrapper uses blittable, explicitly laid-out structs

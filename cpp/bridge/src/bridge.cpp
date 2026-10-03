@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <new>
 #include <thread>
@@ -57,9 +58,12 @@ constexpr int kMaxReadAttempts = 64;
 constexpr std::size_t kMinimumRegionSize = kHandSlotOffset + sizeof(HandSlot);
 static_assert(kMinimumRegionSize == 848, "the 5.6 head and hand slots must fit the accepted region");
 
-/// Bounded wait for a writer that is mid-initialisation: the header fields are
-/// stored one by one, so a reader that opens in that window retries until the
-/// header is complete instead of failing hard.
+/// Bounded wait for a writer that is mid-initialisation. The writer publishes
+/// `magic` last with release ordering (see `shm_layout.hpp`), so a reader that
+/// acquires `magic` sees the complete header; the retry only helps a reader
+/// that opened before the writer started initialising (or one racing a writer
+/// that died mid-init). It is belt-and-braces, not the synchronisation
+/// primitive.
 constexpr auto kHeaderInitRetryWindow = std::chrono::milliseconds(50);
 
 /// POSIX has one flat shared-memory namespace; the Windows `Local\` prefix
@@ -85,17 +89,45 @@ std::int64_t now_ns() noexcept {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
 }
 
-bool header_is_valid(const BridgeHandle &handle) noexcept {
+/// Thread-local diagnostic set by the last rejected open on this thread and
+/// exposed through `LastHeaderError()`. Cold path only (open), fixed storage,
+/// no allocation.
+thread_local char g_header_error[160] = {};
+
+void clear_header_error() noexcept { g_header_error[0] = '\0'; }
+
+/// The outcome of validating a mapped region header.
+enum class HeaderState {
+    kValid,
+    kUninitialised, // magic absent: a fresh or dead-mid-init region
+    kMismatchedAbi,
+    kMismatchedSize,
+};
+
+/// Validates the header by acquiring `magic` first. The writer publishes
+/// `magic` last with a release store, so observing `kShmMagic` happens-after
+/// every other field store; the remaining fields are then read relaxed, with
+/// no torn-open window (I-3). A mismatch records `LastHeaderError()`.
+HeaderState classify_header(const BridgeHandle &handle) noexcept {
     const auto *header = reinterpret_cast<const ShmHeader *>(handle.base);
-    // The open retry can observe the header while the writer is still storing
-    // its fields, so validate through atomic loads (paired with a writer that
-    // publishes the fields).
-    const bool magic = std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_acquire) == kShmMagic;
-    const bool abi =
-        std::atomic_ref<const std::uint32_t>(header->abi_version).load(std::memory_order_acquire) == kShmAbiVersion;
-    const bool size =
-        std::atomic_ref<const std::uint32_t>(header->header_size).load(std::memory_order_acquire) == kHeaderSize;
-    return magic && abi && size;
+    const std::uint64_t magic = std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_acquire);
+    if (magic != kShmMagic) {
+        return HeaderState::kUninitialised;
+    }
+    const std::uint32_t abi = std::atomic_ref<const std::uint32_t>(header->abi_version).load(std::memory_order_relaxed);
+    if (abi != kShmAbiVersion) {
+        std::snprintf(g_header_error, sizeof(g_header_error),
+                      "cg_bridge: shared-memory abi_version %u is not the expected %u", abi, kShmAbiVersion);
+        return HeaderState::kMismatchedAbi;
+    }
+    const std::uint32_t size =
+        std::atomic_ref<const std::uint32_t>(header->header_size).load(std::memory_order_relaxed);
+    if (size != kHeaderSize) {
+        std::snprintf(g_header_error, sizeof(g_header_error),
+                      "cg_bridge: shared-memory header_size %u is not the expected %u", size, kHeaderSize);
+        return HeaderState::kMismatchedSize;
+    }
+    return HeaderState::kValid;
 }
 
 /// Copies a seqlock payload word-wise through relaxed atomic accesses. The
@@ -218,6 +250,9 @@ cg_status store_command(std::uint32_t value) noexcept {
 }
 
 } // namespace
+
+const char *LastHeaderError() noexcept { return g_header_error; }
+
 } // namespace cg::bridge
 
 extern "C" {
@@ -291,27 +326,27 @@ cg_status cg_bridge_open(void **out_handle) {
 #else
     return CG_ERR_UNSUPPORTED;
 #endif
-    if (!cg::bridge::header_is_valid(*handle)) {
-        // A writer stores the header fields one by one, so a reader that opens
-        // mid-initialisation sees an incomplete header. Retry for a short
-        // bounded window before deciding; the normal case recovers in
-        // microseconds.
+    // The header is published magic-last with release ordering, so a reader
+    // that acquires magic already sees a complete header. The bounded retry
+    // below is belt-and-braces for a reader that opened before the writer's
+    // first store (or a writer that died mid-init): it is not the
+    // synchronisation primitive.
+    cg::bridge::HeaderState header_state = cg::bridge::classify_header(*handle);
+    if (header_state != cg::bridge::HeaderState::kValid) {
         const auto deadline = std::chrono::steady_clock::now() + cg::bridge::kHeaderInitRetryWindow;
-        while (!cg::bridge::header_is_valid(*handle) && std::chrono::steady_clock::now() < deadline) {
+        while (header_state != cg::bridge::HeaderState::kValid && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        if (!cg::bridge::header_is_valid(*handle)) {
-            // A zero magic means the region exists but has not been
-            // initialised (or its writer died mid-init): the soft NotReady.
-            // Anything else is a foreign or incompatible region.
-            const auto *header = reinterpret_cast<const cg::bridge::ShmHeader *>(handle->base);
-            const bool magic_present =
-                std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_relaxed) ==
-                cg::bridge::kShmMagic;
-            cg_bridge_close(handle);
-            return magic_present ? CG_ERR_UNSUPPORTED : CG_ERR_NOT_READY;
+            header_state = cg::bridge::classify_header(*handle);
         }
     }
+    if (header_state != cg::bridge::HeaderState::kValid) {
+        cg_bridge_close(handle);
+        // An uninitialised region (no magic) is the soft NotReady; anything
+        // else is a foreign or incompatible region, and LastHeaderError()
+        // names the observed and expected version/header size.
+        return header_state == cg::bridge::HeaderState::kUninitialised ? CG_ERR_NOT_READY : CG_ERR_UNSUPPORTED;
+    }
+    cg::bridge::clear_header_error();
     *out_handle = handle; // written only on CG_OK
     return CG_OK;
 }
