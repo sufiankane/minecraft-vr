@@ -386,12 +386,15 @@ namespace Cubeglass.Unity.Input
             TrackingQuality quality = ResolveQuality();
             Tracking = quality;
 
-            // Snap turn is an additive provider edge (S7 Task 4a): apply the
-            // discrete increment to the heading before Step so movement follows
-            // the turn. TurnSnap itself stays a degrees-per-second rate.
+            // Snap turn is an additive provider edge (S7 Task 4a; signed in the
+            // review fix wave): -1 left / +1 right, applied to the heading
+            // before Step so movement follows the turn. TurnSnap itself stays a
+            // degrees-per-second rate.
             IInputProvider active = InputSource;
-            bool snapPressed = active is ISnapInputSource snapSource && snapSource.ConsumeSnapPressed();
-            float snapDegrees = snapPressed && snapTurn != null ? snapTurn.ApplyIncrement(1f) : 0f;
+            int snapDirection = active is ISnapInputSource snapSource
+                ? snapSource.ConsumeSnapDirection()
+                : 0;
+            float snapDegrees = snapTurn != null ? snapTurn.ApplyIncrement(snapDirection) : 0f;
             LastSnapDegrees = snapDegrees;
             if (snapDegrees != 0f)
             {

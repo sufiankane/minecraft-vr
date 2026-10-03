@@ -68,9 +68,10 @@ load/unload/upload budgets 4, pool cap 2048, seed 1), `Gameplay`
 Controls:
 
 - **Gamepad:** left stick move, right stick turn, **A** place, **X** break,
-  **Y** recentre, **LB/RB** hotbar, **B** snap turn (45°).
+  **Y** recentre, **LB/RB** hotbar, **D-pad left/right** snap turn (±45°).
 - **Keyboard/mouse:** **WASD** move, mouse look, **LMB** break (hold past
-  hardness), **RMB** place, **Q/E** hotbar, **R** recentre, **F** snap turn.
+  hardness), **RMB** place, **Q/E** hotbar, **R** recentre, **F** snap right /
+  **Shift+F** snap left.
 
 ## Exact owner steps
 
@@ -101,9 +102,10 @@ powershell -File scripts/sync-unity-plugins.ps1
 
 ### Checklist to tick (write the result, not just a tick)
 
-- [ ] **Comfort — snap turn.** Press **B** (gamepad) / **F** (keyboard): the
-      view snaps 45° with no nausea-inducing smooth rotation, and repeated
-      snaps do not drift or invert.
+- [ ] **Comfort — snap turn.** Press **D-pad left/right** (gamepad) / **F**
+      or **Shift+F** (keyboard): the view snaps 45° left or right with no
+      nausea-inducing smooth rotation, and repeated snaps do not drift or
+      invert.
 - [ ] **Comfort — vignette.** While moving, the soft-edge vignette ramps in and
       fades out when stopping; it never blocks the centre view or flickers.
 - [ ] **Input — gamepad.** Move, turn, break, place, hotbar and recentre all

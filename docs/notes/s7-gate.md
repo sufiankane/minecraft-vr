@@ -85,8 +85,9 @@ pins the mapping table: the gamepad and keyboard/mouse paths produce the
 byte-identical `InputFrame` for equivalent move, turn, break/place, hotbar and
 recentre actions. Edges follow the S4 sequence
 (`ButtonEdgesFollowTheS4Sequence`); snap turn and recentre are single one-shot
-edges outside the frame (`SnapTurnIsASingleOneShotEdgeOutsideTheFrame`,
-`RecentreIsASingleEdge`) and do not disturb continuous turn
+edges outside the frame (`SnapEdgeIsASingleOneShotSignedDirection` pins both
+directions plus the hold/release re-arm, `RecentreIsASingleEdge`) and do not
+disturb continuous turn
 (`SnapEdgeDoesNotDisturbContinuousTurn`); hotbar deltas are single edges
 (`HotbarDeltaIsSingleEdgeAndNextWins`); deadzones and unit-disc normalisation
 are pinned by `MoveDeadzoneRejectsNoiseAndClampsToTheUnitDisc` and

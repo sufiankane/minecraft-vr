@@ -321,7 +321,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             bridge.InputSource = snapInput;
 
             snapInput.Frame = Frame();
-            snapInput.SnapPending = true;
+            snapInput.SnapPending = 1;
             bridge.Tick(Dt);
 
             Assert.AreEqual(45f, snap.AccumulatedDegrees, Tolerance, "exactly one increment");
@@ -334,7 +334,7 @@ namespace Cubeglass.Unity.Rendering.Tests
                 Quaternion.Angle(Quaternion.Euler(0f, 45f, 0f), playerRootObject.transform.localRotation),
                 1e-3f,
                 "PlayerRoot shows the snapped heading");
-            Assert.IsFalse(snapInput.SnapPending, "the edge was consumed exactly once");
+            Assert.AreEqual(0, snapInput.SnapPending, "the edge was consumed exactly once");
 
             snapInput.Frame = Frame();
             for (int frame = 0; frame < 3; frame++)
@@ -347,6 +347,17 @@ namespace Cubeglass.Unity.Rendering.Tests
                 bridge.Player.YawRadians * Mathf.Rad2Deg,
                 0.01f,
                 "later pose ticks must not drift or overwrite the snap");
+
+            snapInput.Frame = Frame();
+            snapInput.SnapPending = -1;
+            bridge.Tick(Dt);
+
+            Assert.AreEqual(0f, snap.AccumulatedDegrees, Tolerance, "the left snap cancels the right one");
+            Assert.AreEqual(
+                0f,
+                bridge.Player.YawRadians * Mathf.Rad2Deg,
+                0.01f,
+                "the left snap turns back to the player's forward");
             yield return null;
         }
 
@@ -362,7 +373,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             var snapInput = new FakeSnapInputProvider();
             bridge.InputSource = snapInput;
             snapInput.Frame = Frame(turn: 90f);
-            snapInput.SnapPending = true;
+            snapInput.SnapPending = -1;
 
             float before = bridge.Player.YawRadians;
             for (int frame = 0; frame < 30; frame++)
@@ -615,17 +626,17 @@ namespace Cubeglass.Unity.Rendering.Tests
         private sealed class FakeSnapInputProvider : IInputProvider, ISnapInputSource
         {
             public InputFrame Frame;
-            public bool SnapPending;
+            public int SnapPending;
 
             public InputFrame Sample(double timeSeconds)
             {
                 return Frame;
             }
 
-            public bool ConsumeSnapPressed()
+            public int ConsumeSnapDirection()
             {
-                bool pending = SnapPending;
-                SnapPending = false;
+                int pending = SnapPending;
+                SnapPending = 0;
                 return pending;
             }
         }

@@ -14,8 +14,8 @@ frames (pinned by `InputMappingTests`).
 | Action | Gamepad (legacy joystick) | Keyboard / mouse | InputFrame field |
 | --- | --- | --- | --- |
 | Move | left stick (axes `Gamepad Move X/Y`) | W/A/S/D | `Move` (radial deadzone, clamped to the unit disc) |
-| Continuous turn | right stick X (`Gamepad Turn X`) | mouse X delta | `TurnSnap` = degrees for the frame (stick rate × dt, mouse delta × degrees/px) |
-| Snap turn | B (`JoystickButton1`) | F | `TurnSnap` = +45° on the single press edge (replaces continuous turn that frame) |
+| Continuous turn | right stick X (`Gamepad Turn X`) | mouse X delta | `TurnSnap` in degrees per second (`-look.X * rate`; mouse delta / frame dt) |
+| Snap turn | D-pad left/right (`Gamepad Snap X`) | F (right) / Shift+F (left) | `ISnapInputSource.ConsumeSnapDirection()`: −1/0/+1 one-shot edge, **not** an `InputFrame` field |
 | Break (primary) | X (`JoystickButton2`) | LMB hold | `Primary` (`Pressed`/`Held`/`Released`/`Up`) |
 | Place (secondary) | A (`JoystickButton0`) | RMB | `Secondary` (edge semantics; S4 places on `Pressed`) |
 | Recentre | Y (`JoystickButton3`) | R | `RecenterPressed` (one frame on press) |
@@ -37,8 +37,9 @@ Notes:
   the `Gamepad Move X/Y/Turn X` axes (which the project's Input Manager defines
   with a 0.05 dead value so the mapper owns the real deadzone).
 - `Gamepad Turn X` reads the 4th joystick axis (the common Windows/Xbox right
-  stick X); adjust the axis index in `ProjectSettings/InputManager.asset` for
-  other controller layouts.
+  stick X) and `Gamepad Snap X` the 6th (the common Windows/Xbox D-pad
+  horizontal); adjust the axis index in `ProjectSettings/InputManager.asset`
+  for other controller layouts.
 
 ## Components
 
@@ -47,7 +48,8 @@ Notes:
 - `GameplayBridge` runs one tick in the documented order: input → controller →
   interaction; it owns the `PlayerState`, the `InteractionService` (real
   `DdaRaycaster`, slice registry) and the `SaveRequested` flag for Task 4.
-- `SnapTurn` applies the edge increment to the rig yaw only (default 45°).
+- `SnapTurn` turns the player heading by the signed edge increment (default
+  ±45°); the rig follows, and a left and a right snap cancel exactly.
 - `MotionVignette` draws a soft-edge overlay whose opacity is a pure function
   of planar speed (0 at ≤0.5 m/s, 0.4 at ≥2 m/s).
 - `WorldUi` draws the gaze reticle and a world-locked hotbar strip 1.5 m ahead

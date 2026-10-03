@@ -6,10 +6,11 @@ namespace Cubeglass.Unity.Input.Tests
 {
     /// <summary>
     /// Pins the pure <see cref="InputMapper"/> mapping table (S7 Task 3,
-    /// reworked in Task 4a): equivalent gamepad and keyboard/mouse actions
-    /// produce the identical <see cref="InputFrame"/>, the S4 button edges
-    /// survive, <c>TurnSnap</c> is a degrees-per-second yaw rate, and the snap
-    /// press is a one-shot signal outside the frame.
+    /// reworked in Task 4a and the review fix wave): equivalent gamepad and
+    /// keyboard/mouse actions produce the identical <see cref="InputFrame"/>,
+    /// the S4 button edges survive, <c>TurnSnap</c> is a degrees-per-second
+    /// yaw rate, and the signed snap direction is a one-shot signal outside
+    /// the frame.
     /// </summary>
     public class InputMappingTests
     {
@@ -72,9 +73,14 @@ namespace Cubeglass.Unity.Input.Tests
                 Keyboard(recenterDown: true));
 
             AssertEquivalent(
-                "snap turn press",
-                Gamepad(snapTurnDown: true),
-                Keyboard(snapTurnDown: true));
+                "snap turn right press",
+                Gamepad(snapDirection: 1),
+                Keyboard(snapDirection: 1));
+
+            AssertEquivalent(
+                "snap turn left press",
+                Gamepad(snapDirection: -1),
+                Keyboard(snapDirection: -1));
 
             AssertEquivalent(
                 "hotbar next press",
@@ -104,7 +110,7 @@ namespace Cubeglass.Unity.Input.Tests
                     down,
                     down,
                     false,
-                    false,
+                    0,
                     false,
                     false));
 
@@ -114,24 +120,34 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
-        public void SnapTurnIsASingleOneShotEdgeOutsideTheFrame()
+        public void SnapEdgeIsASingleOneShotSignedDirection()
         {
             var mapper = new InputMapper(lookDeadzone: 0f);
-            InputFrame pressed = mapper.Map(Sample(snapTurnDown: true));
-            Assert.IsTrue(mapper.SnapPressed, "the press edge is exposed");
-            Assert.IsTrue(mapper.ConsumeSnapPressed(), "the first read consumes it");
-            Assert.IsFalse(mapper.ConsumeSnapPressed(), "the signal is one-shot");
-            Assert.AreEqual(0f, pressed.TurnSnap, Tolerance, "snap is not a TurnSnap rate");
 
-            InputFrame held = mapper.Map(Sample(snapTurnDown: true));
-            Assert.IsFalse(mapper.SnapPressed, "hold does not repeat");
+            InputFrame right = mapper.Map(Sample(snapDirection: 1));
+            Assert.AreEqual(1, mapper.SnapDirection, "the right press edge is pending");
+            Assert.AreEqual(1, mapper.ConsumeSnapDirection(), "the first read consumes it");
+            Assert.AreEqual(0, mapper.ConsumeSnapDirection(), "the signal is one-shot");
+            Assert.AreEqual(0f, right.TurnSnap, Tolerance, "snap is not a TurnSnap rate");
+
+            InputFrame held = mapper.Map(Sample(snapDirection: 1));
+            Assert.AreEqual(0, mapper.SnapDirection, "hold does not repeat");
             Assert.AreEqual(0f, held.TurnSnap, Tolerance);
 
-            InputFrame released = mapper.Map(Sample());
-            Assert.IsFalse(mapper.SnapPressed, "release re-arms");
+            mapper.Map(Sample());
+            Assert.AreEqual(0, mapper.SnapDirection, "release re-arms");
 
-            mapper.Map(Sample(snapTurnDown: true));
-            Assert.IsTrue(mapper.ConsumeSnapPressed(), "a second press snaps again");
+            InputFrame left = mapper.Map(Sample(snapDirection: -1));
+            Assert.AreEqual(-1, mapper.SnapDirection, "the left press edge is the negative direction");
+            Assert.AreEqual(-1, mapper.ConsumeSnapDirection(), "left is consumed once");
+            Assert.AreEqual(0f, left.TurnSnap, Tolerance, "a left snap is not a TurnSnap rate");
+
+            mapper.Map(Sample(snapDirection: -1));
+            Assert.AreEqual(0, mapper.SnapDirection, "held left does not repeat");
+            mapper.Map(Sample());
+
+            mapper.Map(Sample(snapDirection: 1));
+            Assert.AreEqual(1, mapper.ConsumeSnapDirection(), "a second right press snaps again");
         }
 
         [Test]
@@ -145,11 +161,11 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false,
                 false,
-                true,
+                1,
                 false,
                 false));
 
-            Assert.IsTrue(mapper.SnapPressed, "the snap edge lands");
+            Assert.AreEqual(1, mapper.SnapDirection, "the snap edge lands");
             Assert.AreEqual(
                 -TurnDegreesPerSecond,
                 frame.TurnSnap,
@@ -207,7 +223,7 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false,
                 false,
-                false,
+                0,
                 false,
                 false));
             float length = (float)System.Math.Sqrt((mapped.Move.X * mapped.Move.X) + (mapped.Move.Y * mapped.Move.Y));
@@ -225,7 +241,7 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false,
                 false,
-                false,
+                0,
                 false,
                 false));
             Assert.AreEqual(0f, below.TurnSnap, Tolerance, "look noise is deadzoned");
@@ -237,7 +253,7 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false,
                 false,
-                false,
+                0,
                 false,
                 false));
             Assert.AreEqual(
@@ -258,7 +274,7 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false,
                 false,
-                false,
+                0,
                 false,
                 false,
                 TrackingQuality.Degraded));
@@ -293,7 +309,7 @@ namespace Cubeglass.Unity.Input.Tests
             Assert.AreEqual(gamepadFrame.Secondary, keyboardFrame.Secondary, "{0}: secondary", action);
             Assert.AreEqual(gamepadFrame.HotbarDelta, keyboardFrame.HotbarDelta, "{0}: hotbar", action);
             Assert.AreEqual(gamepadFrame.Quality, keyboardFrame.Quality, "{0}: quality", action);
-            Assert.AreEqual(gamepadMapper.SnapPressed, keyboardMapper.SnapPressed, "{0}: snap edge", action);
+            Assert.AreEqual(gamepadMapper.SnapDirection, keyboardMapper.SnapDirection, "{0}: snap edge", action);
         }
 
         private static RawInputSample Gamepad(
@@ -302,7 +318,7 @@ namespace Cubeglass.Unity.Input.Tests
             bool primaryDown = false,
             bool secondaryDown = false,
             bool recenterDown = false,
-            bool snapTurnDown = false,
+            int snapDirection = 0,
             bool hotbarNextDown = false,
             bool hotbarPrevDown = false)
         {
@@ -313,7 +329,7 @@ namespace Cubeglass.Unity.Input.Tests
                 primaryDown,
                 secondaryDown,
                 recenterDown,
-                snapTurnDown,
+                snapDirection,
                 hotbarNextDown,
                 hotbarPrevDown);
         }
@@ -324,7 +340,7 @@ namespace Cubeglass.Unity.Input.Tests
             bool primaryDown = false,
             bool secondaryDown = false,
             bool recenterDown = false,
-            bool snapTurnDown = false,
+            int snapDirection = 0,
             bool hotbarNextDown = false,
             bool hotbarPrevDown = false)
         {
@@ -335,7 +351,7 @@ namespace Cubeglass.Unity.Input.Tests
                 primaryDown,
                 secondaryDown,
                 recenterDown,
-                snapTurnDown,
+                snapDirection,
                 hotbarNextDown,
                 hotbarPrevDown);
         }
@@ -344,7 +360,7 @@ namespace Cubeglass.Unity.Input.Tests
             bool primaryDown = false,
             bool secondaryDown = false,
             bool recenterDown = false,
-            bool snapTurnDown = false,
+            int snapDirection = 0,
             bool hotbarNextDown = false,
             bool hotbarPrevDown = false)
         {
@@ -355,7 +371,7 @@ namespace Cubeglass.Unity.Input.Tests
                 primaryDown,
                 secondaryDown,
                 recenterDown,
-                snapTurnDown,
+                snapDirection,
                 hotbarNextDown,
                 hotbarPrevDown);
         }
