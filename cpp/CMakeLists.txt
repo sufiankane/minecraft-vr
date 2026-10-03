@@ -11,7 +11,11 @@ option(CG_BUILD_BENCHMARKS "Build Cubeglass micro-benchmarks" OFF)
 
 add_library(cg_warnings INTERFACE)
 if(MSVC)
-    target_compile_options(cg_warnings INTERFACE /W4 /WX)
+    # /permissive- pins standard conformance (two-phase lookup, no MSVC
+    # permissive fallbacks); /utf-8 makes source and execution character sets
+    # UTF-8 on all MSVC locales. Both are added to the shared warning flags
+    # (M-10); keep this list minimal and warning-clean under /W4 /WX.
+    target_compile_options(cg_warnings INTERFACE /W4 /WX /permissive- /utf-8)
 else()
     target_compile_options(cg_warnings INTERFACE -Wall -Wextra -Wpedantic -Wconversion -Werror)
 endif()
