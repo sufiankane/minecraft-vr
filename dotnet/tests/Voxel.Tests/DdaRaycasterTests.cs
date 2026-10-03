@@ -186,12 +186,57 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
-        public void CastWithNegativeMaxDistanceReturnsNull()
+        public void CastWithNonFiniteOrNegativeMaxDistanceThrows()
         {
             World world = TestWorld.CreateLoaded(Origin, (new Int3(2, 0, 0), Stone));
             var ray = new Ray(new Vec3(-0.5, 0.5, 0.5), new Vec3(1.0, 0.0, 0.0));
+            var raycaster = new DdaRaycaster();
 
-            Assert.That(new DdaRaycaster().Cast(world, ray, -1f), Is.Null);
+            Assert.Throws<ArgumentOutOfRangeException>(() => raycaster.Cast(world, ray, -1f));
+            Assert.Throws<ArgumentOutOfRangeException>(() => raycaster.Cast(world, ray, float.NaN));
+            Assert.Throws<ArgumentOutOfRangeException>(() => raycaster.Cast(world, ray, float.PositiveInfinity));
+            Assert.Throws<ArgumentOutOfRangeException>(() => raycaster.Cast(world, ray, float.NegativeInfinity));
+
+            // Zero is valid and inclusive; only negative or non-finite values throw.
+            Assert.That(raycaster.Cast(world, ray, 0f), Is.Null);
+        }
+
+        [Test]
+        public void CastWithInfiniteMaxDistanceAndAxisAlignedDirectionIsRejectedPromptly()
+        {
+            // Regression for the reviewed hang: an axis-aligned ray leaves the
+            // other two axes at tMax = tDelta = +inf, so an accepted +inf
+            // distance never reached the termination test.
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(2, 0, 0), Stone));
+            var ray = new Ray(new Vec3(-0.5, 0.5, 0.5), new Vec3(1.0, 0.0, 0.0));
+
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => new DdaRaycaster().Cast(world, ray, float.PositiveInfinity));
+        }
+
+        [Test]
+        public void CastWithHugeFiniteMaxDistanceReturnsPromptly()
+        {
+            // A large but finite distance stays bounded: the traversal walks
+            // the ray's cells and returns null without a step cap trip.
+            var world = new World();
+            var ray = new Ray(new Vec3(0.5, 0.5, 0.5), new Vec3(1.0, 0.0, 0.0));
+
+            Assert.That(new DdaRaycaster().Cast(world, ray, 4096f), Is.Null);
+        }
+
+        [Test]
+        public void CastNearTheIntegerCoordinateLimitTerminates()
+        {
+            // FloorToInt clamps an out-of-range origin to int.MaxValue; a +X
+            // step would wrap the cell coordinate, so the traversal must stop
+            // rather than probe wrapped cells.
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(2, 0, 0), Stone));
+            var positive = new Ray(new Vec3(3.0e9, 0.5, 0.5), new Vec3(1.0, 0.0, 0.0));
+            var negative = new Ray(new Vec3(-3.0e9, 0.5, 0.5), new Vec3(-1.0, 0.0, 0.0));
+
+            Assert.That(new DdaRaycaster().Cast(world, positive, 10f), Is.Null);
+            Assert.That(new DdaRaycaster().Cast(world, negative, 10f), Is.Null);
         }
 
         [Test]

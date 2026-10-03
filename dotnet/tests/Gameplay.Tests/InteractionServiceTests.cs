@@ -3,6 +3,7 @@ using Cubeglass.CoreMath;
 using Cubeglass.Voxel;
 using FsCheck;
 using FsCheck.Fluent;
+using Microsoft.FSharp.Core;
 using NUnit.Framework;
 
 namespace Cubeglass.Gameplay.Tests
@@ -16,6 +17,12 @@ namespace Cubeglass.Gameplay.Tests
     public sealed class InteractionServiceTests
     {
         private const double Dt = 0.1;
+
+        // FsCheck 3.4 (house convention, as in the Streaming suites): the
+        // 100-case fuzz corpus is pinned with a fixed Rnd seed so a failure is
+        // reproducible from this file alone; failures still print the replay
+        // seed and can be repeated verbatim.
+        private const ulong FuzzSeed = 20261003UL;
 
         private static readonly BlockId Stone = new BlockId(1);
         private static readonly BlockId Dirt = new BlockId(2);
@@ -657,6 +664,11 @@ namespace Cubeglass.Gameplay.Tests
             Assert.That(allocated, Is.EqualTo(0L), $"InteractionService.Update allocated {allocated} bytes");
         }
 
+        /// <summary>
+        /// Deterministic replay: <c>FuzzSeed = 20261003</c> pins the 100-case
+        /// byte-script corpus, so the run is reproducible without a logged
+        /// replay seed.
+        /// </summary>
         [Test]
         public void RandomInputSequencesNeverEditDuringSustainedTrackingLossAndReplayThroughAcceptedCommands()
         {
@@ -669,10 +681,18 @@ namespace Cubeglass.Gameplay.Tests
                     return Prop.ToProperty(true);
                 });
 
-            Check.One(Config.QuickThrowOnFailure, property);
+            Check.One(DeterministicFuzzConfig(), property);
         }
 
         // ----- helpers -----------------------------------------------------
+
+        private static Config DeterministicFuzzConfig()
+        {
+            Replay replay = new Replay(new Rnd(FuzzSeed), FSharpOption<int>.None);
+            return Config.QuickThrowOnFailure
+                .WithMaxTest(100)
+                .WithReplay(FSharpOption<Replay>.Some(replay));
+        }
 
         private static InteractionService NewService()
         {

@@ -279,6 +279,14 @@ Known non-blocking items; none affects the software half of the exit gate:
 - **Cell-carrying `ChunkChanged`.** The Voxel event carries the chunk, not the
   edited cell, so the Unity adapter cannot dirty an exact chunk set; a
   cell-carrying edit signal is the fix if remesh cost ever matters.
+- **Per-edit dirty-set allocation.** `ChunkEditPropagation.GetAffectedChunks`
+  allocates a `new ChunkCoord[8]` scratch array per call and, for the common
+  1/2/4-chunk cases, a second right-sized copy (≤ ~128 B per edit). The call is
+  on the per-cell edit path (Unity dirty-set fan-out and boot replay), not the
+  per-frame path, and the remesh side's per-upload snapshot allocations are
+  already recorded above. A `Span<ChunkCoord>`-with-count or caller-owned
+  buffer would remove the allocation but changes the public shape, so it is
+  deferred deliberately.
 - **Chebyshev-1 remesh superset.** As a consequence, every edit dirties all 27
   loaded chunks in the Chebyshev-1 neighbourhood; meshing an unchanged
   neighbour rebuilds an identical mesh and is correctness-safe but

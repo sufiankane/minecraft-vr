@@ -35,6 +35,16 @@ namespace Cubeglass.Gameplay
     /// (4.5 m/s at 60 Hz is 0.075 m).
     /// </para>
     /// <para>
+    /// <b>Input sanitisation.</b> A corrupt input frame cannot poison the
+    /// player: NaN <see cref="InputFrame.Move"/> components map to zero,
+    /// positive/negative infinity clamps to the documented range end (+/-1),
+    /// and a NaN or infinite <see cref="InputFrame.TurnSnap"/> maps to zero or
+    /// the finite float range end respectively. A non-finite
+    /// <see cref="PlayerState.YawRadians"/> resets to zero before use and the
+    /// yaw update is clamped to the finite float range, so for any finite
+    /// <paramref name="dt"/> the step leaves a finite player state.
+    /// </para>
+    /// <para>
     /// <b>Edge rules.</b> A null player or world throws
     /// <see cref="ArgumentNullException"/>; a negative, NaN or infinite
     /// <paramref name="dt"/> throws <see cref="ArgumentOutOfRangeException"/>.
@@ -93,13 +103,21 @@ namespace Cubeglass.Gameplay
                 return;
             }
 
-            if (input.TurnSnap != 0f)
+            float yaw = player.YawRadians;
+            if (!float.IsFinite(yaw))
             {
-                player.YawRadians = (float)(player.YawRadians + (input.TurnSnap * DegreesToRadians * dt));
+                yaw = 0f;
             }
 
-            double strafe = input.Move.X;
-            double forward = input.Move.Y;
+            if (input.TurnSnap != 0f)
+            {
+                yaw = ClampToFloatRange(yaw + (SanitiseTurnSnap(input.TurnSnap) * DegreesToRadians * dt));
+            }
+
+            player.YawRadians = yaw;
+
+            double strafe = SanitiseMoveComponent(input.Move.X);
+            double forward = SanitiseMoveComponent(input.Move.Y);
             double moveLength = Math.Sqrt((strafe * strafe) + (forward * forward));
             double cos = Math.Cos(player.YawRadians);
             double sin = Math.Sin(player.YawRadians);
@@ -176,6 +194,61 @@ namespace Cubeglass.Gameplay
 
             player.OnGround = false;
             return velocity;
+        }
+
+        private static double SanitiseMoveComponent(float component)
+        {
+            if (float.IsNaN(component))
+            {
+                return 0.0;
+            }
+
+            if (float.IsPositiveInfinity(component))
+            {
+                return 1.0;
+            }
+
+            if (float.IsNegativeInfinity(component))
+            {
+                return -1.0;
+            }
+
+            return component;
+        }
+
+        private static double SanitiseTurnSnap(float turnSnap)
+        {
+            if (float.IsNaN(turnSnap))
+            {
+                return 0.0;
+            }
+
+            if (float.IsPositiveInfinity(turnSnap))
+            {
+                return float.MaxValue;
+            }
+
+            if (float.IsNegativeInfinity(turnSnap))
+            {
+                return float.MinValue;
+            }
+
+            return turnSnap;
+        }
+
+        private static float ClampToFloatRange(double value)
+        {
+            if (value >= float.MaxValue)
+            {
+                return float.MaxValue;
+            }
+
+            if (value <= float.MinValue)
+            {
+                return float.MinValue;
+            }
+
+            return (float)value;
         }
 
         private static void ClampPitch(PlayerState player)

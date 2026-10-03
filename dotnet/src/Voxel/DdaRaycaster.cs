@@ -49,8 +49,18 @@ namespace Cubeglass.Voxel
     /// </para>
     /// <para>
     /// <b>Degenerate inputs.</b> A zero direction, a non-finite origin or
-    /// direction, and a negative or NaN <paramref name="maxDistance"/> all
-    /// return null.
+    /// direction returns null. A negative, NaN or infinite
+    /// <paramref name="maxDistance"/> throws
+    /// <see cref="ArgumentOutOfRangeException"/>: the accepted range is
+    /// <c>[0, float.MaxValue]</c> (zero is valid and inclusive).
+    /// </para>
+    /// <para>
+    /// <b>Termination.</b> The traversal advances at least one cell per
+    /// iteration and is bounded by a step cap derived from the distance and the
+    /// normalised direction
+    /// (<c>ceil(maxDistance * (|dx| + |dy| + |dz|)) + 4</c>); reaching the cap
+    /// returns null. A step that would overflow a cell coordinate also returns
+    /// null, so every accepted input terminates without coordinate wrap-around.
     /// </para>
     /// <para>
     /// The implementation is allocation-free: it uses only value types plus the
@@ -59,6 +69,12 @@ namespace Cubeglass.Voxel
     /// </remarks>
     public sealed class DdaRaycaster : IRaycaster
     {
+        /// <exception cref="ArgumentNullException">
+        /// <paramref name="w"/> is null.
+        /// </exception>
+        /// <exception cref="ArgumentOutOfRangeException">
+        /// <paramref name="maxDistance"/> is negative, NaN or infinite.
+        /// </exception>
         public RayHit? Cast(IWorld w, Ray ray, float maxDistance)
         {
             if (w is null)
@@ -66,9 +82,12 @@ namespace Cubeglass.Voxel
                 throw new ArgumentNullException(nameof(w));
             }
 
-            if (!(maxDistance >= 0f))
+            if (!(maxDistance >= 0f) || float.IsInfinity(maxDistance))
             {
-                return null;
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxDistance),
+                    maxDistance,
+                    "maxDistance must be finite and non-negative.");
             }
 
             if (!IsFinite(ray.Origin.X) || !IsFinite(ray.Origin.Y) || !IsFinite(ray.Origin.Z))
@@ -105,8 +124,25 @@ namespace Cubeglass.Voxel
             double tDeltaY = Delta(direction.Y);
             double tDeltaZ = Delta(direction.Z);
 
+            // Every iteration advances exactly one axis by one cell, so the
+            // number of crossings within the distance is bounded by
+            // maxDistance * (|dx| + |dy| + |dz|) plus one initial crossing per
+            // axis. The cap is defence-in-depth: it can only trip if the
+            // distance test would otherwise never fire.
+            long maxSteps = StepCap(
+                maxDistance,
+                Math.Abs(direction.X) + Math.Abs(direction.Y) + Math.Abs(direction.Z));
+            long steps = 0;
+
             while (true)
             {
+                if (steps >= maxSteps)
+                {
+                    return null;
+                }
+
+                steps++;
+
                 int axis;
                 double t;
                 if (tMaxX <= tMaxY && tMaxX <= tMaxZ)
@@ -133,18 +169,33 @@ namespace Cubeglass.Voxel
                 Int3 normal;
                 if (axis == 0)
                 {
+                    if (WouldOverflow(cellX, stepX))
+                    {
+                        return null;
+                    }
+
                     cellX += stepX;
                     normal = new Int3(-stepX, 0, 0);
                     tMaxX = t + tDeltaX;
                 }
                 else if (axis == 1)
                 {
+                    if (WouldOverflow(cellY, stepY))
+                    {
+                        return null;
+                    }
+
                     cellY += stepY;
                     normal = new Int3(0, -stepY, 0);
                     tMaxY = t + tDeltaY;
                 }
                 else
                 {
+                    if (WouldOverflow(cellZ, stepZ))
+                    {
+                        return null;
+                    }
+
                     cellZ += stepZ;
                     normal = new Int3(0, 0, -stepZ);
                     tMaxZ = t + tDeltaZ;
@@ -173,6 +224,17 @@ namespace Cubeglass.Voxel
             }
 
             return new RayHit(cell, normal, distance, block);
+        }
+
+        private static bool WouldOverflow(int cell, int step)
+        {
+            return (step > 0 && cell == int.MaxValue) || (step < 0 && cell == int.MinValue);
+        }
+
+        private static long StepCap(float maxDistance, double directionLengthSum)
+        {
+            double bound = (maxDistance * directionLengthSum) + 4.0;
+            return bound >= long.MaxValue ? long.MaxValue : (long)bound;
         }
 
         private static double InitialTMax(double origin, int cell, double direction, int step)
