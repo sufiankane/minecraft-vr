@@ -10,7 +10,7 @@
   without the `UNITY_LICENSE` / `UNITY_EMAIL` / `UNITY_PASSWORD` repository
   secrets (R49).
 - **What was tried:** everything that does not need the glasses or the licence:
-  - the full local gate is green: EditMode **96/96**, PlayMode **40/40**,
+  - the full local gate is green: EditMode **98/98**, PlayMode **40/40**,
     0 skipped (including the game-scene end-to-end smoke and the new frame
     budget measurement) and `ci-local -SkipUnity` **ALL LANES PASS**
     (463 .NET + 45 Python tests);

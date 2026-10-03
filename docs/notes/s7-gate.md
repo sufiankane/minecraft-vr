@@ -19,12 +19,13 @@
 
 | Suite | Result | Counts |
 | --- | --- | --- |
-| EditMode | Passed | `total=96 passed=96 failed=0 skipped=0` |
+| EditMode | Passed | `total=98 passed=98 failed=0 skipped=0` |
 | PlayMode | Passed | `total=40 passed=40 failed=0 skipped=0` |
 
-EditMode (96) is the S6 suite plus the S7 input/rendering additions:
+EditMode (98) is the S6 suite plus the S7 input/rendering additions:
 Rendering.Tests 51 (rig, overlay, window, PlayerRoot, chunk views, input
 mapping, gaze, comfort), Input.Tests 29, Bridge.Tests 10, CoreMathTests 5,
+Editor.Tests 2 (the spawn-column pin added by the Task 4d mini-fix),
 Placeholder 1. PlayMode (40) is the S6 rig/frame-budget tests plus the S7
 chunk-view, gameplay, persistence and game-scene suites in
 `Cubeglass.Unity.Rendering.PlayTests.dll`; Task 4d adds the game-scene
@@ -156,8 +157,16 @@ NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
 ## 7. Scenes and build settings
 
 - `unity/Cubeglass/Assets/Scenes/Game.unity` — SHA-256
-  `E4179B18C9FFE36F40F339C5C6938D18176A287C32CC72AC9AB6702A9BDCEE3C`
-  (unchanged since 4c; built twice back-to-back with identical output).
+  `E4179B18C9FFE36F40F339C5C6938D18176A287C32CC72AC9AB6702A9BDCEE3C`.
+  Rebuilt during the Task 4d mini-fix with the corrected spawn sampler: the
+  builder now samples the height at the internal column the authored Unity
+  spawn cell mirrors to (`internalZ = -unityZ`, floored: `(8, -9)`) instead of
+  the naive `(8, 8)`, and places the Unity spawn back at the mirror of that
+  cell centre. The rebuilt bytes are unchanged because the seed-1 column
+  heights coincide (`HeightAt(8, 8, 1) = HeightAt(8, -9, 1) = 10`), which is
+  exactly the coincidence the fix removes; `Cubeglass.Editor.Tests` now pins
+  the authored-column → sample-column mapping so a future seed/spawn change
+  cannot silently regress. Two consecutive rebuilds remain byte-stable.
 - `unity/Cubeglass/Assets/Scenes/Calibration.unity` — **resynced in Task 4d**:
   the committed scene predated the `UnityInputProvider` field rework
   (`moveAxisX`/`moveAxisY`/`turnSnapDegrees`/`invertHotbarScroll`). Rebuilt with
@@ -182,7 +191,7 @@ NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
 0): python-env 6.7 s, cpp-windows 12.4 s (ctest 5/5), dotnet 22.7 s (463
 tests: 78 + 118 + 24 + 156 + 87), python 2 s (45 tests), depcheck 0.3 s, unity
 SKIP. The Unity lane was exercised separately with the two `unity test`
-commands in section 1 (both exit 0; EditMode 96/96, PlayMode 40/40,
+commands in section 1 (both exit 0; EditMode 98/98, PlayMode 40/40,
 0 skipped).
 
 ## 9. CI verification (merged S7 PRs)
