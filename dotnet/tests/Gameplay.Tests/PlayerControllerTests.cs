@@ -307,6 +307,85 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void NaNMoveIsSanitisedAndCannotPoisonPosition()
+        {
+            IWorld world = TestWorlds.CreateFloor();
+            PlayerState player = Player(8, 1, 8);
+            Run(player, default, world, Dt, 5);
+
+            double startX = player.Position.X;
+            double startZ = player.Position.Z;
+            InputFrame poison = Move(float.NaN, float.NaN);
+
+            Run(player, poison, world, Dt, 600);
+
+            Assert.That(double.IsFinite(player.Position.X), Is.True, "X must stay finite");
+            Assert.That(double.IsFinite(player.Position.Y), Is.True, "Y must stay finite");
+            Assert.That(double.IsFinite(player.Position.Z), Is.True, "Z must stay finite");
+            Assert.That(player.Position.X, Is.EqualTo(startX).Within(1e-12));
+            Assert.That(player.Position.Z, Is.EqualTo(startZ).Within(1e-12));
+            Assert.That(player.Velocity.X, Is.EqualTo(0.0));
+            Assert.That(player.Velocity.Z, Is.EqualTo(0.0));
+            Assert.That(VoxelCollision.Overlaps(world, player.Body), Is.False);
+
+            Run(player, Move(0f, 1f), world, Dt, 30);
+            Assert.That(player.Position.Z, Is.LessThan(startZ), "valid input must still move the player");
+        }
+
+        [Test]
+        public void InfiniteMoveComponentsClampToTheirRangeEnds()
+        {
+            IWorld world = TestWorlds.CreateEmpty();
+
+            PlayerState strafe = Player(0, 10, 0);
+            InputFrame strafeInput = Move(float.PositiveInfinity, 0f);
+            PlayerController.Step(strafe, in strafeInput, world, 1.0);
+            Assert.That(strafe.Position.X, Is.EqualTo(4.5).Within(1e-9), "+inf strafe clamps to +1");
+            Assert.That(strafe.Position.Z, Is.EqualTo(0.0).Within(1e-12));
+
+            PlayerState forward = Player(0, 10, 0);
+            InputFrame forwardInput = Move(0f, float.NegativeInfinity);
+            PlayerController.Step(forward, in forwardInput, world, 1.0);
+            Assert.That(forward.Position.Z, Is.EqualTo(4.5).Within(1e-9), "-inf forward clamps to -1");
+            Assert.That(forward.Position.X, Is.EqualTo(0.0).Within(1e-12));
+        }
+
+        [Test]
+        public void NonFiniteTurnSnapCannotNaNTheHeading()
+        {
+            IWorld world = TestWorlds.CreateEmpty();
+
+            foreach (float turn in new[] { float.PositiveInfinity, float.NegativeInfinity })
+            {
+                PlayerState player = Player(0, 10, 0);
+                player.YawRadians = 0.5f;
+                InputFrame input = Move(0f, 0f, turn);
+
+                PlayerController.Step(player, in input, world, Dt);
+
+                Assert.That(float.IsFinite(player.YawRadians), Is.True, $"yaw must stay finite for {turn}");
+                Assert.That(double.IsFinite(player.Velocity.X), Is.True);
+                Assert.That(double.IsFinite(player.Velocity.Z), Is.True);
+
+                PlayerController.Step(player, in Frames.Neutral, world, Dt);
+                Assert.That(float.IsFinite(player.YawRadians), Is.True, "the next step must stay finite too");
+            }
+
+            PlayerState nanTurn = Player(0, 10, 0);
+            nanTurn.YawRadians = 0.5f;
+            InputFrame nanTurnInput = Move(0f, 0f, float.NaN);
+            PlayerController.Step(nanTurn, in nanTurnInput, world, Dt);
+            Assert.That(nanTurn.YawRadians, Is.EqualTo(0.5f), "a NaN turn is neutral");
+
+            PlayerState nanYaw = Player(0, 10, 0);
+            nanYaw.YawRadians = float.NaN;
+            PlayerController.Step(nanYaw, in Frames.Neutral, world, Dt);
+            Assert.That(nanYaw.YawRadians, Is.EqualTo(0f), "a non-finite yaw resets to zero");
+            Assert.That(double.IsFinite(nanYaw.Velocity.X), Is.True);
+            Assert.That(double.IsFinite(nanYaw.Velocity.Z), Is.True);
+        }
+
+        [Test]
         public void NegativeOrNonFiniteDtIsRejected()
         {
             IWorld world = TestWorlds.CreateEmpty();
