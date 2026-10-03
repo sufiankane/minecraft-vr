@@ -1,0 +1,81 @@
+name: Release
+
+# Dispatch-only (R49): the v0.1.0 player build is an owner event. The build
+# needs the Unity licence secrets; without them this workflow fails with an
+# actionable message instead of silently skipping the release artefact.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-x64-player:
+    name: windows-x64-player
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require the Unity licence secrets
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          missing=""
+          for name in UNITY_LICENSE UNITY_EMAIL UNITY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              missing="$missing $name"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release build blocked: add the repository secret(s)$missing under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player."
+            exit 1
+          fi
+          echo "Unity licence secrets present."
+
+      - name: Cache the Unity Library folder
+        uses: actions/cache@v4
+        with:
+          path: unity/Cubeglass/Library
+          key: unity-library-standalonewindows64-${{ hashFiles('unity/Cubeglass/Packages/manifest.json', 'unity/Cubeglass/ProjectSettings/ProjectVersion.txt') }}
+          restore-keys: |
+            unity-library-standalonewindows64-
+
+      - name: Build the Windows x64 player
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: unity/Cubeglass
+          unityVersion: auto
+          targetPlatform: StandaloneWindows64
+          buildMethod: Cubeglass.Editor.BuildPlayer.BuildWindows64
+          allowDirtyBuild: true
+
+      - name: Package the player
+        run: |
+          test -d unity/Cubeglass/build/StandaloneWindows64/Cubeglass
+          cd unity/Cubeglass/build/StandaloneWindows64
+          zip -r ../Cubeglass-windows-x64.zip Cubeglass
+          ls -lh ../Cubeglass-windows-x64.zip
+
+      - name: Upload the player artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cubeglass-windows-x64
+          path: unity/Cubeglass/build/Cubeglass-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Attach the player to the v0.1.0 release when it exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.0 >/dev/null 2>&1; then
+            gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-windows-x64.zip --clobber
+            echo "Attached Cubeglass-windows-x64.zip to the v0.1.0 release."
+          else
+            echo "v0.1.0 does not exist yet; the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50)."
+          fi
