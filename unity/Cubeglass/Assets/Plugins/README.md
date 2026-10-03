@@ -9,12 +9,22 @@ For a manual Unity run, copy it yourself first:
 
     Copy-Item cpp/build/windows-msvc/bridge/cg_unity_bridge.dll unity/Cubeglass/Assets/Plugins/win-x64/
 
-`managed/Cubeglass.CoreMath.dll` is not tracked in git either. The bridge
-package cannot reference `Cubeglass.CoreMath` through an asmdef (it is a plain
-.NET library outside the Unity project), so Unity auto-references it from this
-folder as a managed plugin. `scripts/sync-unity-plugins.ps1` builds
-`dotnet/src/CoreMath` in Release and copies the `netstandard2.1` DLL here (it
-fails loudly when the build output is missing); `scripts/ci-local.ps1` runs it
-in the Unity lane. For a manual Unity run:
+`managed/Cubeglass.CoreMath.dll`, `managed/Cubeglass.Voxel.dll`,
+`managed/Cubeglass.Mesh.dll` and `managed/Cubeglass.Streaming.dll` are not
+tracked in git either. The packages cannot reference the Cubeglass .NET
+libraries through an asmdef (they are plain .NET libraries outside the Unity
+project), so Unity auto-references them from this folder as managed plugins
+(the runtime asmdefs leave `overrideReferences` false; the test asmdefs set it
+true and list the DLLs in `precompiledReferences`).
+`scripts/sync-unity-plugins.ps1` builds `dotnet/src/Streaming` in Release and
+copies the four `netstandard2.1` DLLs here (it fails loudly when the build
+output is missing); `scripts/ci-local.ps1` runs it in the Unity lane. For a
+manual Unity run:
 
     powershell -File scripts/sync-unity-plugins.ps1
+
+`System.Text.Json.dll` is deliberately not copied: `Cubeglass.Voxel` only needs
+it for the optional `BlockRegistry` JSON path, which the Unity runtime never
+uses (Unity does not ship that assembly). Chunk meshing uses
+`SliceBlockRegistry`, a code-built copy of the six S7 block definitions pinned
+against `dotnet/src/Voxel/Content/blocks.json` by an EditMode test.
