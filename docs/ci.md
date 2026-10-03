@@ -149,14 +149,20 @@ the S0 caveat are documented in [`docs/perf/README.md`](perf/README.md).
 ## Release workflow
 
 `.github/workflows/release.yml` is **dispatch-only** (`workflow_dispatch`) and
-does not run on pull requests or pushes. It builds the Windows x64 player and
-attaches it to the `v0.1.0` release when that tag exists; the tag itself is
-owner-gated and not created by CI (R50). The workflow first requires three
-repository secrets — `UNITY_LICENSE`, `UNITY_EMAIL` and `UNITY_PASSWORD` — and
-fails before any build step with an error naming every missing one. With the
-secrets present it runs `game-ci/unity-builder@v4` (Unity 6000.6.3f1 from
-`ProjectSettings/ProjectVersion.txt`, `StandaloneWindows64`) with the committed
-build method `Cubeglass.Editor.BuildPlayer.BuildWindows64`, packages
+does not run on pull requests or pushes. It builds the Windows x64 player on
+`windows-latest` and attaches it to the `v0.1.0` release when that tag exists;
+the tag itself is owner-gated and not created by CI (R50). The workflow first
+requires three repository secrets — `UNITY_LICENSE`, `UNITY_EMAIL` and
+`UNITY_PASSWORD` — and fails before any build step with an error naming every
+missing one. With the secrets present it builds the managed plugins
+(`dotnet build dotnet/Cubeglass.sln --configuration Release` and
+`scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` target from the
+pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
+`unity/Cubeglass/Assets/Plugins/win-x64/`. The staged DLLs are git-ignored, so
+`allowDirtyBuild: false` still holds. It then runs `game-ci/unity-builder@v4`
+(Unity 6000.6.3f1 from `ProjectSettings/ProjectVersion.txt`,
+`StandaloneWindows64`) with the committed build method
+`Cubeglass.Editor.BuildPlayer.BuildWindows64`, packages
 `Cubeglass-windows-x64.zip`, uploads it as the `Cubeglass-windows-x64` artefact
 and, when `gh release view v0.1.0` succeeds, attaches the archive to the
 release. Until the secrets and the HIL playtest exist, the release notes in

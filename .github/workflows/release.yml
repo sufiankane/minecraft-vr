@@ -3,6 +3,13 @@ name: Release
 # Dispatch-only (R49): the v0.1.0 player build is an owner event. The build
 # needs the Unity licence secrets; without them this workflow fails with an
 # actionable message instead of silently skipping the release artefact.
+#
+# The player compiles the managed Cubeglass plugins and P/Invokes the native
+# cg_unity_bridge.dll, so both are built on the runner and staged into the
+# Unity project before the player build (the same files scripts/ci-local.ps1
+# stages locally). The staged DLLs are git-ignored, so the checkout stays
+# clean for the builder. Without this staging the Unity compile fails and a
+# player built from a clean checkout would ship no head tracking.
 on:
   workflow_dispatch:
 
@@ -12,27 +19,90 @@ permissions:
 jobs:
   windows-x64-player:
     name: windows-x64-player
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Require the Unity licence secrets
+        shell: pwsh
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
           UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
         run: |
-          missing=""
-          for name in UNITY_LICENSE UNITY_EMAIL UNITY_PASSWORD; do
-            if [ -z "${!name}" ]; then
-              missing="$missing $name"
-            fi
-          done
-          if [ -n "$missing" ]; then
-            echo "::error::Release build blocked: add the repository secret(s)$missing under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player."
+          $missing = @(
+            foreach ($name in 'UNITY_LICENSE', 'UNITY_EMAIL', 'UNITY_PASSWORD') {
+              if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+                $name
+              }
+            }
+          )
+          if ($missing.Count -gt 0) {
+            $message = "Release build blocked: add the repository secret(s) {0} under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player." -f ($missing -join ', ')
+            Write-Host "::error::$message"
             exit 1
-          fi
-          echo "Unity licence secrets present."
+          }
+          Write-Host 'Unity licence secrets present.'
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: dotnet/global.json
+
+      - name: Build the managed plugins (Release)
+        run: dotnet build dotnet/Cubeglass.sln --configuration Release
+
+      - name: Stage the managed plugins into the Unity project
+        shell: pwsh
+        run: ./scripts/sync-unity-plugins.ps1
+
+      - name: Clone vcpkg at the pinned baseline
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
+          git -C "$env:VCPKG_ROOT" checkout eb2d3a3279fd019cb7733072d86900d0ad2a1aef
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
+
+      - name: Cache the vcpkg installed tree
+        uses: actions/cache@v4
+        with:
+          path: cpp/build/windows-msvc/vcpkg_installed
+          key: vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-${{ hashFiles('cpp/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      # Release, not the preset's Debug default: the player ships this DLL,
+      # and a Debug build links the non-redistributable debug CRT, which
+      # would fail to load on a machine without the Visual Studio debug
+      # runtimes. cg_bridge is always part of the project (no build switch).
+      - name: Configure the native bridge (Release)
+        working-directory: cpp
+        run: cmake --preset windows-msvc -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build the native bridge
+        working-directory: cpp
+        run: cmake --build --preset windows-msvc --target cg_bridge
+
+      - name: Stage the native bridge into the Unity project
+        shell: pwsh
+        run: |
+          $source = 'cpp/build/windows-msvc/bridge/cg_unity_bridge.dll'
+          $destination = 'unity/Cubeglass/Assets/Plugins/win-x64'
+          if (-not (Test-Path -LiteralPath $source)) {
+            Write-Host "::error::The native bridge build did not produce $source."
+            exit 1
+          }
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          Copy-Item -LiteralPath $source -Destination (Join-Path $destination 'cg_unity_bridge.dll') -Force
+          Write-Host "Copied native bridge DLL: $source -> $destination"
 
       - name: Cache the Unity Library folder
         uses: actions/cache@v4
@@ -53,14 +123,21 @@ jobs:
           unityVersion: auto
           targetPlatform: StandaloneWindows64
           buildMethod: Cubeglass.Editor.BuildPlayer.BuildWindows64
-          allowDirtyBuild: true
+          # The staged plugins are git-ignored, so the tree is clean; a dirty
+          # checkout still fails the build.
+          allowDirtyBuild: false
 
       - name: Package the player
+        shell: pwsh
         run: |
-          test -d unity/Cubeglass/build/StandaloneWindows64/Cubeglass
-          cd unity/Cubeglass/build/StandaloneWindows64
-          zip -r ../Cubeglass-windows-x64.zip Cubeglass
-          ls -lh ../Cubeglass-windows-x64.zip
+          $player = 'unity/Cubeglass/build/StandaloneWindows64/Cubeglass'
+          $zip = 'unity/Cubeglass/build/Cubeglass-windows-x64.zip'
+          if (-not (Test-Path -LiteralPath $player)) {
+            Write-Host "::error::The Unity build did not produce $player."
+            exit 1
+          }
+          Compress-Archive -Path $player -DestinationPath $zip -Force
+          Get-Item -LiteralPath $zip | Select-Object FullName, Length
 
       - name: Upload the player artefact
         uses: actions/upload-artifact@v4
@@ -70,12 +147,19 @@ jobs:
           if-no-files-found: error
 
       - name: Attach the player to the v0.1.0 release when it exists
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.0 >/dev/null 2>&1; then
+          gh release view v0.1.0 *> $null
+          if ($LASTEXITCODE -eq 0) {
             gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-windows-x64.zip --clobber
-            echo "Attached Cubeglass-windows-x64.zip to the v0.1.0 release."
-          else
-            echo "v0.1.0 does not exist yet; the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50)."
-          fi
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::gh release upload failed with exit code $LASTEXITCODE."
+              exit 1
+            }
+            Write-Host 'Attached Cubeglass-windows-x64.zip to the v0.1.0 release.'
+          }
+          else {
+            Write-Host 'v0.1.0 does not exist yet; the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50).'
+          }
