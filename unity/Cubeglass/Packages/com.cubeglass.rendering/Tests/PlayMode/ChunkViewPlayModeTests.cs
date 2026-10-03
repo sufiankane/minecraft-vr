@@ -203,6 +203,57 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [UnityTest]
+        public IEnumerator DirtyBurstSharesTheUploadBudgetAndDrainsAcrossFrames()
+        {
+            const int Budget = 2;
+            ChunkViewManager manager = CreateManager("DirtyBurst", SmallConfig(Budget), capacity: 16, out _);
+            ChunkCoord[] chunks = NineAround(0, 0, 0);
+            for (int i = 0; i < chunks.Length; i++)
+            {
+                manager.OnLoad(chunks[i]);
+            }
+
+            yield return PumpUntilUploaded(manager, chunks, 120);
+            Assert.AreEqual(chunks.Length, manager.ActiveViews, "the fixture chunks did not upload");
+
+            // Three edits in one frame in the corner, centre and opposite
+            // corner chunks; their neighbourhoods union to every loaded chunk.
+            long remeshesBefore = manager.RemeshedChunks;
+            int[] edited = { 0, 4, 8 };
+            for (int i = 0; i < edited.Length; i++)
+            {
+                Int3 cell = ChunkMath.ToWorld(chunks[edited[i]], new Int3(0, 0, 0));
+                Assert.AreEqual(
+                    EditResult.Applied,
+                    manager.World.Apply(new EditCommand(cell, new BlockId(1), BlockId.Air, 0L)),
+                    "fixture break {0} was rejected",
+                    i);
+            }
+
+            Assert.AreEqual(chunks.Length, manager.DirtyChunks, "every loaded chunk must be dirty in the same frame");
+
+            int processed = manager.ProcessDirtyRemeshes();
+            Assert.AreEqual(Budget, processed, "the per-frame upload cap is the limiter");
+            Assert.AreEqual(0, manager.ProcessDirtyRemeshes(), "a second pass in the same frame must not exceed the cap");
+            Assert.LessOrEqual(manager.UploadedThisFrame, Budget, "the upload cap was exceeded in one frame");
+
+            int frames = 1;
+            while (manager.DirtyChunks > 0 && frames < 30)
+            {
+                manager.ProcessDirtyRemeshes();
+                frames++;
+                yield return null;
+            }
+
+            Assert.AreEqual(0, manager.DirtyChunks, "the dirty queue did not drain");
+            Assert.AreEqual(
+                chunks.Length,
+                manager.RemeshedChunks - remeshesBefore,
+                "every dirty chunk must be remeshed exactly once");
+            Assert.LessOrEqual(manager.UploadedThisFrame, Budget, "the upload cap was exceeded on the drain frame");
+        }
+
+        [UnityTest]
         public IEnumerator SampledPlayerPositionIsConvertedBackToTheInternalFrame()
         {
             StreamingRuntime runtime = CreateRuntime("MirrorWalk", SmallConfig(4), poolCapacity: 16);

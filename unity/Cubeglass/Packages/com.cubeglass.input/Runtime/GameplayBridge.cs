@@ -42,6 +42,16 @@ namespace Cubeglass.Unity.Input
     /// </list>
     /// </para>
     /// <para>
+    /// <b>Live world.</b> <see cref="ChunkViewManager"/> replaces its world
+    /// instance when it compacts (see
+    /// <see cref="ChunkViewManager.WorldCompactions"/>), so <see cref="Tick"/>
+    /// re-resolves <c>streaming.Views.World</c> by reference before every use
+    /// (<see cref="RefreshWorld"/>); a cached reference would send edits to the
+    /// detached world, whose <c>ChunkChanged</c> no longer reaches the
+    /// manager's remesh subscription. The compare is allocation-free and a
+    /// no-op on the steady path.
+    /// </para>
+    /// <para>
     /// The bridge also forwards editing stats (<see cref="HotbarIndex"/>,
     /// <see cref="BreakProgress"/>, <see cref="TrackingState"/>) and the
     /// planar speed for the overlay/vignette, and raises
@@ -72,7 +82,11 @@ namespace Cubeglass.Unity.Input
         /// <summary>Raised by tests/scene builders when the world is not ready yet.</summary>
         public event Action Initialized;
 
-        /// <summary>The streamed world (set through the runtime's view manager).</summary>
+        /// <summary>
+        /// The streamed world; re-resolved from the runtime's view manager
+        /// every tick so a manager compaction cannot leave the bridge editing
+        /// a detached instance (see <see cref="RefreshWorld"/>).
+        /// </summary>
         public World World
         {
             get { return world; }
@@ -262,6 +276,26 @@ namespace Cubeglass.Unity.Input
         }
 
         /// <summary>
+        /// Picks up a world instance replaced by a
+        /// <see cref="ChunkViewManager"/> compaction (S7 Task 4a fix round).
+        /// Cheap reference compare; keeps the previous world when the runtime
+        /// or its manager is not available.
+        /// </summary>
+        private void RefreshWorld()
+        {
+            if (streaming == null || streaming.Views == null)
+            {
+                return;
+            }
+
+            World live = streaming.Views.World;
+            if (live != null && !ReferenceEquals(live, world))
+            {
+                world = live;
+            }
+        }
+
+        /// <summary>
         /// Runs one deterministic tick in the documented order: input (with
         /// gaze pointer, quality and snap routing), controller, interaction.
         /// A no-op until <see cref="EnsureInitialized"/> succeeds.
@@ -272,6 +306,12 @@ namespace Cubeglass.Unity.Input
         public void Tick(double dt)
         {
             if (!EnsureInitialized())
+            {
+                return;
+            }
+
+            RefreshWorld();
+            if (world == null)
             {
                 return;
             }

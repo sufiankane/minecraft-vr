@@ -17,8 +17,9 @@ namespace Cubeglass.Unity.Rendering.Tests
     /// the player on its surface, gaze targeting, hardness-timed breaking,
     /// face placement, hotbar cycling, degrees-per-second turn through the
     /// controller, the snap edge on the heading, recentre clearing the head
-    /// offset, vignette speed forwarding and a steady-frame zero-allocation
-    /// check over the bridge + HUD path.
+    /// offset, the post-compaction live-world re-resolve, vignette speed
+    /// forwarding and a steady-frame zero-allocation check over the bridge +
+    /// HUD path.
     /// </summary>
     public sealed class GameplayPlayModeTests
     {
@@ -166,6 +167,91 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(1, bridge.EditsApplied);
             Assert.IsTrue(bridge.SaveRequested, "the edit raised the save request for Task 4");
             yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator BreakAfterWorldCompactionStillRemeshesThroughTheLiveWorld()
+        {
+            // Regression for the S7 Task 4a fix round: ChunkViewManager replaces
+            // its World when it compacts, and GameplayBridge used to cache the
+            // old instance, so edits no longer reached the manager's
+            // ChunkChanged subscription and the render mesh went stale.
+            ChunkViewManager manager = runtime.Views;
+            World worldBeforeCompaction = manager.World;
+            Assert.AreEqual(0, manager.WorldCompactions, "fixture assumed no compaction yet");
+            Vector3 home = streamPlayer.position;
+
+            // Drive the real generation counter through the public path: the
+            // sample jumps far away every frame, so one new chunk is generated
+            // per frame until worldChunks passes 2 * live + 64 and the manager
+            // compacts the neighbour-snapshot world.
+            int guard = 0;
+            while (manager.WorldCompactions == 0 && guard < 600)
+            {
+                streamPlayer.position = home + new Vector3(16f * (1 + (guard % 64)), 0f, 0f);
+                runtime.Tick();
+                guard++;
+                yield return null;
+            }
+
+            Assert.GreaterOrEqual(manager.WorldCompactions, 1, "the world compaction never triggered");
+            World worldAfterCompaction = manager.World;
+            Assert.AreNotSame(worldBeforeCompaction, worldAfterCompaction, "compaction must replace the world instance");
+
+            // Let the home column re-stream into the replaced world.
+            streamPlayer.position = home;
+            for (int frame = 0; frame < 480 && !(ColumnReady(8, 8) && IsQuiescent()); frame++)
+            {
+                runtime.Tick();
+                yield return null;
+            }
+
+            Assert.IsTrue(ColumnReady(8, 8) && IsQuiescent(), "the home column did not re-stream after compaction");
+
+            bridge.Tick(Dt);
+
+            // Fixture edits go through the world the bridge will raycast, so
+            // the break lands in both the fixed and the pre-fix run; only the
+            // mesh change distinguishes them.
+            World bridgeWorld = bridge.World;
+            var target = new Int3(8, surfaceFeetY, 6);
+            var inBetween = new Int3(8, surfaceFeetY, 7);
+            SetBlock(bridgeWorld, inBetween, BlockId.Air);
+            SetBlock(bridgeWorld, target, new BlockId(1));
+
+            for (int frame = 0; frame < 120 && manager.DirtyChunks > 0; frame++)
+            {
+                runtime.Tick();
+                yield return null;
+            }
+
+            Assert.AreEqual(0, manager.DirtyChunks, "the fixture edits did not remesh");
+            ChunkCoord chunkCoord = ChunkMath.ToChunk(target);
+            Assert.IsTrue(manager.TryGetView(chunkCoord, out ChunkView view), "the target chunk has no active view");
+            int before = view.Mesh.vertexCount;
+
+            input.Frame = Frame(primary: ButtonState.Held);
+            for (int frame = 0; frame < 120 && bridgeWorld.Get(target) != BlockId.Air; frame++)
+            {
+                bridge.Tick(Dt);
+            }
+
+            Assert.AreEqual(BlockId.Air, bridgeWorld.Get(target), "the stone did not break through the bridge");
+            Assert.AreEqual(1, bridge.EditsApplied, "exactly one edit landed");
+
+            for (int frame = 0; frame < 120 && manager.DirtyChunks > 0; frame++)
+            {
+                runtime.Tick();
+                yield return null;
+            }
+
+            Assert.AreEqual(0, manager.DirtyChunks, "the break did not reach the live world's remesh queue");
+            Assert.IsTrue(manager.TryGetView(chunkCoord, out view), "the target chunk lost its view");
+            Assert.AreNotEqual(
+                before,
+                view.Mesh.vertexCount,
+                "the rendered mesh for the edited chunk must change after compaction");
+            Assert.AreSame(manager.World, bridge.World, "the bridge must re-resolve the live world after compaction");
         }
 
         [UnityTest]
@@ -448,7 +534,12 @@ namespace Cubeglass.Unity.Rendering.Tests
 
         private void SetBlock(Int3 cell, BlockId block)
         {
-            EditResult result = world.Apply(new EditCommand(cell, world.Get(cell), block, 0L));
+            SetBlock(runtime.Views.World, cell, block);
+        }
+
+        private static void SetBlock(World target, Int3 cell, BlockId block)
+        {
+            EditResult result = target.Apply(new EditCommand(cell, target.Get(cell), block, 0L));
             Assert.AreEqual(EditResult.Applied, result, "fixture edit at {0} was rejected", cell);
         }
 

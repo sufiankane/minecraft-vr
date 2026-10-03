@@ -144,9 +144,9 @@ On `InputFrame.RecenterPressed`:
    offset: the rig returns to the player's forward immediately and the next
    sample is measured from the recentred baseline.
 3. When the pose provider implements `IRecenterablePoseProvider`, the source is
-   recentred as well (the scripted provider zeroes its base pose; the native
-   bridge's `reset_origin_carina` command path is wired when a command word is
-   pinned). Otherwise the current sample rotation becomes the local baseline
+   recentred as well (the scripted provider zeroes its base pose; S12 wires the
+   native bridge's absolute `reset_origin_carina` command once its command word
+   is pinned). Otherwise the current sample rotation becomes the local baseline
    (local offset reset), which clears the offset without source support.
 
 The net effect is heading zero plus head offset zero, so the view faces the
@@ -158,6 +158,11 @@ player's forward (internal -Z, Unity +Z).
 recentre → `PlayerRoot` pose), then `WorldUi.LateUpdate` re-anchors the hotbar
 on the applied body pose (body-relative, not head-locked), then `OnGUI` draws.
 `LateLatchPose` applies the head rotation at `Camera.onPreCull`, after both.
+The bridge re-resolves `streaming.Views.World` by reference at the start of
+every tick, because `ChunkViewManager` replaces the world instance when it
+compacts; a cached reference would send edits to a detached world whose
+`ChunkChanged` no longer reaches the remesh subscription. Re-resolving was
+chosen over a `WorldReplaced` callback on the manager as the smaller change.
 
 ## Consequences
 
@@ -170,10 +175,13 @@ on the applied body pose (body-relative, not head-locked), then `OnGUI` draws.
 - Bad: `ChunkViewManager` dirties the Chebyshev-1 neighbourhood on
   `World.ChunkChanged` because the event carries the chunk, not the edit cell;
   this is a superset of `ChunkEditPropagation.GetAffectedChunks` and remeshes
-  unchanged neighbours.
+  unchanged neighbours. Follow-up: a cell-carrying edit signal in the Voxel
+  layer (an additive `ChunkChanged` variant or an `EditApplied` event) makes
+  the dirty set exact; until then the neighbourhood is the correctness-safe
+  approximation.
 - Bad: recentre clears yaw/pitch/roll of the head offset in the S7 slice; the
   native source's yaw-only `reset_origin_carina` behaviour is preserved as an
-  option when that path is pinned.
+  option once S12 pins the bridge command word.
 
 ## Confirmation
 
@@ -182,8 +190,10 @@ on the applied body pose (body-relative, not head-locked), then `OnGUI` draws.
   baseline; `PlayerRootTests` conversion and heading; `InputMappingTests`
   degrees-per-second turn and separate snap edge.
 - PlayMode: gaze ray hits the rendered surface in front; dirty remesh after
-  break/place; 45 deg/s scripted turn yields 45 degrees; snap edge survives
-  pose ticks; recentre clears heading and head offset.
+  break/place; a multi-chunk dirty burst respects the per-frame upload cap; an
+  edit after a world compaction still remeshes through the live world;
+  45 deg/s scripted turn yields 45 degrees; snap edge survives pose ticks;
+  recentre clears heading and head offset.
 - `LEDGER`/review: no adapter contains a second Z-flip; the mesh path's mirror
   and winding flip appear in the same function.
 
