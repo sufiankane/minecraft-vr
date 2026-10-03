@@ -109,14 +109,26 @@ namespace Cubeglass.Editor
         }
 
         /// <summary>
+        /// The internal-frame sample column for an authored Unity-space spawn
+        /// column: the cell the mirrored Unity cell centre falls in. X is not
+        /// mirrored; Z is <see cref="InternalColumnForUnity"/> of the column.
+        /// </summary>
+        public static void SampleColumnForUnitySpawn(
+            int unityColumnX, int unityColumnZ, out int sampleX, out int sampleZ)
+        {
+            sampleX = unityColumnX;
+            sampleZ = InternalColumnForUnity(unityColumnZ);
+        }
+
+        /// <summary>
         /// The generated surface top (one above the grass layer) for an
         /// authored Unity-space spawn column, sampled at the mirrored internal
         /// column.
         /// </summary>
         public static int SampleSurfaceTop(int unityColumnX, int unityColumnZ, long seed)
         {
-            return TerrainGenerator.HeightAt(
-                unityColumnX, InternalColumnForUnity(unityColumnZ), seed) + 1;
+            SampleColumnForUnitySpawn(unityColumnX, unityColumnZ, out int sampleX, out int sampleZ);
+            return TerrainGenerator.HeightAt(sampleX, sampleZ, seed) + 1;
         }
 
         /// <summary>
@@ -127,11 +139,31 @@ namespace Cubeglass.Editor
         public static Vector3 ComputeSpawnPosition(
             int unityColumnX, int unityColumnZ, long seed, int heightAboveSurface)
         {
-            int internalZ = InternalColumnForUnity(unityColumnZ);
+            SampleColumnForUnitySpawn(unityColumnX, unityColumnZ, out int sampleX, out int sampleZ);
             return new Vector3(
                 unityColumnX + 0.5f,
-                SampleSurfaceTop(unityColumnX, unityColumnZ, seed) + heightAboveSurface,
-                -(internalZ + 0.5f));
+                TerrainGenerator.HeightAt(sampleX, sampleZ, seed) + 1 + heightAboveSurface,
+                -(sampleZ + 0.5f));
+        }
+
+        /// <summary>
+        /// The committed scene's starter-ground surface top: the builder's
+        /// standard spawn column and <see cref="DefaultWorldSeed"/>.
+        /// </summary>
+        public static int DefaultSurfaceTop()
+        {
+            return SampleSurfaceTop(SpawnColumnX, SpawnColumnZ, DefaultWorldSeed);
+        }
+
+        /// <summary>
+        /// The committed scene's player spawn position: the builder's standard
+        /// spawn column, <see cref="DefaultWorldSeed"/> and
+        /// <see cref="SpawnHeightAboveSurface"/>.
+        /// </summary>
+        public static Vector3 DefaultSpawnPosition()
+        {
+            return ComputeSpawnPosition(
+                SpawnColumnX, SpawnColumnZ, DefaultWorldSeed, SpawnHeightAboveSurface);
         }
 
         private const string ScenesFolder = "Assets/Scenes";
@@ -173,9 +205,8 @@ namespace Cubeglass.Editor
             Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             var materials = new Dictionary<Color, Material>();
 
-            int surfaceTop = SampleSurfaceTop(SpawnColumnX, SpawnColumnZ, DefaultWorldSeed);
-            Vector3 spawn = ComputeSpawnPosition(
-                SpawnColumnX, SpawnColumnZ, DefaultWorldSeed, SpawnHeightAboveSurface);
+            int surfaceTop = DefaultSurfaceTop();
+            Vector3 spawn = DefaultSpawnPosition();
 
             BuildStarterGround(materials, surfaceTop);
 
@@ -203,7 +234,8 @@ namespace Cubeglass.Editor
             AssetDatabase.SaveAssets();
         }
 
-        private static void BuildStarterGround(Dictionary<Color, Material> materials, int surfaceTop)        {
+        private static void BuildStarterGround(Dictionary<Color, Material> materials, int surfaceTop)
+        {
             CreatePrimitive(
                 "StarterGround", null, PrimitiveType.Plane,
                 new Vector3(
