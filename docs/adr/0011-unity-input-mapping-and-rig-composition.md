@@ -120,7 +120,7 @@ Both backends map to the same `InputFrame`; device-right look is a negative
 | Place | A | right mouse | `Secondary` edge machine (edge) |
 | Recentre | Y | R | `RecenterPressed` one-frame edge |
 | Hotbar | RB/LB | E/Q | `HotbarDelta` +/-1 on the press edge |
-| Snap turn | B | F | `ISnapInputSource.ConsumeSnapPressed()` one-shot edge, **not** an `InputFrame` field |
+| Snap turn | D-pad left/right | F (right) / Shift+F (left) | `ISnapInputSource.ConsumeSnapDirection()` one-shot edge (−1 left / +1 right), **not** an `InputFrame` field |
 
 ### Turn semantics
 
@@ -129,11 +129,11 @@ Both backends map to the same `InputFrame`; device-right look is a negative
   continuous turn works with snap disabled and a pure `ScriptedInputProvider`
   at 45 deg/s for one second produces a 45 degree heading change.
 - The snap edge is provider-additive (`ISnapInputSource`) and is consumed by
-  the bridge before `Step`. `SnapTurn.ApplyIncrement(1)` returns the Unity-yaw
-  degrees (default +45, turn right); the bridge subtracts them from
-  `PlayerState.YawRadians` and records `LastSnapDegrees`. Applying it to the
-  heading (rather than a rig transform) is what makes the late latch unable to
-  overwrite it and makes movement follow the turn.
+  the bridge before `Step`. `SnapTurn.ApplyIncrement(direction)` returns the
+  signed Unity-yaw degrees (default ±45; positive turns right); the bridge
+  subtracts them from `PlayerState.YawRadians` and records `LastSnapDegrees`.
+  Applying it to the heading (rather than a rig transform) is what makes the
+  late latch unable to overwrite it and makes movement follow the turn.
 
 ### Recentre semantics
 
@@ -188,7 +188,7 @@ chosen over a `WorldReplaced` callback on the manager as the smaller change.
 - EditMode: `ChunkViewEditModeTests` six-face cross products after the mirror;
   `LateLatchPoseTests` head-relative rotation, ignored position and recentre
   baseline; `PlayerRootTests` conversion and heading; `InputMappingTests`
-  degrees-per-second turn and separate snap edge.
+  degrees-per-second turn and the signed snap direction edge.
 - PlayMode: gaze ray hits the rendered surface in front; dirty remesh after
   break/place; a multi-chunk dirty burst respects the per-frame upload cap; an
   edit after a world compaction still remeshes through the live world;

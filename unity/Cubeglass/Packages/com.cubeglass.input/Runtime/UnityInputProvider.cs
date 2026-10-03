@@ -8,9 +8,10 @@ namespace Cubeglass.Unity.Input
     /// <summary>
     /// Samples the legacy Unity input backend into a
     /// <see cref="Cubeglass.Gameplay.InputFrame"/> (S7 Task 3): gamepad (left
-    /// stick move, right stick turn, X break / A place, Y recentre, B
-    /// snap-turn, LB/RB hotbar) and keyboard/mouse (WASD, mouse-X look, LMB
-    /// break hold, RMB place, Q/E hotbar, R recentre, F snap-turn).
+    /// stick move, right stick turn, X break / A place, Y recentre, D-pad
+    /// left/right snap-turn, LB/RB hotbar) and keyboard/mouse (WASD, mouse-X
+    /// look, LMB break hold, RMB place, Q/E hotbar, R recentre, F snap right /
+    /// Shift+F snap left).
     /// </summary>
     /// <remarks>
     /// <para>
@@ -32,15 +33,16 @@ namespace Cubeglass.Unity.Input
     /// <b>Turn units.</b> The frame's <c>TurnSnap</c> is degrees per second
     /// (S4, ADR-0008): the gamepad adapter passes the stick deflection with the
     /// configured rate, the mouse adapter converts the per-frame pixel delta to
-    /// a rate by dividing by the frame delta. The discrete snap press (B/F) is
-    /// a separate one-shot edge exposed through <see cref="ConsumeSnapPressed"/>
-    /// (S7 Task 4a).
+    /// a rate by dividing by the frame delta. The discrete snap direction
+    /// (D-pad/F) is a separate one-shot edge exposed through
+    /// <see cref="ConsumeSnapDirection"/> (S7 Task 4a).
     /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class UnityInputProvider : MonoBehaviour, IInputProvider, ISnapInputSource
     {
         private const string MouseXAxis = "Mouse X";
+        private const float SnapAxisThreshold = 0.5f;
 
         [Header("Mode")]
         [SerializeField] private InputMode mode = InputMode.Auto;
@@ -49,6 +51,7 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private string gamepadMoveAxisX = "Gamepad Move X";
         [SerializeField] private string gamepadMoveAxisY = "Gamepad Move Y";
         [SerializeField] private string gamepadTurnAxisX = "Gamepad Turn X";
+        [SerializeField] private string gamepadSnapAxisX = "Gamepad Snap X";
 
         [Header("Tuning")]
         [SerializeField] private float moveDeadzone = InputMapper.DefaultMoveDeadzone;
@@ -130,14 +133,14 @@ namespace Cubeglass.Unity.Input
         }
 
         /// <summary>
-        /// Returns the snap-turn press edge exactly once (S7 Task 4a). The
-        /// bridge must call <see cref="Sample"/> first in the same frame; the
-        /// per-frame poll dedupe guarantees the edge is not lost when
-        /// <see cref="Update"/> also ran.
+        /// Returns the snap-turn direction-change edge exactly once (S7 Task
+        /// 4a): -1 left, +1 right. The bridge must call <see cref="Sample"/>
+        /// first in the same frame; the per-frame poll dedupe guarantees the
+        /// edge is not lost when <see cref="Update"/> also ran.
         /// </summary>
-        public bool ConsumeSnapPressed()
+        public int ConsumeSnapDirection()
         {
-            return mapper != null && mapper.ConsumeSnapPressed();
+            return mapper != null ? mapper.ConsumeSnapDirection() : 0;
         }
 
         /// <summary>Resolves <see cref="InputMode.Auto"/> again and clears button edges.</summary>
@@ -240,6 +243,15 @@ namespace Cubeglass.Unity.Input
                 secondary = swap;
             }
 
+            // The D-pad deflects the configured axis; the provider applies the
+            // coarse half-deflection threshold and the mapper owns the edge.
+            float snapAxis = string.IsNullOrEmpty(gamepadSnapAxisX)
+                ? 0f
+                : UnityEngine.Input.GetAxisRaw(gamepadSnapAxisX);
+            int snapDirection = Mathf.Abs(snapAxis) >= SnapAxisThreshold
+                ? (snapAxis > 0f ? 1 : -1)
+                : 0;
+
             return new RawInputSample(
                 new Vector2f(moveX, moveY),
                 new Vector2f(turn, 0f),
@@ -247,7 +259,7 @@ namespace Cubeglass.Unity.Input
                 primary,
                 secondary,
                 UnityEngine.Input.GetKey(KeyCode.JoystickButton3),
-                UnityEngine.Input.GetKey(KeyCode.JoystickButton1),
+                snapDirection,
                 UnityEngine.Input.GetKey(KeyCode.JoystickButton5),
                 UnityEngine.Input.GetKey(KeyCode.JoystickButton4));
         }
@@ -268,6 +280,11 @@ namespace Cubeglass.Unity.Input
             // turns it into the S4 degrees-per-second rate that Step integrates.
             float lookDegreesPerSecond = deltaTime > 0f ? mouseDegreesPerPixel / deltaTime : 0f;
 
+            bool snapHeld = UnityEngine.Input.GetKey(KeyCode.F);
+            bool snapShift = UnityEngine.Input.GetKey(KeyCode.LeftShift)
+                || UnityEngine.Input.GetKey(KeyCode.RightShift);
+            int snapDirection = snapHeld ? (snapShift ? -1 : 1) : 0;
+
             return new RawInputSample(
                 new Vector2f(moveX, moveY),
                 new Vector2f(look, 0f),
@@ -275,7 +292,7 @@ namespace Cubeglass.Unity.Input
                 UnityEngine.Input.GetMouseButton(0),
                 UnityEngine.Input.GetMouseButton(1),
                 UnityEngine.Input.GetKeyDown(KeyCode.R),
-                UnityEngine.Input.GetKeyDown(KeyCode.F),
+                snapDirection,
                 UnityEngine.Input.GetKeyDown(KeyCode.E),
                 UnityEngine.Input.GetKeyDown(KeyCode.Q));
         }

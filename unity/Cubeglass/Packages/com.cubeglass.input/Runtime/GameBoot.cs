@@ -1,0 +1,153 @@
+using Cubeglass.CoreMath;
+using Cubeglass.Unity.Rendering;
+using UnityEngine;
+
+namespace Cubeglass.Unity.Input
+{
+    /// <summary>
+    /// Boots the S7 game scene slice (Task 4c): creates the persistent
+    /// <see cref="FileWorldStore"/>, wires it into the
+    /// <see cref="StreamingRuntime"/> and the <see cref="SaveBatches"/> sink,
+    /// and seeds <see cref="GameplayBridge.Player"/> from the authored
+    /// <see cref="PlayerRoot"/> pose so the first bridge tick starts at the
+    /// scene spawn instead of the <c>PlayerState</c> origin.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="FileWorldStore"/> is a plain class and cannot be serialized
+    /// into the scene, so the committed scene needs a runtime factory: this
+    /// component. It runs in <c>Start</c> (after every <c>Awake</c>, so the
+    /// runtime's view manager exists) and before the first <c>Update</c> of
+    /// the bridge, which is pinned to -100.
+    /// </para>
+    /// <para>
+    /// The world name defaults to <see cref="DefaultWorldName"/> and the store
+    /// root to <see cref="FileWorldStore.DefaultRootDirectory"/>
+    /// (<c>Application.persistentDataPath/Cubeglass/saves</c>).
+    /// <see cref="WorldNameOverride"/> and <see cref="RootDirectoryOverride"/>
+    /// are test seams: the PlayMode smoke points them at a unique temp world
+    /// before loading the scene so it never touches the player's real save.
+    /// They are process-wide and must be cleared after the test.
+    /// </para>
+    /// <para>
+    /// The spawn seed is one-way (scene pose into <c>PlayerState</c>); the
+    /// bridge owns the state afterwards and drives <see cref="PlayerRoot"/>
+    /// from it, so nothing reads the transform back.
+    /// </para>
+    /// </remarks>
+    [DefaultExecutionOrder(-300)]
+    [DisallowMultipleComponent]
+    public sealed class GameBoot : MonoBehaviour
+    {
+        /// <summary>The world name the committed game scene boots.</summary>
+        public const string DefaultWorldName = "default";
+
+        [SerializeField] private string worldName = DefaultWorldName;
+        [SerializeField] private StreamingRuntime streaming;
+        [SerializeField] private SaveBatches saves;
+        [SerializeField] private GameplayBridge bridge;
+        [SerializeField] private PlayerRoot playerRoot;
+
+        private FileWorldStore store;
+
+        /// <summary>
+        /// Test seam: when non-empty, overrides the serialized world name for
+        /// the next boot. The scene's serialized value is untouched.
+        /// </summary>
+        public static string WorldNameOverride { get; set; }
+
+        /// <summary>
+        /// Test seam: when non-null, overrides the store root directory for
+        /// the next boot.
+        /// </summary>
+        public static string RootDirectoryOverride { get; set; }
+
+        /// <summary>The store created at boot; null before <c>Start</c> and after destroy.</summary>
+        public FileWorldStore Store
+        {
+            get { return store; }
+        }
+
+        /// <summary>The serialized world name; the static override applies at runtime only.</summary>
+        public string WorldName
+        {
+            get { return worldName; }
+            set { worldName = value; }
+        }
+
+        /// <summary>The streaming runtime the store is wired into.</summary>
+        public StreamingRuntime Streaming
+        {
+            get { return streaming; }
+            set { streaming = value; }
+        }
+
+        /// <summary>The batched persistence sink the store is wired into.</summary>
+        public SaveBatches Saves
+        {
+            get { return saves; }
+            set { saves = value; }
+        }
+
+        /// <summary>The bridge whose player state is seeded from the scene spawn.</summary>
+        public GameplayBridge Bridge
+        {
+            get { return bridge; }
+            set { bridge = value; }
+        }
+
+        /// <summary>The authored spawn the player state is seeded from.</summary>
+        public PlayerRoot PlayerRoot
+        {
+            get { return playerRoot; }
+            set { playerRoot = value; }
+        }
+
+        private void Start()
+        {
+            string name = string.IsNullOrEmpty(WorldNameOverride) ? worldName : WorldNameOverride;
+            store = RootDirectoryOverride != null
+                ? new FileWorldStore(name, RootDirectoryOverride)
+                : new FileWorldStore(name);
+
+            if (streaming != null)
+            {
+                streaming.Store = store;
+                streaming.AppliedEdits = saves;
+            }
+
+            if (saves != null)
+            {
+                saves.Store = store;
+            }
+
+            SeedPlayerFromSpawn();
+        }
+
+        /// <summary>Destroys the store after draining queued writes.</summary>
+        private void OnDestroy()
+        {
+            if (store != null)
+            {
+                store.Dispose();
+                store = null;
+            }
+        }
+
+        private void SeedPlayerFromSpawn()
+        {
+            if (bridge == null || playerRoot == null || !bridge.EnsureInitialized())
+            {
+                return;
+            }
+
+            Vector3 unity = playerRoot.transform.position;
+            Vec3 position = UnityConvert.ToUnity(new Vec3(unity.x, unity.y, unity.z));
+            Vector3 forward = playerRoot.transform.forward;
+            float yaw = -Mathf.Atan2(forward.x, forward.z);
+            bridge.Player.Position = position;
+            bridge.Player.YawRadians = yaw;
+            playerRoot.SetPlayerPose(position, yaw);
+        }
+    }
+}

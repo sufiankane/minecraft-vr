@@ -461,10 +461,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a3f48c48a3c763a4e92d7b100b595c92, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.UnityInputProvider
-  moveAxisX: Horizontal
-  moveAxisY: Vertical
-  turnSnapDegrees: 30
-  invertHotbarScroll: 0
+  mode: 0
+  gamepadMoveAxisX: Gamepad Move X
+  gamepadMoveAxisY: Gamepad Move Y
+  gamepadTurnAxisX: Gamepad Turn X
+  moveDeadzone: 0.15
+  lookDeadzone: 0.15
+  turnDegreesPerSecond: 90
+  mouseDegreesPerPixel: 0.2
+  swapGamepadButtons: 0
+  invertTurn: 0
 --- !u!114 &21
 MonoBehaviour:
   m_ObjectHideFlags: 0

@@ -30,8 +30,7 @@
     runtime never touches (Unity's runtime does not ship that assembly). The
     rendering package meshes through `SliceBlockRegistry`, a code-built copy
     of the S7 terrain block definitions; the JSON remains the source of truth
-    for the pure .NET modules and Task 4 can revisit shipping the full
-    registry if the slice grows past the six built-in blocks.
+    for the pure .NET modules.
 
 .EXAMPLE
     powershell -File scripts/sync-unity-plugins.ps1

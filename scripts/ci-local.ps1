@@ -248,10 +248,14 @@ try {
             }
             Push-Location $RepoRoot
             try {
-                # The S6 calibration scene (Assets/Scenes/Calibration.unity) is
-                # committed and byte-stable; the PlayMode lane loads it directly.
-                # Regenerating it is a manual menu/batch action and is
-                # deliberately not part of this per-commit lane.
+                # The S6 calibration scene (Assets/Scenes/Calibration.unity) and
+                # the S7 game scene (Assets/Scenes/Game.unity) are committed and
+                # byte-stable; the PlayMode lane loads both directly. The game
+                # scene smoke (GameScenePlayModeTests) lives in the same
+                # Cubeglass.Unity.Rendering.PlayTests assembly, so this single
+                # invocation covers it with no extra filter. Regenerating either
+                # scene is a manual menu/batch action and is deliberately not
+                # part of this per-commit lane.
                 Invoke-Checked 'unity test unity/Cubeglass --mode EditMode --non-interactive' {
                     & $UnityExe test 'unity/Cubeglass' --mode EditMode --non-interactive --output $UnityResultsEditMode
                 }

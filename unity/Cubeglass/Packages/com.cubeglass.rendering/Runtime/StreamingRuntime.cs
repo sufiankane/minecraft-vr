@@ -25,7 +25,11 @@ namespace Cubeglass.Unity.Rendering
     /// back to the internal frame (ADR-0004/ADR-0011, R52) before the
     /// scheduler sees it, and drains the view manager's dirty remeshes so an
     /// edit and the streaming that follows it share the same upload budget.
+    /// The execution order is pinned to -200 so the game scene's
+    /// <c>GameplayBridge</c> (-100) ticks after streaming and the frame's
+    /// chunk loads are already resident when the bridge resolves the world.
     /// </remarks>
+    [DefaultExecutionOrder(-200)]
     [DisallowMultipleComponent]
     public sealed class StreamingRuntime : MonoBehaviour
     {

@@ -1,0 +1,19 @@
+{
+  "name": "Cubeglass.Editor",
+  "rootNamespace": "Cubeglass.Editor",
+  "references": [
+    "Cubeglass.Unity.Input",
+    "Cubeglass.Unity.Rendering"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

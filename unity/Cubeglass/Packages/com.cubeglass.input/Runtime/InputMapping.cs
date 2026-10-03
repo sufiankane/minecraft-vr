@@ -42,7 +42,7 @@ namespace Cubeglass.Unity.Input
             bool primaryDown,
             bool secondaryDown,
             bool recenterDown,
-            bool snapTurnDown,
+            int snapDirection,
             bool hotbarNextDown,
             bool hotbarPrevDown,
             TrackingQuality quality = TrackingQuality.None)
@@ -53,7 +53,7 @@ namespace Cubeglass.Unity.Input
             PrimaryDown = primaryDown;
             SecondaryDown = secondaryDown;
             RecenterDown = recenterDown;
-            SnapTurnDown = snapTurnDown;
+            SnapDirection = snapDirection;
             HotbarNextDown = hotbarNextDown;
             HotbarPrevDown = hotbarPrevDown;
             Quality = quality;
@@ -77,8 +77,8 @@ namespace Cubeglass.Unity.Input
         /// <summary>Recentre button physical state (gamepad Y, R).</summary>
         public bool RecenterDown { get; }
 
-        /// <summary>Snap-turn button physical state (gamepad B, F).</summary>
-        public bool SnapTurnDown { get; }
+        /// <summary>Snap-turn control deflection: -1 left, +1 right, 0 neutral.</summary>
+        public int SnapDirection { get; }
 
         /// <summary>Next-hotbar-slot button physical state (gamepad RB, E).</summary>
         public bool HotbarNextDown { get; }
@@ -110,9 +110,9 @@ namespace Cubeglass.Unity.Input
     /// delta X scaled by <see cref="RawInputSample.LookDegreesPerUnit"/>, in
     /// degrees per second; device-right look maps to a negative rate because
     /// internal yaw is the negative of Unity yaw (ADR-0004/ADR-0008). A
-    /// snap-turn press (B/F) is not part of the frame: it is exposed
-    /// separately through <see cref="SnapPressed"/> and
-    /// <see cref="ConsumeSnapPressed"/> (S7 Task 4a).</description></item>
+    /// snap-turn edge (D-pad/F) is not part of the frame: it is exposed
+    /// separately through <see cref="SnapDirection"/> and
+    /// <see cref="ConsumeSnapDirection"/> (S7 Task 4a).</description></item>
     /// <item><term>Primary</term><description>gamepad X / mouse left through the
     /// S4 <see cref="ButtonState"/> edge machine (break, hold).</description></item>
     /// <item><term>Secondary</term><description>gamepad A / mouse right through
@@ -126,8 +126,8 @@ namespace Cubeglass.Unity.Input
     /// adds gaze targeting and the pose-derived quality.</description></item>
     /// </list>
     /// <para>
-    /// <b>Allocation.</b> <see cref="Map"/> stores seven previous button flags and
-    /// allocates nothing.
+    /// <b>Allocation.</b> <see cref="Map"/> stores the previous button states
+    /// and the pending snap direction and allocates nothing.
     /// </para>
     /// </remarks>
     public sealed class InputMapper
@@ -141,7 +141,7 @@ namespace Cubeglass.Unity.Input
         private bool primaryDown;
         private bool secondaryDown;
         private bool recenterDown;
-        private bool snapTurnDown;
+        private int snapDirection;
         private bool hotbarNextDown;
         private bool hotbarPrevDown;
 
@@ -160,21 +160,23 @@ namespace Cubeglass.Unity.Input
         public float LookDeadzone { get; }
 
         /// <summary>
-        /// True when the latest <see cref="Map"/> call saw a snap-turn press
-        /// edge; reading <see cref="ConsumeSnapPressed"/> clears it.
+        /// The pending snap-turn direction from the latest <see cref="Map"/>
+        /// call: -1 left, +1 right or 0 when no direction-change edge landed;
+        /// reading <see cref="ConsumeSnapDirection"/> clears it.
         /// </summary>
-        public bool SnapPressed { get; private set; }
+        public int SnapDirection { get; private set; }
 
         /// <summary>
-        /// Returns the snap-turn press edge of the latest <see cref="Map"/> call
-        /// exactly once. Snap turn is not part of the S4
+        /// Returns the snap-turn direction-change edge of the latest
+        /// <see cref="Map"/> call exactly once: -1 left or +1 right, or 0 when
+        /// no edge landed. Snap turn is not part of the S4
         /// <see cref="InputFrame"/>; the bridge consumes this additive channel.
         /// </summary>
-        public bool ConsumeSnapPressed()
+        public int ConsumeSnapDirection()
         {
-            bool pressed = SnapPressed;
-            SnapPressed = false;
-            return pressed;
+            int direction = SnapDirection;
+            SnapDirection = 0;
+            return direction;
         }
 
         /// <summary>
@@ -190,7 +192,11 @@ namespace Cubeglass.Unity.Input
             // Device-right look is a negative TurnSnap: positive internal yaw
             // turns toward -X, which is Unity left (ADR-0004/ADR-0008).
             float turn = -look.X * raw.LookDegreesPerUnit;
-            SnapPressed = raw.SnapTurnDown && !snapTurnDown;
+
+            // A change to a non-zero snap direction is the press edge; holding
+            // the same direction (or releasing) emits nothing. -1 is left and
+            // +1 is right.
+            SnapDirection = raw.SnapDirection != snapDirection ? raw.SnapDirection : 0;
 
             int hotbarDelta = 0;
             if (raw.HotbarNextDown && !hotbarNextDown)
@@ -209,7 +215,7 @@ namespace Cubeglass.Unity.Input
             primaryDown = raw.PrimaryDown;
             secondaryDown = raw.SecondaryDown;
             recenterDown = raw.RecenterDown;
-            snapTurnDown = raw.SnapTurnDown;
+            snapDirection = raw.SnapDirection;
             hotbarNextDown = raw.HotbarNextDown;
             hotbarPrevDown = raw.HotbarPrevDown;
 
@@ -230,10 +236,10 @@ namespace Cubeglass.Unity.Input
             primaryDown = false;
             secondaryDown = false;
             recenterDown = false;
-            snapTurnDown = false;
+            snapDirection = 0;
             hotbarNextDown = false;
             hotbarPrevDown = false;
-            SnapPressed = false;
+            SnapDirection = 0;
         }
 
         /// <summary>
