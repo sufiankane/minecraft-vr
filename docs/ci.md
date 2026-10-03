@@ -103,6 +103,7 @@ real instrumentable code; the `calib` and `depcheck` floors remain at 90.
 | `Cubeglass.Voxel` (.NET) | `dotnet` | 90% |
 | `Cubeglass.Mesh` (.NET) | `dotnet` | 90% |
 | `Cubeglass.Gameplay` (.NET) | `dotnet` | 90% |
+| `Cubeglass.Streaming` (.NET) | `dotnet` | 90% |
 | `calib` (Python) | `python` | 90% |
 | `depcheck` (Python) | `python` | 90% |
 
@@ -111,14 +112,16 @@ Cobertura XML with `gcovr`, and runs
 `python -m depcheck coverage --report coverage.cobertura.xml --module core-math
 --floor 95`. The `dotnet` job builds the solution, runs each .NET test project
 with `XPlat Code Coverage` into `coverage/coremath`, `coverage/voxel`,
-`coverage/mesh` and `coverage/gameplay`, and enforces
+`coverage/mesh`, `coverage/gameplay` and `coverage/streaming`, and enforces
 `--module Cubeglass.CoreMath --floor 95`,
-`--module Cubeglass.Voxel --floor 90`, `--module Cubeglass.Mesh --floor 90` and
-`--module Cubeglass.Gameplay --floor 90`.
+`--module Cubeglass.Voxel --floor 90`, `--module Cubeglass.Mesh --floor 90`,
+`--module Cubeglass.Gameplay --floor 90` and
+`--module Cubeglass.Streaming --floor 90`.
 Each floor step resolves the first `coverage.cobertura.xml` found under its own
 per-project results directory — `coverage/coremath`, `coverage/voxel`,
-`coverage/mesh`, `coverage/gameplay` — and fails loudly when none exists, so the
-four test runs and their reports stay separate. A report from the Voxel run
+`coverage/mesh`, `coverage/gameplay`, `coverage/streaming` — and fails loudly
+when none exists, so the
+five test runs and their reports stay separate. A report from the Voxel run
 also instruments the referenced `Cubeglass.CoreMath` package; the `--module`
 filter selects the module each step enforces. The `python` job runs `pytest` with
 coverage and enforces `--module calib --floor 90` and `--module depcheck --floor

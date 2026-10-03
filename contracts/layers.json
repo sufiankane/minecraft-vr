@@ -11,5 +11,7 @@
               "Cubeglass.Mesh":      { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] },
               "Cubeglass.Gameplay":  { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
-                                       "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] } }
+                                       "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] },
+              "Cubeglass.Streaming": { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
+                                       "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel", "Cubeglass.Mesh"] } }
 }
