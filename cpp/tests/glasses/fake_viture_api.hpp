@@ -103,10 +103,19 @@ class FakeVitureApi final : public IVitureApi {
     std::atomic<std::uint64_t> get_refresh_hz_calls{0};
     mutable std::atomic<std::uint64_t> sdk_version_calls{0};
 
+    /// Last display arguments. `SetDisplayMode`/`GetRefreshHz` are only called
+    /// from the thread driving the display control (the polling thread never
+    /// calls them), so these stay plain.
     std::uint32_t last_refresh_hz = 0;
     bool last_sbs = false;
+
+    /// The pose most recently forwarded to `ResetOriginCarina`, in the SDK
+    /// `float[7]` order. The polling thread writes the payload and then
+    /// release-stores `has_reset_pose`; a test reader must acquire-load
+    /// `has_reset_pose` before touching `last_reset_pose` (TSan-clean
+    /// handshake, not an unordered flag/payload pair).
     float last_reset_pose[7] = {};
-    bool has_reset_pose = false;
+    std::atomic<bool> has_reset_pose{false};
 
     // --- IVitureApi -------------------------------------------------------
     Result<void> CreateDevice() override {
@@ -170,7 +179,8 @@ class FakeVitureApi final : public IVitureApi {
         for (std::size_t i = 0; i < 7; ++i) {
             last_reset_pose[i] = pose[i];
         }
-        has_reset_pose = true;
+        // Publish the payload before the flag; readers acquire the flag first.
+        has_reset_pose.store(true, std::memory_order_release);
         const Result<void> result = NextResult(reset_origin_script, reset_origin_result);
         if (result.ok() && use_script_ && script_source_ != nullptr) {
             // The scripted feed is recentred like a real device: the origin

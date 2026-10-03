@@ -214,7 +214,7 @@ TEST(VitureFault, ResetFailureWithdrawsThePostedCorrection) {
     const Result<void> result = source.Recenter();
     ASSERT_TRUE(result.ok()) << result.status().message() << " (Recenter only posts the request)";
     ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
-    ASSERT_TRUE(api.has_reset_pose);
+    ASSERT_TRUE(api.has_reset_pose.load(std::memory_order_acquire));
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[0]), sample.pose.position.x, 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[1]), sample.pose.position.y, 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[2]), sample.pose.position.z, 1e-6);
@@ -281,7 +281,7 @@ TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
     ASSERT_TRUE(result.ok()) << result.status().message();
     // The request is serviced on the polling thread's next pass.
     ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
-    EXPECT_TRUE(api.has_reset_pose);
+    EXPECT_TRUE(api.has_reset_pose.load(std::memory_order_acquire));
     source.Stop();
 }
 
