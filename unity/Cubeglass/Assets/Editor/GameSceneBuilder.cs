@@ -90,6 +90,7 @@ namespace Cubeglass.Editor
             try
             {
                 BuildSceneAt(GameScenePath);
+                BuildSettingsBuilder.Apply();
                 Debug.Log("GameSceneBuilder: wrote " + GameScenePath);
             }
             catch (Exception exception)

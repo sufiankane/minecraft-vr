@@ -58,6 +58,7 @@ namespace Cubeglass.Editor
             try
             {
                 BuildSceneAt(CalibrationScenePath);
+                BuildSettingsBuilder.Apply();
                 Debug.Log("CalibrationSceneBuilder: wrote " + CalibrationScenePath);
             }
             catch (Exception exception)

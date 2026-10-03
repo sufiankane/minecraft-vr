@@ -126,10 +126,16 @@ Machine: AMD Ryzen AI 9 365 (20 logical CPUs), 23 GiB RAM, NVIDIA GeForce RTX
 The builder canonicalises the scene after saving: Unity assigns pseudo-random
 local file ids and an unstable document order, so the pass walks the graph
 deterministically, renumbers every document sequentially and remaps all
-`{fileID: n}` references. Two consecutive rebuilds on Unity 6000.6.3f1 produced
-the identical SHA-256 `D8C1B61215675879B4BA8C5EFD4591B411D3CEEAE33D2882E08B7E00F8CBA352`.
-The scene is committed by design; the per-commit lanes do not regenerate it
-(calibration is a menu/batch action, not part of `ci-local`).
+`{fileID: n}` references. The scene was resynced during S7 Task 4d (see below);
+two consecutive rebuilds on Unity 6000.6.3f1 produced the identical SHA-256
+`70F970CE7CFEEDC6A70AD27B8759CE177A496A235E59E45E37E0A243E8E490A1`. The S6
+committed hash `D8C1B61215675879B4BA8C5EFD4591B411D3CEEAE33D2882E08B7E00F8CBA352`
+is historical: the committed scene carried the pre-rework `UnityInputProvider`
+fields (`moveAxisX`/`moveAxisY`/`turnSnapDegrees`/`invertHotbarScroll`), and
+S7 Task 4d rebuilt it from the same builder the S6 numbers used (only the input
+provider's serialized fields differ; the S6 geometry, rig and overlay wiring are
+unchanged). The scene is committed by design; the per-commit lanes do not
+regenerate it (calibration is a menu/batch action, not part of `ci-local`).
 
 ## 6. Local lanes
 
