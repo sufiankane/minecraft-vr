@@ -5,17 +5,21 @@ namespace Cubeglass.Unity.Input
 {
     /// <summary>
     /// The in-world HUD (S7 Task 3): a gaze-centred reticle and a hotbar strip
-    /// world-locked <c>1.5 m</c> in front of the rig, with the selected slot
-    /// highlighted from <see cref="PlayerState.HotbarIndex"/>.
+    /// anchored <c>1.5 m</c> in front of the player body, with the selected
+    /// slot highlighted from <see cref="PlayerState.HotbarIndex"/>.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <see cref="Refresh"/> runs every <c>Update</c> and recomputes the
-    /// cache used by <c>OnGUI</c>: the world-locked anchor (captured once from
-    /// the rig pose at start, not head-locked), the selected slot and the
-    /// projected screen rectangle. It reuses cached <see cref="GUIContent"/>
-    /// buffers and allocates nothing on steady frames; <c>OnGUI</c> only draws
-    /// on <see cref="EventType.Repaint"/>.
+    /// <b>Update order.</b> <see cref="Refresh"/> runs every <c>LateUpdate</c>,
+    /// after every <c>Update</c> in the frame, so it re-anchors on the player
+    /// pose that <see cref="GameplayBridge"/> wrote this tick (bridge
+    /// <c>Update</c> → HUD <c>LateUpdate</c> → <c>OnGUI</c>). It recomputes
+    /// the anchor from the anchor source's current position and body yaw every
+    /// frame — body-relative, not head-locked: the strip follows walking and
+    /// snap turns but not the head-relative rotation applied by the late latch.
+    /// It reuses cached <see cref="GUIContent"/> buffers and allocates nothing
+    /// on steady frames; <c>OnGUI</c> only draws on
+    /// <see cref="EventType.Repaint"/>.
     /// </para>
     /// <para>
     /// The layout maths (<see cref="HotbarAnchor"/>, <see cref="SlotRect"/>,
@@ -49,7 +53,7 @@ namespace Cubeglass.Unity.Input
         private GUIContent reticleContent;
         private GUIContent[] slotContents;
         private Texture2D quad;
-        private bool anchorSet;
+        private bool hasAnchor;
         private Vector3 anchorWorldPosition;
         private bool hotbarProjected;
         private Rect hotbarScreenRect;
@@ -62,7 +66,10 @@ namespace Cubeglass.Unity.Input
             set { gazeCamera = value; }
         }
 
-        /// <summary>The transform the world-locked anchor is captured from.</summary>
+        /// <summary>
+        /// The body transform the anchor is recomputed from; defaults to the
+        /// bridge's <see cref="Cubeglass.Unity.Rendering.PlayerRoot"/> (or rig).
+        /// </summary>
         public Transform AnchorSource
         {
             get { return anchorSource; }
@@ -83,7 +90,7 @@ namespace Cubeglass.Unity.Input
             set { visible = value; }
         }
 
-        /// <summary>The cached world-locked anchor in Unity world space.</summary>
+        /// <summary>The cached body-relative anchor in Unity world space.</summary>
         public Vector3 AnchorWorldPosition
         {
             get { return anchorWorldPosition; }
@@ -107,22 +114,24 @@ namespace Cubeglass.Unity.Input
             get { return selectedSlot; }
         }
 
-        private void Update()
+        private void LateUpdate()
         {
             Refresh();
         }
 
         /// <summary>
-        /// Recomputes the cached anchor (once), selection and projected hotbar
-        /// rectangle. Allocation-free after the first call.
+        /// Re-anchors on the current body pose and recomputes the selection and
+        /// projected hotbar rectangle. Runs after the gameplay Update, so the
+        /// anchor always reflects this frame's applied player root. Allocation-free
+        /// after the first call.
         /// </summary>
         public void Refresh()
         {
             Transform source = ResolveAnchorSource();
-            if (!anchorSet && source != null)
+            hasAnchor = source != null;
+            if (hasAnchor)
             {
                 anchorWorldPosition = HotbarAnchor(source.position, source.rotation, anchorDistance);
-                anchorSet = true;
             }
 
             GameplayBridge sourceBridge = bridge;
@@ -131,7 +140,7 @@ namespace Cubeglass.Unity.Input
                 : 0;
 
             hotbarProjected = false;
-            if (!visible || !anchorSet)
+            if (!visible || !hasAnchor)
             {
                 return;
             }
@@ -144,13 +153,7 @@ namespace Cubeglass.Unity.Input
                 out hotbarScreenRect);
         }
 
-        /// <summary>Captures the anchor again from the current rig pose.</summary>
-        public void ResetAnchor()
-        {
-            anchorSet = false;
-        }
-
-        /// <summary>The world-locked anchor: rig position plus its Unity forward.</summary>
+        /// <summary>The body-relative anchor: position plus the body's Unity forward.</summary>
         public static Vector3 HotbarAnchor(Vector3 rigPosition, Quaternion rigRotation, float distance)
         {
             return rigPosition + (rigRotation * Vector3.forward * distance);
@@ -340,6 +343,11 @@ namespace Cubeglass.Unity.Input
             if (sourceBridge == null)
             {
                 return null;
+            }
+
+            if (sourceBridge.PlayerRoot != null)
+            {
+                return sourceBridge.PlayerRoot.transform;
             }
 
             if (sourceBridge.Rig != null)

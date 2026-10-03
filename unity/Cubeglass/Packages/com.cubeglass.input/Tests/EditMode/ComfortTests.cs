@@ -4,17 +4,17 @@ using UnityEngine;
 namespace Cubeglass.Unity.Input.Tests
 {
     /// <summary>
-    /// Pins the comfort and HUD maths (S7 Task 3): the snap-turn increment is
-    /// exact and yaw-only, the vignette curve is the recorded 0.5/2.0 m/s
-    /// ramp to 0.4, and the WorldUi layout helpers (anchor, slots, projection)
-    /// are pure.
+    /// Pins the comfort and HUD maths (S7 Task 3, reworked in Task 4a): the
+    /// snap-turn increment is exact, signed and accumulator-backed, the
+    /// vignette curve is the recorded 0.5/2.0 m/s ramp to 0.4, and the WorldUi
+    /// layout helpers (re-anchoring, slots, projection) are pure.
     /// </summary>
     public class ComfortTests
     {
         private const float Tolerance = 1e-5f;
 
         [Test]
-        public void SnapTurnAppliesExactlyAndOnlyToYaw()
+        public void SnapTurnReturnsTheSignedIncrementAndAccumulates()
         {
             var rig = new GameObject("SnapRig");
             try
@@ -22,22 +22,25 @@ namespace Cubeglass.Unity.Input.Tests
                 SnapTurn snap = rig.AddComponent<SnapTurn>();
                 Assert.AreEqual(45f, snap.IncrementDegrees, Tolerance, "default increment");
 
-                snap.Apply(45f);
-                Assert.AreEqual(45f, Mathf.DeltaAngle(0f, rig.transform.eulerAngles.y), 1e-3f, "one increment");
+                Assert.AreEqual(
+                    45f,
+                    snap.ApplyIncrement(1f),
+                    Tolerance,
+                    "one positive increment is Unity +Y (turn right) degrees");
                 Assert.AreEqual(45f, snap.AccumulatedDegrees, Tolerance);
 
-                snap.Apply(45f);
-                Assert.AreEqual(90f, Mathf.DeltaAngle(0f, rig.transform.eulerAngles.y), 1e-3f, "two increments");
-
-                snap.ApplyIncrement(-1f);
-                Assert.AreEqual(45f, Mathf.DeltaAngle(0f, rig.transform.eulerAngles.y), 1e-3f, "the negative increment");
-
-                snap.Apply(0f);
-                Assert.AreEqual(45f, Mathf.DeltaAngle(0f, rig.transform.eulerAngles.y), 1e-3f, "zero is a no-op");
+                Assert.AreEqual(45f, snap.ApplyIncrement(1f), Tolerance, "two increments");
+                Assert.AreEqual(-45f, snap.ApplyIncrement(-1f), Tolerance, "the negative increment");
+                Assert.AreEqual(0f, snap.ApplyIncrement(0f), Tolerance, "zero is a no-op");
+                Assert.AreEqual(0f, snap.ApplyIncrement(float.NaN), Tolerance, "NaN is a no-op");
+                Assert.AreEqual(0f, snap.ApplyIncrement(float.PositiveInfinity), Tolerance, "infinity is a no-op");
 
                 snap.SnapEnabled = false;
-                snap.Apply(45f);
-                Assert.AreEqual(45f, Mathf.DeltaAngle(0f, rig.transform.eulerAngles.y), 1e-3f, "disabled is a no-op");
+                Assert.AreEqual(0f, snap.ApplyIncrement(1f), Tolerance, "disabled is a no-op");
+                Assert.AreEqual(45f, snap.AccumulatedDegrees, Tolerance, "disabled calls do not accumulate");
+
+                snap.ResetAccumulated();
+                Assert.AreEqual(0f, snap.AccumulatedDegrees, Tolerance);
             }
             finally
             {
@@ -46,18 +49,19 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
-        public void SnapTurnKeepsPitchUnchanged()
+        public void SnapTurnLeavesTheTransformUntouchedSoTheBridgeOwnsTheHeading()
         {
             var rig = new GameObject("SnapRig");
             try
             {
                 rig.transform.localRotation = Quaternion.Euler(20f, 0f, 0f);
                 SnapTurn snap = rig.AddComponent<SnapTurn>();
-                snap.Apply(45f);
+                snap.ApplyIncrement(1f);
 
-                Vector3 euler = rig.transform.eulerAngles;
-                Assert.AreEqual(45f, Mathf.DeltaAngle(0f, euler.y), 1e-3f);
-                Assert.AreEqual(20f, Mathf.DeltaAngle(0f, euler.x), 1e-3f, "pitch survives the yaw snap");
+                Assert.Less(
+                    Quaternion.Angle(Quaternion.Euler(20f, 0f, 0f), rig.transform.localRotation),
+                    Tolerance,
+                    "the component reports degrees; GameplayBridge applies them to PlayerState");
             }
             finally
             {
@@ -149,7 +153,7 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
-        public void HotbarAnchorIsWorldLockedUntilReset()
+        public void HotbarAnchorReanchorsOnTheBodyEveryRefresh()
         {
             var rig = new GameObject("AnchorRig");
             var hud = new GameObject("WorldUi");
@@ -158,16 +162,21 @@ namespace Cubeglass.Unity.Input.Tests
                 WorldUi ui = hud.AddComponent<WorldUi>();
                 ui.AnchorSource = rig.transform;
                 ui.Refresh();
-                Vector3 first = ui.AnchorWorldPosition;
-                Assert.AreEqual(1.5f, first.z, Tolerance, "captured 1.5 m ahead");
+                AssertVector(new Vector3(0f, 0f, 1.5f), ui.AnchorWorldPosition, "anchored 1.5 m in front of the body");
 
                 rig.transform.position = new Vector3(10f, 0f, 0f);
                 ui.Refresh();
-                AssertVector(first, ui.AnchorWorldPosition, "the world-locked anchor does not follow the rig");
+                AssertVector(
+                    new Vector3(10f, 0f, 1.5f),
+                    ui.AnchorWorldPosition,
+                    "the anchor follows the body after the pose application");
 
-                ui.ResetAnchor();
+                rig.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
                 ui.Refresh();
-                AssertVector(new Vector3(10f, 0f, 1.5f), ui.AnchorWorldPosition, "an explicit reset re-captures");
+                AssertVector(
+                    new Vector3(11.5f, 0f, 0f),
+                    ui.AnchorWorldPosition,
+                    "the anchor follows the body heading, not the head-relative rotation");
             }
             finally
             {

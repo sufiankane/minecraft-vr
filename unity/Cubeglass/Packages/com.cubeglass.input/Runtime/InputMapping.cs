@@ -27,10 +27,11 @@ namespace Cubeglass.Unity.Input
     /// <remarks>
     /// <see cref="Look"/> is in the device's own units and
     /// <see cref="LookDegreesPerUnit"/> converts one unit of <c>Look.X</c> to
-    /// degrees of yaw for this frame: the gamepad adapter passes the stick
-    /// deflection with <c>turnDegreesPerSecond * dt</c>, the mouse adapter the
-    /// raw delta with the degrees-per-pixel sensitivity. <c>Look.Y</c> is
-    /// sampled for future pitch input but unused by S7 (3DoF).
+    /// the S4 yaw rate in degrees per second: the gamepad adapter passes the
+    /// stick deflection with <c>turnDegreesPerSecond</c>, the mouse adapter the
+    /// raw per-frame delta with the degrees-per-pixel sensitivity divided by
+    /// the frame delta. <c>Look.Y</c> is sampled for future pitch input but
+    /// unused by S7 (3DoF).
     /// </remarks>
     public readonly struct RawInputSample
     {
@@ -64,7 +65,7 @@ namespace Cubeglass.Unity.Input
         /// <summary>Raw look axes, each normally in [-1, 1] for a stick.</summary>
         public Vector2f Look { get; }
 
-        /// <summary>Degrees of yaw contributed by one unit of <see cref="Look"/>.X this frame.</summary>
+        /// <summary>Degrees per second of yaw contributed by one unit of <see cref="Look"/>.X.</summary>
         public float LookDegreesPerUnit { get; }
 
         /// <summary>Break button physical state (gamepad X, mouse left).</summary>
@@ -107,8 +108,11 @@ namespace Cubeglass.Unity.Input
     /// deadzone then clamped to the unit disc (S4 normalised move).</description></item>
     /// <item><term>TurnSnap</term><description>gamepad right stick X or mouse
     /// delta X scaled by <see cref="RawInputSample.LookDegreesPerUnit"/>, in
-    /// degrees for this frame; a snap-turn edge (B/F) replaces it with exactly
-    /// +/-SnapTurnDegrees on the single edge frame.</description></item>
+    /// degrees per second; device-right look maps to a negative rate because
+    /// internal yaw is the negative of Unity yaw (ADR-0004/ADR-0008). A
+    /// snap-turn press (B/F) is not part of the frame: it is exposed
+    /// separately through <see cref="SnapPressed"/> and
+    /// <see cref="ConsumeSnapPressed"/> (S7 Task 4a).</description></item>
     /// <item><term>Primary</term><description>gamepad X / mouse left through the
     /// S4 <see cref="ButtonState"/> edge machine (break, hold).</description></item>
     /// <item><term>Secondary</term><description>gamepad A / mouse right through
@@ -122,7 +126,7 @@ namespace Cubeglass.Unity.Input
     /// adds gaze targeting and the pose-derived quality.</description></item>
     /// </list>
     /// <para>
-    /// <b>Allocation.</b> <see cref="Map"/> stores six previous button flags and
+    /// <b>Allocation.</b> <see cref="Map"/> stores seven previous button flags and
     /// allocates nothing.
     /// </para>
     /// </remarks>
@@ -134,9 +138,6 @@ namespace Cubeglass.Unity.Input
         /// <summary>Default radial deadzone for the look axes.</summary>
         public const float DefaultLookDeadzone = 0.15f;
 
-        /// <summary>Default discrete snap-turn increment in degrees.</summary>
-        public const float DefaultSnapTurnDegrees = 45f;
-
         private bool primaryDown;
         private bool secondaryDown;
         private bool recenterDown;
@@ -146,12 +147,10 @@ namespace Cubeglass.Unity.Input
 
         public InputMapper(
             float moveDeadzone = DefaultMoveDeadzone,
-            float lookDeadzone = DefaultLookDeadzone,
-            float snapTurnDegrees = DefaultSnapTurnDegrees)
+            float lookDeadzone = DefaultLookDeadzone)
         {
             MoveDeadzone = SanitizeDeadzone(moveDeadzone, DefaultMoveDeadzone);
             LookDeadzone = SanitizeDeadzone(lookDeadzone, DefaultLookDeadzone);
-            SnapTurnDegrees = float.IsNaN(snapTurnDegrees) ? DefaultSnapTurnDegrees : snapTurnDegrees;
         }
 
         /// <summary>Radial deadzone applied to <see cref="RawInputSample.Move"/>.</summary>
@@ -160,8 +159,23 @@ namespace Cubeglass.Unity.Input
         /// <summary>Radial deadzone applied to <see cref="RawInputSample.Look"/>.</summary>
         public float LookDeadzone { get; }
 
-        /// <summary>Degrees emitted on a snap-turn press edge.</summary>
-        public float SnapTurnDegrees { get; }
+        /// <summary>
+        /// True when the latest <see cref="Map"/> call saw a snap-turn press
+        /// edge; reading <see cref="ConsumeSnapPressed"/> clears it.
+        /// </summary>
+        public bool SnapPressed { get; private set; }
+
+        /// <summary>
+        /// Returns the snap-turn press edge of the latest <see cref="Map"/> call
+        /// exactly once. Snap turn is not part of the S4
+        /// <see cref="InputFrame"/>; the bridge consumes this additive channel.
+        /// </summary>
+        public bool ConsumeSnapPressed()
+        {
+            bool pressed = SnapPressed;
+            SnapPressed = false;
+            return pressed;
+        }
 
         /// <summary>
         /// Maps one raw sample to a frame and advances the button-edge state.
@@ -173,12 +187,10 @@ namespace Cubeglass.Unity.Input
             Vector2f move = ClampToUnit(ApplyRadialDeadzone(raw.Move, MoveDeadzone));
             Vector2f look = ApplyRadialDeadzone(raw.Look, LookDeadzone);
 
-            float turn = look.X * raw.LookDegreesPerUnit;
-            bool snapPressed = raw.SnapTurnDown && !snapTurnDown;
-            if (snapPressed)
-            {
-                turn = SnapTurnDegrees;
-            }
+            // Device-right look is a negative TurnSnap: positive internal yaw
+            // turns toward -X, which is Unity left (ADR-0004/ADR-0008).
+            float turn = -look.X * raw.LookDegreesPerUnit;
+            SnapPressed = raw.SnapTurnDown && !snapTurnDown;
 
             int hotbarDelta = 0;
             if (raw.HotbarNextDown && !hotbarNextDown)
@@ -221,6 +233,7 @@ namespace Cubeglass.Unity.Input
             snapTurnDown = false;
             hotbarNextDown = false;
             hotbarPrevDown = false;
+            SnapPressed = false;
         }
 
         /// <summary>

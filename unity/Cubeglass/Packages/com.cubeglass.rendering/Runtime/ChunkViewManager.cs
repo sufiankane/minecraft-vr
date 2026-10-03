@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Cubeglass.CoreMath;
 using Cubeglass.Mesh;
 using Cubeglass.Streaming;
 using Cubeglass.Voxel;
@@ -26,8 +27,20 @@ namespace Cubeglass.Unity.Rendering
     /// <para>
     /// Views are parented to this component's transform, so keep the
     /// component's GameObject at the world origin (the <see cref="StreamingRuntime"/>
-    /// does); chunk-local geometry is uploaded unchanged and the view is placed
-    /// at <c>chunk * 16</c> in voxel-lattice coordinates.
+    /// does); chunk-local geometry is uploaded in Unity space through the
+    /// single ADR-0004 <see cref="UnityConvert"/> mirror and the view is placed
+    /// at the converted chunk origin (ADR-0011, R52).
+    /// </para>
+    /// <para>
+    /// Edits run through <see cref="World.ChunkChanged"/>: the manager dirties
+    /// the changed chunk plus every loaded chunk in its Chebyshev-1
+    /// neighbourhood and rebuilds them on later frames through
+    /// <see cref="ProcessDirtyRemeshes"/>, sharing the upload budget with new
+    /// chunks. The event reports the chunk, not the edited cell, so the
+    /// neighbourhood is the provable superset of
+    /// <see cref="ChunkEditPropagation.GetAffectedChunks"/> over every cell the
+    /// chunk can contain; meshing a neighbour that did not actually change
+    /// rebuilds an identical mesh and is correctness-safe.
     /// </para>
     /// <para>
     /// The manager keeps its own loaded-chunk dictionary; the <see cref="World"/>
@@ -44,10 +57,16 @@ namespace Cubeglass.Unity.Rendering
     [DisallowMultipleComponent]
     public sealed class ChunkViewManager : MonoBehaviour, IStreamingTarget
     {
+        /// <summary>The number of chunks in the Chebyshev-1 neighbourhood of a chunk.</summary>
+        public const int RemeshNeighbourhoodSize = 27;
+
         private readonly Dictionary<ChunkCoord, Chunk> chunks = new Dictionary<ChunkCoord, Chunk>();
         private readonly Dictionary<ChunkCoord, ChunkView> views = new Dictionary<ChunkCoord, ChunkView>();
         private readonly Queue<ChunkCoord> deferredLoads = new Queue<ChunkCoord>();
         private readonly HashSet<ChunkCoord> deferredSet = new HashSet<ChunkCoord>();
+        private readonly HashSet<ChunkCoord> dirtySet = new HashSet<ChunkCoord>();
+        private readonly Queue<ChunkCoord> dirtyQueue = new Queue<ChunkCoord>();
+        private readonly ChunkCoord[] neighbourhood = new ChunkCoord[RemeshNeighbourhoodSize];
 
         private ChunkViewPool pool;
         private MeshBufferPool bufferPool;
@@ -67,6 +86,7 @@ namespace Cubeglass.Unity.Rendering
         private long generatedChunks;
         private long uploadedChunks;
         private long unloadedChunks;
+        private long remeshedChunks;
         private long worldCompactions;
         private bool initialized;
 
@@ -185,10 +205,63 @@ namespace Cubeglass.Unity.Rendering
             get { return unloadedChunks; }
         }
 
+        /// <summary>Total view rebuilds driven by <see cref="World.ChunkChanged"/>.</summary>
+        public long RemeshedChunks
+        {
+            get { return remeshedChunks; }
+        }
+
+        /// <summary>Chunks waiting for a dirty-remesh slot (with an active view).</summary>
+        public int DirtyChunks
+        {
+            get { return dirtySet.Count; }
+        }
+
         /// <summary>Times the neighbour-snapshot world was rebuilt to drop unloaded chunks.</summary>
         public long WorldCompactions
         {
             get { return worldCompactions; }
+        }
+
+        /// <summary>
+        /// Fills <paramref name="destination"/> (at least
+        /// <see cref="RemeshNeighbourhoodSize"/> entries) with the 27 chunks in
+        /// the Chebyshev-1 neighbourhood of <paramref name="changed"/> and
+        /// returns the count (always 27). This is the set of chunks a single
+        /// edit can reach: for every cell of the changed chunk,
+        /// <see cref="ChunkEditPropagation.GetAffectedChunks"/> is a subset of
+        /// it, so dirtying the whole neighbourhood is never missing a view.
+        /// </summary>
+        /// <exception cref="ArgumentNullException"><paramref name="destination"/> is null.</exception>
+        /// <exception cref="ArgumentException"><paramref name="destination"/> is shorter than 27.</exception>
+        public static int FillRemeshNeighbourhood(ChunkCoord changed, ChunkCoord[] destination)
+        {
+            if (destination == null)
+            {
+                throw new ArgumentNullException(nameof(destination));
+            }
+
+            if (destination.Length < RemeshNeighbourhoodSize)
+            {
+                throw new ArgumentException(
+                    "The destination needs at least RemeshNeighbourhoodSize entries.",
+                    nameof(destination));
+            }
+
+            int index = 0;
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                for (int dy = -1; dy <= 1; dy++)
+                {
+                    for (int dz = -1; dz <= 1; dz++)
+                    {
+                        destination[index] = new ChunkCoord(changed.X + dx, changed.Y + dy, changed.Z + dz);
+                        index++;
+                    }
+                }
+            }
+
+            return index;
         }
 
         /// <summary>
@@ -241,6 +314,7 @@ namespace Cubeglass.Unity.Rendering
             scheduler = chunkScheduler;
             generator = worldGenerator != null ? worldGenerator : new TerrainGenerator();
             world = new World();
+            world.ChunkChanged += HandleChunkChanged;
             pool = new ChunkViewPool(transform, capacity) { Material = viewMaterial };
             bufferPool = new MeshBufferPool();
             mesher = new GreedyMesher(new AtlasLayout(16, 16), bufferPool);
@@ -281,6 +355,7 @@ namespace Cubeglass.Unity.Rendering
 
             deferredSet.Remove(chunk);
             chunks.Remove(chunk);
+            dirtySet.Remove(chunk);
             if (views.TryGetValue(chunk, out ChunkView view))
             {
                 views.Remove(chunk);
@@ -331,14 +406,61 @@ namespace Cubeglass.Unity.Rendering
             }
 
             view.Coord = chunk;
-            view.GameObject.transform.localPosition = new Vector3(
-                chunk.X * ChunkMath.ChunkSize,
-                chunk.Y * ChunkMath.ChunkSize,
-                chunk.Z * ChunkMath.ChunkSize);
+            view.GameObject.transform.localPosition = ConvertedChunkOrigin(chunk);
             views.Add(chunk, view);
+            dirtySet.Remove(chunk);
             uploadsThisFrame++;
             uploadedChunks++;
             return true;
+        }
+
+        /// <summary>
+        /// Rebuilds up to the remaining per-frame upload budget of chunks
+        /// dirtied by <see cref="World.ChunkChanged"/> (S7 Task 4a). Chunks
+        /// whose view is not active are dropped: their next load meshes fresh
+        /// data anyway. Returns the number of views rebuilt.
+        /// </summary>
+        public int ProcessDirtyRemeshes()
+        {
+            EnsureInitialized();
+            int processed = 0;
+            int considered = 0;
+            int queued = dirtyQueue.Count;
+            while (considered < queued && dirtyQueue.Count > 0)
+            {
+                considered++;
+                ChunkCoord chunk = dirtyQueue.Peek();
+                if (!dirtySet.Contains(chunk))
+                {
+                    dirtyQueue.Dequeue();
+                    continue;
+                }
+
+                if (!views.TryGetValue(chunk, out ChunkView view) ||
+                    !chunks.TryGetValue(chunk, out Chunk chunkData))
+                {
+                    dirtySet.Remove(chunk);
+                    dirtyQueue.Dequeue();
+                    continue;
+                }
+
+                if (IsUploadBudgetExhausted())
+                {
+                    break;
+                }
+
+                ChunkSnapshot snapshot = chunkData.Snapshot();
+                NeighbourSnapshot neighbours = world.CreateNeighbourSnapshot(chunk);
+                MeshData meshData = mesher.Build(snapshot, neighbours, blocks);
+                pool.Upload(view, meshData);
+                dirtySet.Remove(chunk);
+                dirtyQueue.Dequeue();
+                uploadsThisFrame++;
+                remeshedChunks++;
+                processed++;
+            }
+
+            return processed;
         }
 
         /// <summary>
@@ -406,6 +528,28 @@ namespace Cubeglass.Unity.Rendering
             return uploadsThisFrame >= maxMeshUploadsPerFrame;
         }
 
+        private static Vector3 ConvertedChunkOrigin(ChunkCoord chunk)
+        {
+            Vec3 origin = UnityConvert.ToUnity(new Vec3(
+                chunk.X * ChunkMath.ChunkSize,
+                chunk.Y * ChunkMath.ChunkSize,
+                chunk.Z * ChunkMath.ChunkSize));
+            return new Vector3((float)origin.X, (float)origin.Y, (float)origin.Z);
+        }
+
+        private void HandleChunkChanged(ChunkCoord changed)
+        {
+            int count = FillRemeshNeighbourhood(changed, neighbourhood);
+            for (int i = 0; i < count; i++)
+            {
+                ChunkCoord chunk = neighbourhood[i];
+                if (chunks.ContainsKey(chunk) && dirtySet.Add(chunk))
+                {
+                    dirtyQueue.Enqueue(chunk);
+                }
+            }
+        }
+
         private void CompactWorldIfNeeded()
         {
             if (worldChunks <= (2 * chunks.Count) + 64)
@@ -413,6 +557,7 @@ namespace Cubeglass.Unity.Rendering
                 return;
             }
 
+            world.ChunkChanged -= HandleChunkChanged;
             var rebuilt = new World();
             foreach (Chunk chunk in chunks.Values)
             {
@@ -420,6 +565,7 @@ namespace Cubeglass.Unity.Rendering
             }
 
             world = rebuilt;
+            world.ChunkChanged += HandleChunkChanged;
             worldChunks = chunks.Count;
             worldCompactions++;
         }
@@ -431,6 +577,11 @@ namespace Cubeglass.Unity.Rendering
 
         private void DisposeState()
         {
+            if (world != null)
+            {
+                world.ChunkChanged -= HandleChunkChanged;
+            }
+
             if (pool != null)
             {
                 pool.Dispose();
@@ -441,6 +592,8 @@ namespace Cubeglass.Unity.Rendering
             views.Clear();
             deferredLoads.Clear();
             deferredSet.Clear();
+            dirtySet.Clear();
+            dirtyQueue.Clear();
             scheduler = null;
             world = null;
             bufferPool = null;
@@ -451,6 +604,7 @@ namespace Cubeglass.Unity.Rendering
             generatedChunks = 0;
             uploadedChunks = 0;
             unloadedChunks = 0;
+            remeshedChunks = 0;
             worldChunks = 0;
             worldCompactions = 0;
             lastGenerateFrame = int.MinValue;

@@ -28,9 +28,17 @@ namespace Cubeglass.Unity.Input
     /// the mapper's press/release edges are reported on exactly one frame
     /// regardless of which of the two runs first.
     /// </para>
+    /// <para>
+    /// <b>Turn units.</b> The frame's <c>TurnSnap</c> is degrees per second
+    /// (S4, ADR-0008): the gamepad adapter passes the stick deflection with the
+    /// configured rate, the mouse adapter converts the per-frame pixel delta to
+    /// a rate by dividing by the frame delta. The discrete snap press (B/F) is
+    /// a separate one-shot edge exposed through <see cref="ConsumeSnapPressed"/>
+    /// (S7 Task 4a).
+    /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
-    public sealed class UnityInputProvider : MonoBehaviour, IInputProvider
+    public sealed class UnityInputProvider : MonoBehaviour, IInputProvider, ISnapInputSource
     {
         private const string MouseXAxis = "Mouse X";
 
@@ -46,7 +54,6 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private float moveDeadzone = InputMapper.DefaultMoveDeadzone;
         [SerializeField] private float lookDeadzone = InputMapper.DefaultLookDeadzone;
         [SerializeField] private float turnDegreesPerSecond = 90f;
-        [SerializeField] private float snapTurnDegrees = InputMapper.DefaultSnapTurnDegrees;
         [SerializeField] private float mouseDegreesPerPixel = 0.2f;
         [SerializeField] private bool swapGamepadButtons;
         [SerializeField] private bool invertTurn;
@@ -120,6 +127,17 @@ namespace Cubeglass.Unity.Input
         {
             PollIfStale(Time.unscaledDeltaTime);
             return latest;
+        }
+
+        /// <summary>
+        /// Returns the snap-turn press edge exactly once (S7 Task 4a). The
+        /// bridge must call <see cref="Sample"/> first in the same frame; the
+        /// per-frame poll dedupe guarantees the edge is not lost when
+        /// <see cref="Update"/> also ran.
+        /// </summary>
+        public bool ConsumeSnapPressed()
+        {
+            return mapper != null && mapper.ConsumeSnapPressed();
         }
 
         /// <summary>Resolves <see cref="InputMode.Auto"/> again and clears button edges.</summary>
@@ -196,7 +214,7 @@ namespace Cubeglass.Unity.Input
         {
             if (mapper == null)
             {
-                mapper = new InputMapper(moveDeadzone, lookDeadzone, snapTurnDegrees);
+                mapper = new InputMapper(moveDeadzone, lookDeadzone);
             }
         }
 
@@ -225,7 +243,7 @@ namespace Cubeglass.Unity.Input
             return new RawInputSample(
                 new Vector2f(moveX, moveY),
                 new Vector2f(turn, 0f),
-                turnDegreesPerSecond * deltaTime,
+                turnDegreesPerSecond,
                 primary,
                 secondary,
                 UnityEngine.Input.GetKey(KeyCode.JoystickButton3),
@@ -246,10 +264,14 @@ namespace Cubeglass.Unity.Input
                 look = -look;
             }
 
+            // The mouse delta is a per-frame angle; dividing by the frame delta
+            // turns it into the S4 degrees-per-second rate that Step integrates.
+            float lookDegreesPerSecond = deltaTime > 0f ? mouseDegreesPerPixel / deltaTime : 0f;
+
             return new RawInputSample(
                 new Vector2f(moveX, moveY),
                 new Vector2f(look, 0f),
-                mouseDegreesPerPixel,
+                lookDegreesPerSecond,
                 UnityEngine.Input.GetMouseButton(0),
                 UnityEngine.Input.GetMouseButton(1),
                 UnityEngine.Input.GetKeyDown(KeyCode.R),

@@ -22,16 +22,23 @@ namespace Cubeglass.Unity.Input
     /// <b>Update order (one tick).</b>
     /// <list type="number">
     /// <item><description><b>Input</b>: sample the provider, add the gaze
-    /// pointer when the provider supplies none, add tracking quality and route
-    /// a snap-turn edge to <see cref="SnapTurn"/> (clearing
-    /// <see cref="InputFrame.TurnSnap"/> so the discrete increment is not also
-    /// scaled by <c>dt</c> in the controller).</description></item>
-    /// <item><description><b>Controller</b>: sync the player yaw from the rig
-    /// (gaze-relative movement) and step gravity/collision against the
-    /// world.</description></item>
+    /// pointer when the provider supplies none, add tracking quality, and
+    /// consume the additive snap-turn edge (<see cref="ISnapInputSource"/>);
+    /// the frame's <see cref="InputFrame.TurnSnap"/> stays in degrees per
+    /// second and is integrated by the controller.</description></item>
+    /// <item><description><b>Heading</b>: apply the snap increment to
+    /// <see cref="PlayerState.YawRadians"/> so the movement basis follows the
+    /// turn and the late latch cannot overwrite it (ADR-0011).</description></item>
+    /// <item><description><b>Controller</b>: step gravity/collision against the
+    /// world; yaw is integrated from the frame's degrees-per-second
+    /// rate.</description></item>
     /// <item><description><b>Interaction</b>: target (pointer first, view-ray
     /// fallback), hold-to-break, edge-place, hotbar and recentre; world edits
     /// reach <see cref="World.Apply"/> through the service.</description></item>
+    /// <item><description><b>Pose</b>: on the recentre frame clear the head
+    /// offset through the late latch, then write <see cref="PlayerRoot"/> from
+    /// the player state. The rig follows the player; yaw is never read back
+    /// from the rig.</description></item>
     /// </list>
     /// </para>
     /// <para>
@@ -49,6 +56,7 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private UnityInputProvider inputProvider;
         [SerializeField] private LateLatchPose lateLatch;
         [SerializeField] private StereoRig rig;
+        [SerializeField] private PlayerRoot playerRoot;
         [SerializeField] private Camera gazeCamera;
         [SerializeField] private SnapTurn snapTurn;
         [SerializeField] private MotionVignette motionVignette;
@@ -115,11 +123,21 @@ namespace Cubeglass.Unity.Input
             set { streaming = value; }
         }
 
-        /// <summary>The stereo rig used for gaze targeting and yaw sync.</summary>
+        /// <summary>The stereo rig used for gaze targeting.</summary>
         public StereoRig Rig
         {
             get { return rig; }
             set { rig = value; }
+        }
+
+        /// <summary>
+        /// The player root driven from <see cref="PlayerState"/> each tick
+        /// (position and yaw, converted once); the rig is its head child.
+        /// </summary>
+        public PlayerRoot PlayerRoot
+        {
+            get { return playerRoot; }
+            set { playerRoot = value; }
         }
 
         /// <summary>Single-camera gaze fallback when no rig is wired.</summary>
@@ -181,7 +199,10 @@ namespace Cubeglass.Unity.Input
         /// <summary>The planar speed forwarded to the vignette, in m/s.</summary>
         public float PlanarSpeed { get; private set; }
 
-        /// <summary>The last snap-turn increment routed to <see cref="SnapTurn"/>.</summary>
+        /// <summary>
+        /// The last snap-turn increment applied to the heading, in Unity-yaw
+        /// degrees (positive is turn right); zero when no edge landed.
+        /// </summary>
         public float LastSnapDegrees { get; private set; }
 
         /// <summary>Number of world edits applied since scene start.</summary>
@@ -278,24 +299,22 @@ namespace Cubeglass.Unity.Input
             TrackingQuality quality = ResolveQuality();
             Tracking = quality;
 
-            if (turn != 0f)
+            // Snap turn is an additive provider edge (S7 Task 4a): apply the
+            // discrete increment to the heading before Step so movement follows
+            // the turn. TurnSnap itself stays a degrees-per-second rate.
+            IInputProvider active = InputSource;
+            bool snapPressed = active is ISnapInputSource snapSource && snapSource.ConsumeSnapPressed();
+            float snapDegrees = snapPressed && snapTurn != null ? snapTurn.ApplyIncrement(1f) : 0f;
+            LastSnapDegrees = snapDegrees;
+            if (snapDegrees != 0f)
             {
-                if (snapTurn != null)
-                {
-                    snapTurn.Apply(turn);
-                }
-
-                LastSnapDegrees = turn;
-                turn = 0f;
-            }
-            else
-            {
-                LastSnapDegrees = 0f;
+                // Positive snap degrees are Unity +Y (turn right); internal yaw
+                // is the negative of Unity yaw (ADR-0004).
+                player.YawRadians = WrapRadians(player.YawRadians - (snapDegrees * Mathf.Deg2Rad));
             }
 
             var frame = new InputFrame(move, turn, recenter, pointer, primary, secondary, hotbarDelta, quality);
 
-            SyncPlayerYawFromRig();
             PlayerController.Step(player, frame, world, dt);
 
             InteractionResult result = interaction.Update(frame, world, player, dt);
@@ -305,6 +324,13 @@ namespace Cubeglass.Unity.Input
                 EditsApplied++;
                 SaveRequested = true;
             }
+
+            if (interaction.Recentered && lateLatch != null)
+            {
+                lateLatch.Recentre();
+            }
+
+            ApplyPlayerPose();
 
             PlanarSpeed = (float)Math.Sqrt((player.Velocity.X * player.Velocity.X) + (player.Velocity.Z * player.Velocity.Z));
             if (motionVignette != null)
@@ -384,17 +410,12 @@ namespace Cubeglass.Unity.Input
             }
         }
 
-        private void SyncPlayerYawFromRig()
+        private void ApplyPlayerPose()
         {
-            if (rig == null)
+            if (playerRoot != null)
             {
-                return;
+                playerRoot.SetPlayerPose(player.Position, player.YawRadians);
             }
-
-            // UnityConvert flips the yaw sign (ADR-0004): internal yaw =
-            // -Unity yaw, so the movement basis follows where the head looks.
-            float unityYaw = rig.transform.eulerAngles.y;
-            player.YawRadians = WrapRadians(-unityYaw * Mathf.Deg2Rad);
         }
 
         private static float WrapRadians(float radians)

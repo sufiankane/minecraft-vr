@@ -12,11 +12,13 @@ using UnityEngine.TestTools;
 namespace Cubeglass.Unity.Rendering.Tests
 {
     /// <summary>
-    /// End-to-end PlayMode coverage for the S7 Task 3 gameplay bridge: a
-    /// streamed <see cref="TerrainGenerator"/> world, the player on its
-    /// surface, gaze targeting, hardness-timed breaking, face placement,
-    /// hotbar cycling, snap turn, vignette speed forwarding and a steady-frame
-    /// zero-allocation check over the bridge + HUD path.
+    /// End-to-end PlayMode coverage for the S7 Task 3 gameplay bridge,
+    /// extended in Task 4a: a streamed <see cref="TerrainGenerator"/> world,
+    /// the player on its surface, gaze targeting, hardness-timed breaking,
+    /// face placement, hotbar cycling, degrees-per-second turn through the
+    /// controller, the snap edge on the heading, recentre clearing the head
+    /// offset, vignette speed forwarding and a steady-frame zero-allocation
+    /// check over the bridge + HUD path.
     /// </summary>
     public sealed class GameplayPlayModeTests
     {
@@ -32,6 +34,8 @@ namespace Cubeglass.Unity.Rendering.Tests
         private FakePoseProvider pose;
         private GameObject cameraObject;
         private Camera gazeCamera;
+        private GameObject playerRootObject;
+        private PlayerRoot playerRoot;
         private int surfaceFeetY;
 
         [UnitySetUp]
@@ -88,6 +92,15 @@ namespace Cubeglass.Unity.Rendering.Tests
             bridge.PoseSource = pose;
             bridge.GazeCamera = gazeCamera;
             bridge.AutoUpdate = false;
+
+            playerRootObject = new GameObject("PlayerRoot");
+            playerRootObject.transform.SetParent(root.transform, false);
+            playerRoot = playerRootObject.AddComponent<PlayerRoot>();
+            var headObject = new GameObject("Head");
+            headObject.transform.SetParent(playerRootObject.transform, false);
+            playerRoot.Head = headObject.transform;
+            bridge.PlayerRoot = playerRoot;
+
             Assert.IsTrue(bridge.EnsureInitialized(), "the bridge did not initialize");
             bridge.Player.Position = new Vec3(8.0, surfaceFeetY, 8.0);
             bridge.Player.HotbarIndex = 0;
@@ -174,24 +187,159 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [UnityTest]
-        public IEnumerator SnapTurnRotatesTheRigByExactlyTheIncrement()
+        public IEnumerator ScriptedTurnAtFortyFiveDegreesPerSecondChangesTheHeadingByFortyFive()
         {
-            var rigObject = new GameObject("SnapRig");
-            rigObject.transform.SetParent(root.transform, false);
-            Cubeglass.Unity.Rendering.StereoRig stereo = rigObject.AddComponent<Cubeglass.Unity.Rendering.StereoRig>();
-            SnapTurn snap = rigObject.AddComponent<SnapTurn>();
-            bridge.Rig = stereo;
+            // The ruling pins the S4 unit with the pure ScriptedInputProvider:
+            // one second of 45 deg/s must integrate to exactly 45 degrees.
+            var scripted = new ScriptedInputProvider(new (double, InputFrame)[]
+            {
+                (0.0, new InputFrame(
+                    Vector2f.Zero,
+                    45f,
+                    false,
+                    null,
+                    ButtonState.Up,
+                    ButtonState.Up,
+                    0,
+                    TrackingQuality.Good)),
+            });
+
+            bridge.InputSource = scripted;
+            float before = bridge.Player.YawRadians;
+            for (int frame = 0; frame < 60; frame++)
+            {
+                bridge.Tick(Dt);
+            }
+
+            Assert.AreEqual(
+                45f,
+                (bridge.Player.YawRadians - before) * Mathf.Rad2Deg,
+                0.05f,
+                "45 deg/s for 1 s must change the internal heading by 45 degrees");
+            Assert.Less(
+                Quaternion.Angle(Quaternion.Euler(0f, -45f, 0f), playerRootObject.transform.localRotation),
+                0.5f,
+                "PlayerRoot follows the integrated heading through the single conversion");
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator SnapEdgeTurnsTheHeadingAndSurvivesPoseTicks()
+        {
+            var snapObject = new GameObject("SnapTurn");
+            snapObject.transform.SetParent(root.transform, false);
+            SnapTurn snap = snapObject.AddComponent<SnapTurn>();
             bridge.SnapTurn = snap;
 
-            input.Frame = Frame(turn: 45f);
+            var snapInput = new FakeSnapInputProvider();
+            bridge.InputSource = snapInput;
+
+            snapInput.Frame = Frame();
+            snapInput.SnapPending = true;
             bridge.Tick(Dt);
 
-            Assert.AreEqual(45f, Mathf.DeltaAngle(0f, rigObject.transform.eulerAngles.y), 1e-3f, "exactly one increment");
-            Assert.AreEqual(-45f, bridge.Player.YawRadians * Mathf.Rad2Deg, 0.01f, "the player yaw follows the snapped rig");
+            Assert.AreEqual(45f, snap.AccumulatedDegrees, Tolerance, "exactly one increment");
+            Assert.AreEqual(
+                -45f,
+                bridge.Player.YawRadians * Mathf.Rad2Deg,
+                0.01f,
+                "the snap lands in the heading (Unity right is a negative internal yaw)");
+            Assert.Less(
+                Quaternion.Angle(Quaternion.Euler(0f, 45f, 0f), playerRootObject.transform.localRotation),
+                1e-3f,
+                "PlayerRoot shows the snapped heading");
+            Assert.IsFalse(snapInput.SnapPending, "the edge was consumed exactly once");
 
-            input.Frame = Frame();
+            snapInput.Frame = Frame();
+            for (int frame = 0; frame < 3; frame++)
+            {
+                bridge.Tick(Dt);
+            }
+
+            Assert.AreEqual(
+                -45f,
+                bridge.Player.YawRadians * Mathf.Rad2Deg,
+                0.01f,
+                "later pose ticks must not drift or overwrite the snap");
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator SnapDisabledStillIntegratesContinuousTurn()
+        {
+            var snapObject = new GameObject("SnapTurn");
+            snapObject.transform.SetParent(root.transform, false);
+            SnapTurn snap = snapObject.AddComponent<SnapTurn>();
+            snap.SnapEnabled = false;
+            bridge.SnapTurn = snap;
+
+            var snapInput = new FakeSnapInputProvider();
+            bridge.InputSource = snapInput;
+            snapInput.Frame = Frame(turn: 90f);
+            snapInput.SnapPending = true;
+
+            float before = bridge.Player.YawRadians;
+            for (int frame = 0; frame < 30; frame++)
+            {
+                bridge.Tick(Dt);
+            }
+
+            Assert.AreEqual(0f, snap.AccumulatedDegrees, Tolerance, "the disabled snap is a no-op");
+            Assert.AreEqual(
+                45f,
+                (bridge.Player.YawRadians - before) * Mathf.Rad2Deg,
+                0.05f,
+                "a snap-disabled frame must still turn continuously (no dropped turn)");
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator RecentreClearsTheHeadingAndTheHeadOffset()
+        {
+            var headObject = new GameObject("RecentreHead");
+            headObject.transform.SetParent(playerRootObject.transform, false);
+            var stereo = headObject.AddComponent<StereoRig>();
+            var latch = headObject.AddComponent<LateLatchPose>();
+            stereo.ApplyEyeLayout();
+            latch.Rig = stereo;
+
+            var headPose = new FakePoseProvider { Sample = Yaw90Sample() };
+            latch.Provider = headPose;
+            bridge.LateLatch = latch;
+
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(Quaternion.Euler(0f, -90f, 0f), headObject.transform.localRotation),
+                1e-3f,
+                "the head offset is applied before recentring");
+            bridge.Player.YawRadians = 0.5f;
+
+            input.Frame = new InputFrame(
+                Vector2f.Zero,
+                0f,
+                true,
+                null,
+                ButtonState.Up,
+                ButtonState.Up,
+                0,
+                TrackingQuality.Good);
             bridge.Tick(Dt);
-            Assert.AreEqual(45f, Mathf.DeltaAngle(0f, rigObject.transform.eulerAngles.y), 1e-3f, "no drift after the edge");
+
+            Assert.AreEqual(0f, bridge.Player.YawRadians, 1e-6f, "recentre zeroes the heading");
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, playerRootObject.transform.localRotation),
+                1e-3f,
+                "PlayerRoot returns to the player's forward");
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, headObject.transform.localRotation),
+                1e-3f,
+                "the head offset is cleared immediately (local offset reset)");
+
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, headObject.transform.localRotation),
+                1e-3f,
+                "the next sample stays relative to the recentred baseline");
             yield return null;
         }
 
@@ -341,6 +489,28 @@ namespace Cubeglass.Unity.Rendering.Tests
             return Vec3.Normalized(value);
         }
 
+        private static BridgeHeadSample Yaw90Sample()
+        {
+            double half = System.Math.PI / 4.0;
+            return new BridgeHeadSample
+            {
+                HostTime = 1L,
+                Pose = new BridgePose
+                {
+                    Position = new BridgeVec3 { X = 0f, Y = 0f, Z = 0f },
+                    Rotation = new BridgeQuat
+                    {
+                        W = (float)System.Math.Cos(half),
+                        X = 0f,
+                        Y = (float)System.Math.Sin(half),
+                        Z = 0f,
+                    },
+                },
+                State = TrackState.Stable,
+                Sequence = 1,
+            };
+        }
+
         private sealed class FakeInputProvider : IInputProvider
         {
             public InputFrame Frame;
@@ -348,6 +518,24 @@ namespace Cubeglass.Unity.Rendering.Tests
             public InputFrame Sample(double timeSeconds)
             {
                 return Frame;
+            }
+        }
+
+        private sealed class FakeSnapInputProvider : IInputProvider, ISnapInputSource
+        {
+            public InputFrame Frame;
+            public bool SnapPending;
+
+            public InputFrame Sample(double timeSeconds)
+            {
+                return Frame;
+            }
+
+            public bool ConsumeSnapPressed()
+            {
+                bool pending = SnapPending;
+                SnapPending = false;
+                return pending;
             }
         }
 

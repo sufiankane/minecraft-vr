@@ -68,19 +68,21 @@ namespace Cubeglass.Unity.Rendering
     /// allocation per upload beyond the mesh data itself.
     /// </para>
     /// <para>
-    /// Winding: <see cref="GreedyMesher"/> emits every quad counter-clockwise
-    /// as seen from outside in the internal right-handed frame (ADR-0007), so
-    /// <c>cross(v1 - v0, v2 - v0)</c> equals the stored outward normal.
-    /// Positions and normals are copied component-for-component with no axis
-    /// mirroring, and Unity's rule ("the corners go around clockwise as you
-    /// look down on the visible outer surface") makes exactly those triangles
-    /// front-facing whose <c>cross(v1 - v0, v2 - v0)</c> points toward the
-    /// viewer. The ADR-0007 index order is therefore already the Unity
-    /// front-face order and must NOT be reversed. This equivalence holds only
-    /// because the voxel lattice coordinates are used as Unity coordinates;
-    /// if mesh positions are ever routed through the ADR-0004
-    /// <c>UnityConvert</c> Z mirror, the mirror flips the winding and the
-    /// indices have to be reversed in the same change.
+    /// Unity space (S7 Task 4a, R52): the whole scene is built in Unity space,
+    /// so positions and normals are converted exactly once through the
+    /// ADR-0004 <see cref="UnityConvert"/> mirror (<c>z -> -z</c>) instead of
+    /// being copied component-for-component. <see cref="GreedyMesher"/> emits
+    /// every quad counter-clockwise as seen from outside in the internal
+    /// right-handed frame (ADR-0007), so <c>cross(v1 - v0, v2 - v0)</c> equals
+    /// the stored outward normal there; the mirror inverts orientation, so
+    /// each triangle's winding is flipped (<c>i0, i2, i1</c>) and the Unity
+    /// cross product again matches the converted outward normal. Unity's rule
+    /// ("the corners go around clockwise as you look down on the visible outer
+    /// surface") then makes exactly those triangles front-facing whose
+    /// <c>cross(v1 - v0, v2 - v0)</c> points toward the viewer. The ADR-0007
+    /// index order and the mirror must therefore always change together: the
+    /// conversion without the winding flip, or the flip without the
+    /// conversion, renders the world inside-out.
     /// </para>
     /// <para>
     /// <see cref="Upload"/> takes ownership of the <see cref="MeshData"/> and
@@ -334,10 +336,12 @@ namespace Cubeglass.Unity.Rendering
             for (int i = 0; i < data.VertexCount; i++)
             {
                 Vector3f position = sourcePositions[i];
-                positions.Add(new Vector3(position.X, position.Y, position.Z));
+                Vec3 unityPosition = UnityConvert.ToUnity(new Vec3(position.X, position.Y, position.Z));
+                positions.Add(new Vector3((float)unityPosition.X, (float)unityPosition.Y, (float)unityPosition.Z));
 
                 Vector3f normal = sourceNormals[i];
-                normals.Add(new Vector3(normal.X, normal.Y, normal.Z));
+                Vec3 unityNormal = UnityConvert.ToUnity(new Vec3(normal.X, normal.Y, normal.Z));
+                normals.Add(new Vector3((float)unityNormal.X, (float)unityNormal.Y, (float)unityNormal.Z));
 
                 Vector2f uv = sourceUvs[i];
                 uvs.Add(new Vector2(uv.X, uv.Y));
@@ -346,10 +350,14 @@ namespace Cubeglass.Unity.Rendering
                 colors.Add(new Color32(ao, ao, ao, 255));
             }
 
+            // The Z mirror reverses orientation, so each triangle's winding is
+            // flipped to keep the Unity front face on the visible outer side.
             ReadOnlySpan<int> sourceIndices = data.Indices.Span;
-            for (int i = 0; i < data.IndexCount; i++)
+            for (int i = 0; i < data.IndexCount; i += 3)
             {
                 indices.Add(sourceIndices[i]);
+                indices.Add(sourceIndices[i + 2]);
+                indices.Add(sourceIndices[i + 1]);
             }
 
             mesh.Clear();
@@ -363,9 +371,13 @@ namespace Cubeglass.Unity.Rendering
 
         private static Bounds BoundsFrom(Vector3f min, Vector3f max)
         {
-            var center = new Vector3((min.X + max.X) * 0.5f, (min.Y + max.Y) * 0.5f, (min.Z + max.Z) * 0.5f);
-            var size = new Vector3(max.X - min.X, max.Y - min.Y, max.Z - min.Z);
-            return new Bounds(center, size);
+            Vec3 unityMin = UnityConvert.ToUnity(new Vec3(min.X, min.Y, min.Z));
+            Vec3 unityMax = UnityConvert.ToUnity(new Vec3(max.X, max.Y, max.Z));
+            var a = new Vector3((float)unityMin.X, (float)unityMin.Y, (float)unityMin.Z);
+            var b = new Vector3((float)unityMax.X, (float)unityMax.Y, (float)unityMax.Z);
+            Vector3 low = Vector3.Min(a, b);
+            Vector3 high = Vector3.Max(a, b);
+            return new Bounds((low + high) * 0.5f, high - low);
         }
 
         private static void DestroyObject(UnityEngine.Object target)

@@ -5,11 +5,11 @@ using NUnit.Framework;
 namespace Cubeglass.Unity.Input.Tests
 {
     /// <summary>
-    /// Pins the pure <see cref="InputMapper"/> mapping table (S7 Task 3):
-    /// equivalent gamepad and keyboard/mouse actions produce the identical
-    /// <see cref="InputFrame"/>, the S4 button edges survive, snap/recentre/
-    /// hotbar are single-edge and the deadzones reject noise without distorting
-    /// the move disc.
+    /// Pins the pure <see cref="InputMapper"/> mapping table (S7 Task 3,
+    /// reworked in Task 4a): equivalent gamepad and keyboard/mouse actions
+    /// produce the identical <see cref="InputFrame"/>, the S4 button edges
+    /// survive, <c>TurnSnap</c> is a degrees-per-second yaw rate, and the snap
+    /// press is a one-shot signal outside the frame.
     /// </summary>
     public class InputMappingTests
     {
@@ -43,47 +43,47 @@ namespace Cubeglass.Unity.Input.Tests
             // mouse pixels) but the mapped frames must be identical.
             AssertEquivalent(
                 "move forward full",
-                Gamepad(move: new Vector2f(0f, 1f), dt: DeltaTime),
+                Gamepad(move: new Vector2f(0f, 1f)),
                 Keyboard(move: new Vector2f(0f, 1f)));
 
             AssertEquivalent(
                 "move diagonal full",
-                Gamepad(move: new Vector2f(1f, 1f), dt: DeltaTime),
+                Gamepad(move: new Vector2f(1f, 1f)),
                 Keyboard(move: new Vector2f(1f, 1f)));
 
             AssertEquivalent(
                 "continuous turn full rate",
-                Gamepad(stickTurn: 1f, dt: DeltaTime),
-                Keyboard(mouseDelta: (TurnDegreesPerSecond * DeltaTime) / MouseDegreesPerPixel));
+                Gamepad(stickTurn: 1f),
+                Keyboard(mouseDelta: TurnDegreesPerSecond * DeltaTime / MouseDegreesPerPixel));
 
             AssertEquivalent(
                 "break press",
-                Gamepad(primaryDown: true, dt: DeltaTime),
+                Gamepad(primaryDown: true),
                 Keyboard(primaryDown: true));
 
             AssertEquivalent(
                 "place press",
-                Gamepad(secondaryDown: true, dt: DeltaTime),
+                Gamepad(secondaryDown: true),
                 Keyboard(secondaryDown: true));
 
             AssertEquivalent(
                 "recentre press",
-                Gamepad(recenterDown: true, dt: DeltaTime),
+                Gamepad(recenterDown: true),
                 Keyboard(recenterDown: true));
 
             AssertEquivalent(
                 "snap turn press",
-                Gamepad(snapTurnDown: true, dt: DeltaTime),
+                Gamepad(snapTurnDown: true),
                 Keyboard(snapTurnDown: true));
 
             AssertEquivalent(
                 "hotbar next press",
-                Gamepad(hotbarNextDown: true, dt: DeltaTime),
+                Gamepad(hotbarNextDown: true),
                 Keyboard(hotbarNextDown: true));
 
             AssertEquivalent(
                 "hotbar previous press",
-                Gamepad(hotbarPrevDown: true, dt: DeltaTime),
+                Gamepad(hotbarPrevDown: true),
                 Keyboard(hotbarPrevDown: true));
         }
 
@@ -114,28 +114,34 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
-        public void SnapTurnIsASingleExactEdgeFrame()
+        public void SnapTurnIsASingleOneShotEdgeOutsideTheFrame()
         {
             var mapper = new InputMapper(lookDeadzone: 0f);
             InputFrame pressed = mapper.Map(Sample(snapTurnDown: true));
-            InputFrame held = mapper.Map(Sample(snapTurnDown: true));
-            InputFrame released = mapper.Map(Sample());
-            InputFrame pressedAgain = mapper.Map(Sample(snapTurnDown: true));
+            Assert.IsTrue(mapper.SnapPressed, "the press edge is exposed");
+            Assert.IsTrue(mapper.ConsumeSnapPressed(), "the first read consumes it");
+            Assert.IsFalse(mapper.ConsumeSnapPressed(), "the signal is one-shot");
+            Assert.AreEqual(0f, pressed.TurnSnap, Tolerance, "snap is not a TurnSnap rate");
 
-            Assert.AreEqual(InputMapper.DefaultSnapTurnDegrees, pressed.TurnSnap, Tolerance, "press emits the increment once");
-            Assert.AreEqual(0f, held.TurnSnap, Tolerance, "hold does not repeat");
-            Assert.AreEqual(0f, released.TurnSnap, Tolerance, "release emits nothing");
-            Assert.AreEqual(InputMapper.DefaultSnapTurnDegrees, pressedAgain.TurnSnap, Tolerance, "a second press snaps again");
+            InputFrame held = mapper.Map(Sample(snapTurnDown: true));
+            Assert.IsFalse(mapper.SnapPressed, "hold does not repeat");
+            Assert.AreEqual(0f, held.TurnSnap, Tolerance);
+
+            InputFrame released = mapper.Map(Sample());
+            Assert.IsFalse(mapper.SnapPressed, "release re-arms");
+
+            mapper.Map(Sample(snapTurnDown: true));
+            Assert.IsTrue(mapper.ConsumeSnapPressed(), "a second press snaps again");
         }
 
         [Test]
-        public void SnapEdgeReplacesContinuousTurnOnTheSameFrame()
+        public void SnapEdgeDoesNotDisturbContinuousTurn()
         {
             var mapper = new InputMapper(lookDeadzone: 0f);
             InputFrame frame = mapper.Map(new RawInputSample(
                 Vector2f.Zero,
                 new Vector2f(1f, 0f),
-                TurnDegreesPerSecond * DeltaTime,
+                TurnDegreesPerSecond,
                 false,
                 false,
                 false,
@@ -143,7 +149,12 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false));
 
-            Assert.AreEqual(InputMapper.DefaultSnapTurnDegrees, frame.TurnSnap, Tolerance, "the discrete increment wins");
+            Assert.IsTrue(mapper.SnapPressed, "the snap edge lands");
+            Assert.AreEqual(
+                -TurnDegreesPerSecond,
+                frame.TurnSnap,
+                Tolerance,
+                "device-right look stays a continuous negative yaw rate (ADR-0004)");
         }
 
         [Test]
@@ -229,7 +240,11 @@ namespace Cubeglass.Unity.Input.Tests
                 false,
                 false,
                 false));
-            Assert.AreEqual(45f, above.TurnSnap, Tolerance, "above the deadzone maps to degrees");
+            Assert.AreEqual(
+                -45f,
+                above.TurnSnap,
+                Tolerance,
+                "above the deadzone maps to the negative degrees-per-second yaw rate");
         }
 
         [Test]
@@ -278,6 +293,7 @@ namespace Cubeglass.Unity.Input.Tests
             Assert.AreEqual(gamepadFrame.Secondary, keyboardFrame.Secondary, "{0}: secondary", action);
             Assert.AreEqual(gamepadFrame.HotbarDelta, keyboardFrame.HotbarDelta, "{0}: hotbar", action);
             Assert.AreEqual(gamepadFrame.Quality, keyboardFrame.Quality, "{0}: quality", action);
+            Assert.AreEqual(gamepadMapper.SnapPressed, keyboardMapper.SnapPressed, "{0}: snap edge", action);
         }
 
         private static RawInputSample Gamepad(
@@ -288,13 +304,12 @@ namespace Cubeglass.Unity.Input.Tests
             bool recenterDown = false,
             bool snapTurnDown = false,
             bool hotbarNextDown = false,
-            bool hotbarPrevDown = false,
-            float dt = DeltaTime)
+            bool hotbarPrevDown = false)
         {
             return new RawInputSample(
                 move,
                 new Vector2f(stickTurn, 0f),
-                TurnDegreesPerSecond * dt,
+                TurnDegreesPerSecond,
                 primaryDown,
                 secondaryDown,
                 recenterDown,
@@ -316,7 +331,7 @@ namespace Cubeglass.Unity.Input.Tests
             return new RawInputSample(
                 move,
                 new Vector2f(mouseDelta, 0f),
-                MouseDegreesPerPixel,
+                MouseDegreesPerPixel / DeltaTime,
                 primaryDown,
                 secondaryDown,
                 recenterDown,
