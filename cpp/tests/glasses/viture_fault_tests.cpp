@@ -255,33 +255,80 @@ TEST(VitureFault, RecentreDuringBackoffIsNotReady) {
     source.Stop();
 }
 
-/// A successful recreate revives the device, and `Recenter` then reaches the
-/// seam again.
+/// A recentre posted while the device is about to be lost survives the outage:
+/// it is armed for readers immediately, never reaches the destroyed device,
+/// and is applied exactly once by the polling thread after the next successful
+/// recreate+publish. The feed is gated so every step is driven by observable
+/// state (poll, destroy and reset counters) and the manual clock, not by a
+/// wall-clock race against the poll loop.
 TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
     FakeVitureApi api;
     ManualHostClock clock;
     constexpr std::int64_t kSdkNs = 1'000'000'000;
     api.poll_script = {Ok(CgSample(1, kSdkNs, CG_TRACK_STABLE, 3.0)),
                        Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"})};
-    // Every poll after the reconnect succeeds, so the recreated device stays
-    // alive while the Recenter is serviced.
+    // Every poll after the reconnect succeeds, so the recreated device
+    // publishes a fresh session sample for the pending reset to target.
     api.empty_poll_result = Ok(CgSample(2, kSdkNs + 10'000'000, CG_TRACK_STABLE, 4.0));
+    api.SetPollGate(true);
 
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
+    api.AllowOnePoll();
     HeadSample first = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, first, 1U));
 
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
-    EXPECT_FALSE(api.device_alive.load());
-    clock.Advance(Duration{kHundredMillisecondsNs});
-    ASSERT_TRUE(WaitFor([&] { return api.device_alive.load(); }));
-
+    // Poll 2 is in flight (blocked on the gate) and scripted to fail. Post the
+    // recentre now, while the device is still alive, and arm the correction:
+    // the captured sample must read yaw-zero immediately, before any seam call.
+    ASSERT_TRUE(WaitFor([&] { return api.poll_calls.load() >= 2U; }));
     const Result<void> result = source.Recenter();
     ASSERT_TRUE(result.ok()) << result.status().message();
-    // The request is serviced on the polling thread's next pass.
-    ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
+    EXPECT_EQ(api.reset_origin_calls.load(), 0U);
+    HeadSample armed = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(armed, Duration{0}));
+    ASSERT_EQ(armed.seq, 1U);
+    EXPECT_NEAR(YawDegrees(armed.pose), 0.0, 0.1);
+
+    // Release the failing poll: the device dies with the request still posted.
+    api.AllowOnePoll();
+    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    EXPECT_FALSE(api.device_alive.load());
+    EXPECT_EQ(api.reset_origin_calls.load(), 0U) << "a destroyed device must never see the seam";
+    HeadSample during = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(during, Duration{0}));
+    EXPECT_NEAR(YawDegrees(during.pose), 0.0, 0.1) << "the requested recentre must stay armed across the outage";
+
+    // Release the backoff on the manual clock. Advancing inside the predicate
+    // cannot race the source's deadline computation: if the clock moves before
+    // the wait arms, the next iteration advances it again.
+    ASSERT_TRUE(WaitFor([&] {
+        if (api.device_alive.load()) {
+            return true;
+        }
+        clock.Advance(Duration{kHundredMillisecondsNs});
+        return false;
+    }));
+
+    // The recreated device has not published yet, so the pending request must
+    // wait for a fresh sample instead of applying the pre-loss pose.
+    EXPECT_EQ(api.reset_origin_calls.load(), 0U);
+    api.AllowOnePoll();
+    // Wait for the reader-visible effect, not just the seam call: the polling
+    // thread re-arms the correction after ResetOriginCarina returns.
+    HeadSample recentred = PlaceholderSample();
+    ASSERT_TRUE(WaitFor([&] {
+        return source.TryGetLatest(recentred, Duration{0}) && recentred.seq >= 2U &&
+               std::abs(YawDegrees(recentred.pose)) < 0.1;
+    })) << "the applied recentre must zero the newest session sample";
+    EXPECT_EQ(api.reset_origin_calls.load(), 1U);
     EXPECT_TRUE(api.has_reset_pose.load(std::memory_order_acquire));
+
+    // Once-only: further successful polls must not call the seam again.
+    api.AllowOnePoll();
+    HeadSample next = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, next, 3U));
+    EXPECT_EQ(api.reset_origin_calls.load(), 1U) << "the pending recentre must be applied exactly once";
     source.Stop();
 }
 
@@ -428,9 +475,16 @@ TEST(VitureFault, SdkClockRestartAfterReconnectDoesNotRegressMappedTime) {
     ASSERT_TRUE(WaitForSample(source, last_before, 9U));
 
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
-    clock.Advance(Duration{kHundredMillisecondsNs});
+    // Advance the backoff clock inside the predicate so the advance cannot
+    // race the source arming its deadline.
     HeadSample second = PlaceholderSample();
-    ASSERT_TRUE(WaitForSample(source, second, 10U));
+    ASSERT_TRUE(WaitFor([&] {
+        if (source.TryGetLatest(second, Duration{0}) && second.seq >= 10U) {
+            return true;
+        }
+        clock.Advance(Duration{kHundredMillisecondsNs});
+        return false;
+    }));
     EXPECT_GT(second.time, last_before.time) << "a restarted SDK clock must not regress the mapped time";
     source.Stop();
 }
@@ -538,9 +592,16 @@ TEST(VitureFault, SequenceStaysMonotonicAcrossReconnect) {
     ASSERT_TRUE(WaitForSample(source, first, 1U));
 
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
-    clock.Advance(Duration{kHundredMillisecondsNs});
+    // Advance the backoff clock inside the predicate so the advance cannot
+    // race the source arming its deadline.
     HeadSample second = PlaceholderSample();
-    ASSERT_TRUE(WaitForSample(source, second, 2U));
+    ASSERT_TRUE(WaitFor([&] {
+        if (source.TryGetLatest(second, Duration{0}) && second.seq >= 2U) {
+            return true;
+        }
+        clock.Advance(Duration{kHundredMillisecondsNs});
+        return false;
+    }));
     EXPECT_EQ(second.seq, 2U);
     EXPECT_GT(second.time, first.time);
     source.Stop();

@@ -47,10 +47,16 @@ namespace cg::glasses {
 /// for the captured sample immediately, so the newest pre-reset sample reads
 /// recentred as soon as `Recenter` returns; the polling thread applies
 /// `ResetOriginCarina` between polls on its next pass, and later samples come
-/// from the already-recentred SDK stream. A failed `ResetOriginCarina`
-/// withdraws the correction in the polling thread. It is `NotReady` before the
-/// first sample and while no device is alive (during a backoff or a failed
-/// recreate); the destroyed-device state never calls the seam.
+/// from the already-recentred SDK stream. It is `NotReady` before the first
+/// sample and while no device is alive (during a backoff or a failed
+/// recreate); the destroyed-device state never calls the seam. A request that
+/// finds the device dead (or a recreated device that has not published yet)
+/// stays pending with its correction armed and is applied exactly once on the
+/// next successful recreate+publish; a request that can never be applied is
+/// withdrawn by `Stop`, so the seam is never called after `Stop` and the
+/// stream then reflects the never-reset SDK frame. A post that arrives while
+/// another is in flight supersedes it and owns the correction. A failed
+/// `ResetOriginCarina` withdraws the correction in the polling thread.
 class VitureHeadPoseSource final : public IHeadPoseSource {
   public:
     /// Runs on the polling thread right after it is named (Windows
@@ -103,10 +109,14 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     void SetupThread() noexcept;
 
     /// Polling-thread half of `Recenter`: consumes a posted request and calls
-    /// `ResetOriginCarina` with the pose captured by the poster, then extends
-    /// the read-time correction over every sample published before this pass.
+    /// `ResetOriginCarina` with the newest raw slot pose, then extends the
+    /// read-time correction over every sample published before this pass. Only
+    /// resolves `generation` if no newer post superseded it.
     void ServiceRecentre() noexcept;
-    void HandleRecentre(const float pose[7]) noexcept;
+    void HandleRecentre(std::uint64_t generation) noexcept;
+
+    /// Drops an unresolved request and its armed correction (`Stop` only).
+    void WithdrawPendingRecentre() noexcept;
 
     [[nodiscard]] bool WaitBackoff(Duration duration, std::stop_token stop) noexcept;
     [[nodiscard]] bool StopRequested(const std::stop_token &stop) const noexcept;
@@ -125,17 +135,22 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::atomic<bool> stop_requested_{false};
 
     // Recentre hand-off from any caller thread to the polling thread. The
-    // poster stores the captured pose under `recentre_mutex_` and then sets
-    // `recentre_requested_`; the polling thread exchanges the flag and copies
-    // the pose. `recentre_call_mutex_` serialises callers.
+    // poster captures a pose from the slot, arms the read-time correction and
+    // then posts a generation under `recentre_mutex_`; the polling thread
+    // claims the post under the same mutex (so a claim and a post cannot
+    // interleave) and resolves that generation unless a newer post superseded
+    // it. `recentre_call_mutex_` serialises callers.
     std::mutex recentre_call_mutex_;
     std::mutex recentre_mutex_;
     std::atomic<bool> recentre_requested_{false};
-    float recentre_pose_[7] = {};
+    std::atomic<bool> recentre_pending_{false};
+    std::uint64_t recentre_generation_ = 0; // Guarded by `recentre_mutex_`.
 
     // Device lifetime (create success sets it, before every destroy it is
-    // cleared) and "a pose was published" (readable by `Recenter` from any
-    // caller thread, so both are atomics).
+    // cleared) and "a publish has started" (readable by `Recenter` from any
+    // caller thread, so both are atomics). The publish flag distinguishes
+    // "no sample yet" from a saturated slot writer, whose bounded read can
+    // fail while a sample is being written.
     std::atomic<bool> device_alive_{false};
     std::atomic<bool> has_published_{false};
 
@@ -148,10 +163,16 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     double previous_yaw_deg_ = 0.0;
     double previous_pitch_deg_ = 0.0;
     HostTime previous_time_ = 0;
+    // True once the device session current at this instant has published. A
+    // recreate clears it, so a pending recentre waits for a fresh sample of the
+    // recreated session instead of applying to the pre-loss pose.
+    bool session_published_ = false;
 
     // Reader-visible state. The correction applies to samples up to
-    // `recentre_until_seq_`; the reader acquires that sequence before reading
-    // `yaw_offset_deg_`, and both writers store the offset before the sequence.
+    // `recentre_until_seq_`, or to every sample while `recentre_pending_` is
+    // set (a posted request is armed but not yet resolved against the SDK).
+    // The reader acquires `recentre_until_seq_`/`recentre_pending_` before
+    // reading `yaw_offset_deg_`, and every writer stores the offset first.
     std::atomic<double> yaw_rate_deg_per_s_{0.0};
     std::atomic<double> pitch_rate_deg_per_s_{0.0};
     std::atomic<double> yaw_offset_deg_{0.0};

@@ -228,21 +228,33 @@ publishes a synthetic sample carrying the last pose and the current host time:
 interrupts a pending 2 s backoff immediately.
 
 **Recentre.** `Recenter` captures the newest published pose from the wait-free
-slot, posts a request carrying that pose in the SDK's `float[7]` layout
-(`[px, py, pz, qw, qx, qy, qz]`) for the polling thread (the only caller of the
-seam) and returns `Ok` once the request is posted, without waiting for the
-polling thread. It is `NotReady` before the first sample and while no device is
-alive, and in those states the seam is never called. At post time it arms an
-inverse-yaw correction for samples whose sequence is at or below the captured
-sample, so the newest pre-reset sample reads recentred as soon as `Recenter`
-returns (pitch and roll untouched, position unchanged) and the pose stream is
-never stalled. The polling thread consumes the request between polls, calls
-`ResetOriginCarina` with the captured pose, extends the correction over every
-sample published before that pass, and carries the corrected heading into quiet
-synthetics; later samples arrive already recentred from the SDK. A rejected
-`ResetOriginCarina` withdraws the correction and leaves the stream in its
-pre-recentre frame; the poll loop then keeps publishing normally (the old
-1 s `kRecentreReadTimeout` reader barrier is gone).
+slot, posts a request for the polling thread (the only caller of the seam) and
+returns `Ok` once the request is posted, without waiting for the polling
+thread. It is `NotReady` before the first sample and while no device is alive,
+and in those states the seam is never called. The capture retries the bounded
+seqlock read until a validated sample exists (a saturated writer can exhaust
+the R39 retry even though a sample is present); the poll loop never blocks on
+this call. At post time it arms an inverse-yaw correction so the newest
+pre-reset sample reads recentred as soon as `Recenter` returns (pitch and roll
+untouched, position unchanged) and the pose stream is never stalled; the
+correction stays applied to every sample, quiet synthetics included, until the
+request is resolved against the SDK. The polling thread services the request
+between polls only while the device is alive and the current device session has
+published: a request that finds the device dead or freshly recreated but not
+yet publishing stays pending, so a post that races a device loss is applied
+exactly once after the next successful recreate+publish (targeting the newest
+raw slot pose, so a recreated session is recentred to its own first sample, not
+to a pre-loss pose). At service it calls `ResetOriginCarina` with that pose in
+the SDK's `float[7]` layout (`[px, py, pz, qw, qx, qy, qz]`), extends the
+correction over every sample published before that pass, and carries the
+corrected heading into quiet synthetics; later samples arrive already recentred
+from the SDK. A rejected `ResetOriginCarina` withdraws the correction and
+leaves the stream in its pre-recentre frame. A request that can never reach the
+SDK because the device does not return before `Stop` is withdrawn by `Stop`
+(the seam is never called after `Stop`, and the stream then reflects the
+never-reset frame); a post that arrives while an older one is in flight
+supersedes it and owns the correction. The poll loop keeps publishing normally
+throughout (the old 1 s `kRecentreReadTimeout` reader barrier is gone).
 
 ### Recentre
 
@@ -258,10 +270,12 @@ rotation), and repeated calls are idempotent. The contract suite pins
 adapter (Task 2) captures the newest slot pose, arms the reader-visible
 correction immediately and posts the reset to its polling thread, which calls
 the SDK's `ResetOriginCarina` between polls (and refuses while no device is
-alive); a rejected reset withdraws the correction. The post-and-return design
-keeps the 0.1 deg reader-visible guarantee without the old 1 s reader barrier
-stalling the pose stream. U-01 (pending HIL) will confirm what the SDK reports
-before and after that call.
+alive); a request that outlives the device it was posted against stays pending
+and is applied once after the next successful recreate+publish, unless `Stop`
+withdraws it first. A rejected reset withdraws the correction. The
+post-and-return design keeps the 0.1 deg reader-visible guarantee without the
+old 1 s reader barrier stalling the pose stream. U-01 (pending HIL) will
+confirm what the SDK reports before and after that call.
 
 ### Predict
 
@@ -331,8 +345,9 @@ is provisional until then). This section is filled in before
     hardenings: recentre on a destroyed device is `NotReady` and never calls the
     seam, a posted recentre does not stall the polling thread (no reader call is
     needed for the poll loop to reach `PollPose` again), a rejected reset
-    withdraws the read-time correction, recentre works again after a successful
-    recreate, the fake's device lifetime, `StartPose`-failure teardown and clean
+    withdraws the read-time correction, a posted recentre survives a device
+    loss and is applied exactly once after a successful recreate+publish, the
+    fake's device lifetime, `StartPose`-failure teardown and clean
     retry, seam-crossing prediction, and the reconnect clock-restart mapper
     guard. The contract suite includes `RecenterBeforeTheFirstSampleIsNotReady`
     for every factory.
