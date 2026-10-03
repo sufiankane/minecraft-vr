@@ -56,7 +56,10 @@ namespace Cubeglass.Unity.Input
     /// <see cref="BreakProgress"/>, <see cref="TrackingState"/>) and the
     /// planar speed for the overlay/vignette, and raises
     /// <see cref="SaveRequested"/> once an edit lands so S7 Task 4 can persist
-    /// the world.
+    /// the world. Persistence itself listens to <see cref="EditApplied"/>
+    /// (exact edited cells) and to the optional <see cref="SaveBatches"/> sink;
+    /// the interaction service edits through a thin <c>IWorld</c> observer that
+    /// records applied commands, so the pure Gameplay module needs no change.
     /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
@@ -70,7 +73,10 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private Camera gazeCamera;
         [SerializeField] private SnapTurn snapTurn;
         [SerializeField] private MotionVignette motionVignette;
+        [SerializeField] private SaveBatches saveBatches;
         [SerializeField] private bool autoUpdate = true;
+
+        private readonly EditObserver editObserver = new EditObserver();
 
         private World world;
         private InteractionService interaction;
@@ -81,6 +87,13 @@ namespace Cubeglass.Unity.Input
 
         /// <summary>Raised by tests/scene builders when the world is not ready yet.</summary>
         public event Action Initialized;
+
+        /// <summary>
+        /// Raised once per world edit with the edited world cell and its new
+        /// block (S7 Task 4b), after the edit landed; persistence listens here
+        /// to build chunk deltas.
+        /// </summary>
+        public event Action<Int3, BlockId> EditApplied;
 
         /// <summary>
         /// The streamed world; re-resolved from the runtime's view manager
@@ -175,6 +188,17 @@ namespace Cubeglass.Unity.Input
             set { motionVignette = value; }
         }
 
+        /// <summary>
+        /// Optional batched persistence sink (S7 Task 4b). Every applied edit
+        /// is forwarded to <see cref="SaveBatches.TrackEdit"/> in addition to
+        /// the <see cref="EditApplied"/> event.
+        /// </summary>
+        public SaveBatches SaveBatches
+        {
+            get { return saveBatches; }
+            set { saveBatches = value; }
+        }
+
         /// <summary>Whether <see cref="Update"/> ticks automatically.</summary>
         public bool AutoUpdate
         {
@@ -255,6 +279,8 @@ namespace Cubeglass.Unity.Input
                 return false;
             }
 
+            editObserver.Inner = world;
+
             if (player == null)
             {
                 player = new PlayerState();
@@ -293,6 +319,8 @@ namespace Cubeglass.Unity.Input
             {
                 world = live;
             }
+
+            editObserver.Inner = world;
         }
 
         /// <summary>
@@ -357,13 +385,19 @@ namespace Cubeglass.Unity.Input
 
             PlayerController.Step(player, frame, world, dt);
 
-            InteractionResult result = interaction.Update(frame, world, player, dt);
+            // The interaction service edits through the observer, which
+            // records every applied command so persistence sees exact cells
+            // without changing the pure Gameplay module.
+            editObserver.Reset();
+            InteractionResult result = interaction.Update(frame, editObserver, player, dt);
             BreakProgress = result.BreakInProgress ? result.BreakProgress : 0f;
             if (result.Edited)
             {
                 EditsApplied++;
                 SaveRequested = true;
             }
+
+            DispatchAppliedEdits();
 
             if (interaction.Recentered && lateLatch != null)
             {
@@ -458,9 +492,122 @@ namespace Cubeglass.Unity.Input
             }
         }
 
+        private void DispatchAppliedEdits()
+        {
+            if (editObserver.Overflowed)
+            {
+                Debug.LogError(
+                    "[GameplayBridge] the edit observer dropped " + editObserver.DroppedEdits
+                        + " applied edit(s) in one tick; persistence may miss them. "
+                        + "Grow EditObserver's buffer if the interaction service can exceed two edits per tick.");
+            }
+
+            int count = editObserver.RecordedCount;
+            for (int i = 0; i < count; i++)
+            {
+                Int3 cell;
+                BlockId block;
+                editObserver.GetApplied(i, out cell, out block);
+                Action<Int3, BlockId> handler = EditApplied;
+                if (handler != null)
+                {
+                    handler(cell, block);
+                }
+
+                if (saveBatches != null)
+                {
+                    saveBatches.TrackEdit(cell, block);
+                }
+            }
+        }
+
         private static float WrapRadians(float radians)
         {
             return Mathf.Repeat(radians + Mathf.PI, Mathf.PI * 2f) - Mathf.PI;
+        }
+
+        /// <summary>
+        /// Forwards <see cref="IWorld"/> reads to the live world and records
+        /// every applied <see cref="EditCommand"/> (cell and new block) so the
+        /// bridge can raise <see cref="EditApplied"/> without a pure-module
+        /// change. One edit per interaction call is the norm; the buffer
+        /// covers a break completion and a placement edge in the same tick.
+        /// </summary>
+        private sealed class EditObserver : IWorld
+        {
+            private readonly Int3[] cells = new Int3[2];
+            private readonly BlockId[] blocks = new BlockId[2];
+
+            public World Inner;
+
+            public int AppliedCount { get; private set; }
+
+            public int RecordedCount
+            {
+                get { return AppliedCount < cells.Length ? AppliedCount : cells.Length; }
+            }
+
+#pragma warning disable CS0067 // The observer forwards reads and Apply only; ChunkChanged stays on the inner world.
+            public event Action<ChunkCoord> ChunkChanged;
+#pragma warning restore CS0067
+
+            public void Reset()
+            {
+                AppliedCount = 0;
+                overflowed = false;
+                droppedEdits = 0;
+            }
+
+            public BlockId Get(Int3 cell)
+            {
+                return Inner.Get(cell);
+            }
+
+            public bool IsLoaded(Int3 cell)
+            {
+                return Inner.IsLoaded(cell);
+            }
+
+            public EditResult Apply(in EditCommand cmd)
+            {
+                EditResult result = Inner.Apply(cmd);
+                if (result == EditResult.Applied)
+                {
+                    if (AppliedCount < cells.Length)
+                    {
+                        cells[AppliedCount] = cmd.Cell;
+                        blocks[AppliedCount] = cmd.New;
+                    }
+                    else
+                    {
+                        overflowed = true;
+                        droppedEdits++;
+                    }
+
+                    AppliedCount++;
+                }
+
+                return result;
+            }
+
+            public void GetApplied(int index, out Int3 cell, out BlockId block)
+            {
+                cell = cells[index];
+                block = blocks[index];
+            }
+
+            private bool overflowed;
+            private int droppedEdits;
+
+            public bool Overflowed
+            {
+                get { return overflowed; }
+            }
+
+            public int DroppedEdits
+            {
+                get { return droppedEdits; }
+            }
         }
     }
 }

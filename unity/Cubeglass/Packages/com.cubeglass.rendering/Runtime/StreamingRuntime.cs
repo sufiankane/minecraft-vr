@@ -1,6 +1,7 @@
 using System;
 using Cubeglass.CoreMath;
 using Cubeglass.Streaming;
+using Cubeglass.Voxel;
 using UnityEngine;
 
 namespace Cubeglass.Unity.Rendering
@@ -43,6 +44,45 @@ namespace Cubeglass.Unity.Rendering
         private StreamingConfig config;
         private ChunkStreamingScheduler scheduler;
         private ChunkViewManager views;
+        private IWorldStore store;
+        private IAppliedEditCache appliedEdits;
+
+        /// <summary>
+        /// Optional persistence store handed to the view manager (S7 Task 4b):
+        /// chunks load a stored delta over their generated baseline before
+        /// meshing. May be set before or after <see cref="Configure"/>.
+        /// </summary>
+        public IWorldStore Store
+        {
+            get { return store; }
+            set
+            {
+                store = value;
+                if (views != null)
+                {
+                    views.Store = value;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Optional in-memory edit cache handed to the view manager (S7 Task 4b
+        /// fix round), normally the scene's <see cref="SaveBatches"/>: loaded
+        /// deltas are seeded into it and unflushed edits are re-applied after a
+        /// regeneration. May be set before or after <see cref="Configure"/>.
+        /// </summary>
+        public IAppliedEditCache AppliedEdits
+        {
+            get { return appliedEdits; }
+            set
+            {
+                appliedEdits = value;
+                if (views != null)
+                {
+                    views.AppliedEdits = value;
+                }
+            }
+        }
 
         /// <summary>When true (default) <see cref="Update"/> ticks automatically.</summary>
         public bool AutoUpdate
@@ -200,6 +240,8 @@ namespace Cubeglass.Unity.Rendering
             }
 
             views.ViewMaterial = viewMaterial;
+            views.Store = store;
+            views.AppliedEdits = appliedEdits;
             views.Initialize(config, seed, maxViews, scheduler);
         }
     }

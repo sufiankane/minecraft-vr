@@ -75,6 +75,10 @@ namespace Cubeglass.Unity.Rendering
         private IBlockRegistry blocks = SliceBlockRegistry.Default;
         private ChunkStreamingScheduler scheduler;
         private World world;
+        private long deltasLoaded;
+        private long deltaEditsApplied;
+        private long liveDeltasReapplied;
+        private long liveEditsReapplied;
         private Material viewMaterial;
         private long seed;
         private int maxViews = 2048;
@@ -119,6 +123,51 @@ namespace Cubeglass.Unity.Rendering
                     pool.Material = value;
                 }
             }
+        }
+
+        /// <summary>
+        /// Optional persistence store consulted when a chunk is generated
+        /// (S7 Task 4b): an existing delta is replayed over the generated
+        /// baseline through <see cref="World.Apply"/> before the chunk is
+        /// meshed, so edits survive a session. Loads happen on the main thread
+        /// once per generated chunk; a store that faults is ignored and the
+        /// chunk keeps its generated content.
+        /// </summary>
+        public IWorldStore Store { get; set; }
+
+        /// <summary>
+        /// Optional in-memory accumulated edit cache (S7 Task 4b fix round),
+        /// normally the scene's <see cref="SaveBatches"/>. On every chunk
+        /// generation, after a stored delta is replayed, the chunk's
+        /// accumulated map is re-applied on top so an unload/reload keeps edits
+        /// that have not been flushed; when a stored delta is loaded and no
+        /// accumulated cells exist yet, the loaded cells are seeded into the
+        /// cache so a later flush merges instead of replacing them.
+        /// </summary>
+        public IAppliedEditCache AppliedEdits { get; set; }
+
+        /// <summary>Chunks that loaded a delta from <see cref="Store"/>.</summary>
+        public long DeltasLoaded
+        {
+            get { return deltasLoaded; }
+        }
+
+        /// <summary>Edits replayed from deltas loaded out of <see cref="Store"/>.</summary>
+        public long DeltaEditsApplied
+        {
+            get { return deltaEditsApplied; }
+        }
+
+        /// <summary>Chunks whose in-memory accumulated map was re-applied.</summary>
+        public long LiveDeltasReapplied
+        {
+            get { return liveDeltasReapplied; }
+        }
+
+        /// <summary>Edits replayed from in-memory accumulated maps.</summary>
+        public long LiveEditsReapplied
+        {
+            get { return liveEditsReapplied; }
         }
 
         /// <summary>The upload budget per frame, taken from the streaming config.</summary>
@@ -485,8 +534,15 @@ namespace Cubeglass.Unity.Rendering
                 }
 
                 Chunk generated = generator.Generate(chunk, seed);
-                chunks.Add(chunk, generated);
                 world.LoadChunk(generated);
+
+                // Replay a stored delta before the chunk joins the manager's
+                // live set: HandleChunkChanged only dirties resident chunks, so
+                // a fresh boot's replay does not schedule a remesh for a chunk
+                // that has no view yet.
+                ApplyStoredDelta(chunk);
+
+                chunks.Add(chunk, generated);
                 worldChunks++;
                 generatedChunks++;
                 lastGenerateFrame = Time.frameCount;
@@ -506,6 +562,73 @@ namespace Cubeglass.Unity.Rendering
         public bool TryGetView(ChunkCoord chunk, out ChunkView view)
         {
             return views.TryGetValue(chunk, out view);
+        }
+
+        private void ApplyStoredDelta(ChunkCoord chunk)
+        {
+            ChunkDelta stored = LoadStoredDelta(chunk);
+            ChunkDelta live = null;
+            bool hasLive = AppliedEdits != null
+                && AppliedEdits.TryGetAccumulatedDelta(chunk, out live)
+                && live != null
+                && live.Edits.Count > 0;
+
+            if (stored != null && stored.Edits.Count > 0)
+            {
+                deltasLoaded++;
+                deltaEditsApplied += ApplyDelta(chunk, stored);
+                if (AppliedEdits != null)
+                {
+                    // Merge (never overwrite) so a later flush writes the
+                    // persisted cells plus this session's cells.
+                    AppliedEdits.TrackLoadedDelta(chunk, stored);
+                }
+            }
+
+            if (hasLive)
+            {
+                // In-session edits are newer than anything on disk and win.
+                liveDeltasReapplied++;
+                liveEditsReapplied += ApplyDelta(chunk, live);
+            }
+        }
+
+        private ChunkDelta LoadStoredDelta(ChunkCoord chunk)
+        {
+            IWorldStore activeStore = Store;
+            if (activeStore == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return activeStore.LoadAsync(chunk, System.Threading.CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "[ChunkViewManager] delta load failed for chunk (" + chunk.X + ", "
+                        + chunk.Y + ", " + chunk.Z + "): " + exception.Message);
+                return null;
+            }
+        }
+
+        private int ApplyDelta(ChunkCoord chunk, ChunkDelta delta)
+        {
+            int applied = 0;
+            foreach (KeyValuePair<Int3, BlockId> edit in delta.Edits)
+            {
+                Int3 cell = ChunkMath.ToWorld(chunk, edit.Key);
+                if (world.Apply(new EditCommand(cell, world.Get(cell), edit.Value, 0L)) == EditResult.Applied)
+                {
+                    applied++;
+                }
+            }
+
+            return applied;
         }
 
         private void EnsureInitialized()
@@ -607,6 +730,10 @@ namespace Cubeglass.Unity.Rendering
             remeshedChunks = 0;
             worldChunks = 0;
             worldCompactions = 0;
+            deltasLoaded = 0;
+            deltaEditsApplied = 0;
+            liveDeltasReapplied = 0;
+            liveEditsReapplied = 0;
             lastGenerateFrame = int.MinValue;
             lastUploadFrame = int.MinValue;
         }
