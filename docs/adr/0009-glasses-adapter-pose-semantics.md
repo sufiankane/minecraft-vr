@@ -227,17 +227,22 @@ publishes a synthetic sample carrying the last pose and the current host time:
 `IHostClock`, so tests pin the schedule with `ManualHostClock` and `Stop`
 interrupts a pending 2 s backoff immediately.
 
-**Recentre.** `Recenter` is posted to the polling thread (the only caller of
-the seam), which narrows the newest pose to the SDK's `float[7]` layout
-(`[px, py, pz, qw, qx, qy, qz]`), calls `ResetOriginCarina` and returns its
-`Result` to the waiting caller. It is `NotReady` before the first sample and
-while no device is alive, and in those states the seam is never called. On
-success the wrapper arms an inverse-yaw correction for samples whose sequence
-is at or below the reset sample, so the newest pre-reset sample reads recentred
-as soon as `Recenter` returns (pitch and roll untouched, position unchanged)
-while later samples arrive already recentred from the SDK; the polling thread
-holds the next publish until a reader observes the corrected sample, bounded by
-`kRecentreReadTimeout` = 1 s.
+**Recentre.** `Recenter` captures the newest published pose from the wait-free
+slot, posts a request carrying that pose in the SDK's `float[7]` layout
+(`[px, py, pz, qw, qx, qy, qz]`) for the polling thread (the only caller of the
+seam) and returns `Ok` once the request is posted, without waiting for the
+polling thread. It is `NotReady` before the first sample and while no device is
+alive, and in those states the seam is never called. At post time it arms an
+inverse-yaw correction for samples whose sequence is at or below the captured
+sample, so the newest pre-reset sample reads recentred as soon as `Recenter`
+returns (pitch and roll untouched, position unchanged) and the pose stream is
+never stalled. The polling thread consumes the request between polls, calls
+`ResetOriginCarina` with the captured pose, extends the correction over every
+sample published before that pass, and carries the corrected heading into quiet
+synthetics; later samples arrive already recentred from the SDK. A rejected
+`ResetOriginCarina` withdraws the correction and leaves the stream in its
+pre-recentre frame; the poll loop then keeps publishing normally (the old
+1 s `kRecentreReadTimeout` reader barrier is gone).
 
 ### Recentre
 
@@ -250,9 +255,13 @@ pose at read time, so the newest sample is recentred as soon as `Recenter`
 returns, pitch and roll are untouched (the offset is a pre-multiplied pure-yaw
 rotation), and repeated calls are idempotent. The contract suite pins
 `|yaw| <= 0.1 deg` after recentre with pitch preserved within 0.1 deg. The real
-adapter (Task 2) delegates to the SDK's `ResetOriginCarina` (and additionally
-refuses while no device is alive); U-01 (pending HIL) will confirm what the SDK
-reports before and after that call.
+adapter (Task 2) captures the newest slot pose, arms the reader-visible
+correction immediately and posts the reset to its polling thread, which calls
+the SDK's `ResetOriginCarina` between polls (and refuses while no device is
+alive); a rejected reset withdraws the correction. The post-and-return design
+keeps the 0.1 deg reader-visible guarantee without the old 1 s reader barrier
+stalling the pose stream. U-01 (pending HIL) will confirm what the SDK reports
+before and after that call.
 
 ### Predict
 
@@ -318,12 +327,15 @@ is provisional until then). This section is filled in before
   path is `InvalidArgument`. The `IVitureApi` seam and `FakeVitureApi` are
   exercised by the Task 2b fault/contract suites under the same `glasses`
   ctest entry.
-- `cpp/tests/glasses/viture_fault_tests.cpp` additionally pins the review-wave
-  hardenings: recentre on a destroyed device is `NotReady` and never calls the
-  seam, recentre works again after a successful recreate, the fake's device
-  lifetime, `StartPose`-failure teardown and clean retry, seam-crossing
-  prediction, and the reconnect clock-restart mapper guard. The contract suite
-  includes `RecenterBeforeTheFirstSampleIsNotReady` for every factory.
+  - `cpp/tests/glasses/viture_fault_tests.cpp` additionally pins the review-wave
+    hardenings: recentre on a destroyed device is `NotReady` and never calls the
+    seam, a posted recentre does not stall the polling thread (no reader call is
+    needed for the poll loop to reach `PollPose` again), a rejected reset
+    withdraws the read-time correction, recentre works again after a successful
+    recreate, the fake's device lifetime, `StartPose`-failure teardown and clean
+    retry, seam-crossing prediction, and the reconnect clock-restart mapper
+    guard. The contract suite includes `RecenterBeforeTheFirstSampleIsNotReady`
+    for every factory.
 - `cpp/tests/glasses/display_control_tests.cpp` pins the enforced display rule:
   `Get`/`Set` are `NotReady` and make no seam call while an injected is-running
   predicate is true, and round-trip normally before `Start` and after `Stop`,

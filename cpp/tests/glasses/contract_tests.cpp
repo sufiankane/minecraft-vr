@@ -147,6 +147,12 @@ void RecenterZeroesYawAndPreservesPitchRoll(SourceUnderTest &uut) {
     HeadSample before = PlaceholderSample();
     ASSERT_TRUE(uut.source->TryGetLatest(before, Duration{0}));
     ASSERT_TRUE(uut.source->Recenter().ok());
+    // Every adapter makes the recentre reader-visible on the sample that was
+    // newest when Recenter returned: the VITURE adapter arms the read-time
+    // correction at post time (the polling thread applies ResetOriginCarina
+    // without stalling the stream), the fake and replay sources apply their
+    // offset synchronously. The next published sample is already relative to
+    // the new origin from the SDK.
     HeadSample after = PlaceholderSample();
     ASSERT_TRUE(uut.source->TryGetLatest(after, Duration{0}));
 
@@ -568,12 +574,10 @@ class VitureHarnessSource final : public IHeadPoseSource {
     }
 
     Result<void> Recenter() override {
-        // The polling thread must make progress for the reset to be handled;
-        // opening the gate lets one poll through while the reset is in flight.
-        api_->SetPollGate(false);
-        const Result<void> result = source_.Recenter();
-        api_->SetPollGate(true);
-        return result;
+        // The source posts the reset to the polling thread and arms the
+        // reader-visible correction before returning; no poll needs to be
+        // released here and the pose stream is never stalled.
+        return source_.Recenter();
     }
 
     [[nodiscard]] bool stopped() const noexcept { return stopped_.load(std::memory_order_relaxed); }

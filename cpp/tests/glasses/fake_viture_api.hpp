@@ -52,9 +52,11 @@ template <typename T> [[nodiscard]] Result<T> PopResult(std::deque<Result<T>> &s
 ///
 /// A successful `CreateDevice` sets `device_alive`; `DestroyDevice` clears it.
 /// `StartPose`, `PollPose` and `ResetOriginCarina` fail with `NotReady` while
-/// no device is alive, like the real SDK. Display calls are deliberately not
-/// gated: the enforced display rule is "configure while the pose source is
-/// stopped", which includes the window before `Start` creates the device.
+/// no device is alive, like the real SDK. A successful `ResetOriginCarina`
+/// recentres the scripted feed (a rejected one leaves the origin unchanged).
+/// Display calls are deliberately not gated: the enforced display rule is
+/// "configure while the pose source is stopped", which includes the window
+/// before `Start` creates the device.
 ///
 /// The sample feed is either a plain list of `cg_head_sample`, returned
 /// verbatim one per successful poll, or a Task 1 `FakeScript` pattern advanced
@@ -169,13 +171,15 @@ class FakeVitureApi final : public IVitureApi {
             last_reset_pose[i] = pose[i];
         }
         has_reset_pose = true;
-        if (use_script_ && script_source_ != nullptr) {
+        const Result<void> result = NextResult(reset_origin_script, reset_origin_result);
+        if (result.ok() && use_script_ && script_source_ != nullptr) {
             // The scripted feed is recentred like a real device: the origin
             // becomes the current heading, so subsequent samples read relative
-            // to the reset pose.
+            // to the reset pose. A rejected reset changes nothing, exactly like
+            // the SDK: the stream stays in its pre-recentre frame.
             static_cast<void>(script_source_->Recenter());
         }
-        return NextResult(reset_origin_script, reset_origin_result);
+        return result;
     }
 
     Result<void> SetDisplayMode(std::uint32_t refresh_hz, bool sbs) override {

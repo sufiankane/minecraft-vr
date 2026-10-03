@@ -190,9 +190,12 @@ TEST(VitureFault, BlockingPollLeavesReadersWaitFreeAndStopPrompt) {
     EXPECT_TRUE(api.stop_requested());
 }
 
-/// `Recenter` returns the SDK's `ResetOriginCarina` failure as its own Result,
-/// and the pose it forwards is the newest pose in the SDK `float[7]` layout.
-TEST(VitureFault, ResetFailureSurfacesAsResult) {
+/// A failed `ResetOriginCarina` is now asynchronous: `Recenter` returns `Ok`
+/// once the request is posted, the polling thread calls the seam, and the
+/// rejection withdraws the read-time correction so the stream stays in its
+/// pre-recentre frame. The pose the seam receives is the captured pose in the
+/// SDK `float[7]` layout.
+TEST(VitureFault, ResetFailureWithdrawsThePostedCorrection) {
     FakeVitureApi api;
     ManualHostClock clock;
     constexpr std::int64_t kSdkNs = 1'000'000'000;
@@ -209,9 +212,8 @@ TEST(VitureFault, ResetFailureSurfacesAsResult) {
     ASSERT_TRUE(WaitForSample(source, sample, 1U));
 
     const Result<void> result = source.Recenter();
-    ASSERT_FALSE(result.ok());
-    EXPECT_EQ(result.status().code(), StatusCode::Device);
-    EXPECT_EQ(api.reset_origin_calls.load(), 1U);
+    ASSERT_TRUE(result.ok()) << result.status().message() << " (Recenter only posts the request)";
+    ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
     ASSERT_TRUE(api.has_reset_pose);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[0]), sample.pose.position.x, 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[1]), sample.pose.position.y, 1e-6);
@@ -220,6 +222,13 @@ TEST(VitureFault, ResetFailureSurfacesAsResult) {
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[4]), sample.pose.rotation.x(), 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[5]), sample.pose.rotation.y(), 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[6]), sample.pose.rotation.z(), 1e-6);
+
+    // The rejection withdrew the correction: the stream reads its
+    // pre-recentre heading again (the feed keeps sweeping at 10 degrees).
+    ASSERT_TRUE(WaitFor([&] {
+        HeadSample latest = PlaceholderSample();
+        return source.TryGetLatest(latest, Duration{0}) && std::abs(YawDegrees(latest.pose)) > 5.0;
+    })) << "a failed reset must not leave the stream recentred";
     source.Stop();
 }
 
@@ -270,8 +279,40 @@ TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
 
     const Result<void> result = source.Recenter();
     ASSERT_TRUE(result.ok()) << result.status().message();
-    EXPECT_EQ(api.reset_origin_calls.load(), 1U);
+    // The request is serviced on the polling thread's next pass.
+    ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
     EXPECT_TRUE(api.has_reset_pose);
+    source.Stop();
+}
+
+/// `Recenter` posts its request and returns: the polling thread must reach
+/// `PollPose` again without any reader call. The old read barrier parked the
+/// poll loop on `recentre_hold_` for up to 1 s, so no `TryGetLatest` may be
+/// used to observe progress here (one would release the old barrier).
+TEST(VitureFault, RecenterDoesNotStallThePollingThread) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 5.0), CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 6.0),
+                   CgSample(3, 1'020'000'000, CG_TRACK_STABLE, 7.0)};
+    // Keep the device alive after the list is exhausted so the recentre has a
+    // live seam to reach.
+    api.empty_poll_result = Ok(CgSample(3, 1'020'000'000, CG_TRACK_STABLE, 7.0));
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+
+    const std::uint64_t polls_before = api.poll_calls.load();
+    const auto call_start = std::chrono::steady_clock::now();
+    const Result<void> result = source.Recenter();
+    const auto call_elapsed = std::chrono::steady_clock::now() - call_start;
+    ASSERT_TRUE(result.ok()) << result.status().message();
+    EXPECT_LT(call_elapsed, std::chrono::milliseconds(250)) << "Recenter must return once the request is posted";
+    ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
+    // Progress is observed through the seam, never through TryGetLatest.
+    ASSERT_TRUE(WaitFor([&] { return api.poll_calls.load() > polls_before; }, std::chrono::milliseconds(1000)))
+        << "the polling thread stalled waiting for a reader after the recentre";
     source.Stop();
 }
 
