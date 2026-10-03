@@ -60,6 +60,14 @@ class IDisplayControl {
 /// and return `NotReady` while it reports true. Configure the display before
 /// `Start` or after `Stop`; an empty predicate means "never running" and is
 /// for standalone/test use.
+///
+/// `Stop` latches the control (`stopped_`) but does not synchronise with a
+/// concurrent `Set`: a `Set` that already passed the stopped/running checks can
+/// still complete its seam call after `Stop` returns. That is deliberate —
+/// `Stop` never joins callers and U-08 pins real teardown — and callers that
+/// need strict quiescence must serialise `Set` against `Stop` themselves. The
+/// cached SBS flag uses release/acquire (M-5) so the pair is not stale under
+/// that race.
 class VitureDisplayControl final : public IDisplayControl {
   public:
     using IsSourceRunning = std::function<bool()>;

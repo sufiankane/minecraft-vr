@@ -58,8 +58,11 @@ class ReplayHeadPoseSource final : public IHeadPoseSource {
     ReplayHeadPoseSource(const ReplayHeadPoseSource &) = delete;
     ReplayHeadPoseSource &operator=(const ReplayHeadPoseSource &) = delete;
 
-    /// Parses the whole CSV into memory, replacing any previous dataset.
-    /// Must succeed before `Start`; safe to call again between playbacks.
+    /// Parses the whole CSV into memory, replacing any previous dataset and
+    /// clearing its playback state: the slot is empty again (`TryGetLatest`
+    /// false), the sequence restarts at 1, and cached prediction rates and the
+    /// recentre offset are cleared. Must succeed before `Start`; safe to call
+    /// again between playbacks.
     Result<void> Load();
 
     Result<void> Start() override;
