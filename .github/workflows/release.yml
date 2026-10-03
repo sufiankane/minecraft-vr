@@ -8,8 +8,11 @@ name: Release
 # cg_unity_bridge.dll, so both are built on the runner and staged into the
 # Unity project before the player build (the same files scripts/ci-local.ps1
 # stages locally). The staged DLLs are git-ignored, so the checkout stays
-# clean for the builder. Without this staging the Unity compile fails and a
-# player built from a clean checkout would ship no head tracking.
+# clean for the builder. vcpkg is cloned and installs under the runner temp
+# dir, never inside the checkout, because game-ci's dirty check runs
+# `git status --porcelain` before Unity and an untracked in-workspace vcpkg
+# would fail it. Without this staging the Unity compile fails and a player
+# built from a clean checkout would ship no head tracking.
 on:
   workflow_dispatch:
 
@@ -20,8 +23,6 @@ jobs:
   windows-x64-player:
     name: windows-x64-player
     runs-on: windows-latest
-    env:
-      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
       - uses: actions/checkout@v4
         with:
@@ -61,18 +62,22 @@ jobs:
 
       - name: Clone vcpkg at the pinned baseline
         shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}/vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$env:VCPKG_ROOT"
           git -C "$env:VCPKG_ROOT" checkout eb2d3a3279fd019cb7733072d86900d0ad2a1aef
 
       - name: Bootstrap vcpkg
         shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}/vcpkg
         run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
 
-      - name: Cache the vcpkg installed tree
+      - name: Cache the vcpkg installed tree (outside the checkout)
         uses: actions/cache@v4
         with:
-          path: cpp/build/windows-msvc/vcpkg_installed
+          path: ${{ runner.temp }}/vcpkg-installed
           key: vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-${{ hashFiles('cpp/vcpkg.json') }}
           restore-keys: |
             vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-
@@ -83,12 +88,19 @@ jobs:
       # and a Debug build links the non-redistributable debug CRT, which
       # would fail to load on a machine without the Visual Studio debug
       # runtimes. cg_bridge is always part of the project (no build switch).
+      # VCPKG_INSTALLED_DIR keeps the manifest tree next to the cached path
+      # outside the checkout (vcpkg does not read the value from the
+      # environment, so it is passed as a cache variable).
       - name: Configure the native bridge (Release)
         working-directory: cpp
-        run: cmake --preset windows-msvc -DCMAKE_BUILD_TYPE=Release
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}/vcpkg
+        run: cmake --preset windows-msvc -DCMAKE_BUILD_TYPE=Release "-DVCPKG_INSTALLED_DIR=${{ runner.temp }}/vcpkg-installed"
 
       - name: Build the native bridge
         working-directory: cpp
+        env:
+          VCPKG_ROOT: ${{ runner.temp }}/vcpkg
         run: cmake --build --preset windows-msvc --target cg_bridge
 
       - name: Stage the native bridge into the Unity project
