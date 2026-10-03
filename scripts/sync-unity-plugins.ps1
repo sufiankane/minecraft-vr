@@ -4,19 +4,31 @@
     Build and copy the managed Unity plugins into the Cubeglass project.
 
 .DESCRIPTION
-    Unity cannot resolve an assembly-definition reference to Cubeglass.CoreMath
-    because CoreMath is a plain .NET library outside the Unity project. Instead,
-    the bridge package loads it as a managed plugin from
+    Unity cannot resolve an assembly-definition reference to the Cubeglass
+    .NET libraries because they live outside the Unity project. Instead, the
+    packages load them as managed plugins from
     `unity/Cubeglass/Assets/Plugins/managed`, which Unity references
-    automatically. This script:
+    automatically (the runtime asmdefs keep `overrideReferences = false`, so
+    they need no explicit DLL references; test asmdefs set it to true and list
+    the DLLs in `precompiledReferences`). This script:
 
-      1. builds `dotnet/src/CoreMath` in Release (netstandard2.1);
-      2. copies the produced `Cubeglass.CoreMath.dll` to
-         `unity/Cubeglass/Assets/Plugins/managed/Cubeglass.CoreMath.dll`.
+      1. builds `dotnet/src/Streaming` in Release (netstandard2.1), which also
+         builds its CoreMath, Voxel and Mesh project references;
+      2. copies `Cubeglass.CoreMath.dll`, `Cubeglass.Voxel.dll`,
+         `Cubeglass.Mesh.dll` and `Cubeglass.Streaming.dll` to
+         `unity/Cubeglass/Assets/Plugins/managed/`.
 
-    It fails loudly when the build fails or the expected DLL is missing, the
+    It fails loudly when the build fails or any expected DLL is missing, the
     same way `scripts/ci-local.ps1` fails loudly for the native bridge DLL.
-    The copied DLL (and its generated .meta) is git-ignored.
+    The copied DLLs (and their generated .meta files) are git-ignored.
+
+    `System.Text.Json.dll` is deliberately NOT copied: Cubeglass.Voxel only
+    needs it for the optional `BlockRegistry` JSON path, which the Unity
+    runtime never touches (Unity's runtime does not ship that assembly). The
+    rendering package meshes through `SliceBlockRegistry`, a code-built copy
+    of the S7 terrain block definitions; the JSON remains the source of truth
+    for the pure .NET modules and Task 4 can revisit shipping the full
+    registry if the slice grows past the six built-in blocks.
 
 .EXAMPLE
     powershell -File scripts/sync-unity-plugins.ps1
@@ -27,20 +39,30 @@ param()
 $ErrorActionPreference = 'Stop'
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-$CoreMathProject = Join-Path $RepoRoot 'dotnet\src\CoreMath\Cubeglass.CoreMath.csproj'
-$CoreMathDll = Join-Path $RepoRoot 'dotnet\src\CoreMath\bin\Release\netstandard2.1\Cubeglass.CoreMath.dll'
+$StreamingProject = Join-Path $RepoRoot 'dotnet\src\Streaming\Cubeglass.Streaming.csproj'
+$StreamingOutput = Join-Path $RepoRoot 'dotnet\src\Streaming\bin\Release\netstandard2.1'
 $ManagedPluginsDir = Join-Path $RepoRoot 'unity\Cubeglass\Assets\Plugins\managed'
 
-Write-Host ">>> dotnet build '$CoreMathProject' --configuration Release" -ForegroundColor Cyan
-& dotnet build $CoreMathProject --configuration Release
-if ($LASTEXITCODE -ne 0) {
-    throw "dotnet build failed (exit $LASTEXITCODE): $CoreMathProject"
-}
+$PluginNames = @(
+    'Cubeglass.CoreMath.dll',
+    'Cubeglass.Voxel.dll',
+    'Cubeglass.Mesh.dll',
+    'Cubeglass.Streaming.dll'
+)
 
-if (-not (Test-Path -LiteralPath $CoreMathDll)) {
-    throw "managed plugin not found at '$CoreMathDll' after the Release build; check the CoreMath target framework and output path"
+Write-Host ">>> dotnet build '$StreamingProject' --configuration Release" -ForegroundColor Cyan
+& dotnet build $StreamingProject --configuration Release
+if ($LASTEXITCODE -ne 0) {
+    throw "dotnet build failed (exit $LASTEXITCODE): $StreamingProject"
 }
 
 New-Item -ItemType Directory -Path $ManagedPluginsDir -Force | Out-Null
-Copy-Item -LiteralPath $CoreMathDll -Destination (Join-Path $ManagedPluginsDir 'Cubeglass.CoreMath.dll') -Force
-Write-Host "Copied managed plugin: $CoreMathDll -> $ManagedPluginsDir"
+foreach ($pluginName in $PluginNames) {
+    $source = Join-Path $StreamingOutput $pluginName
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "managed plugin not found at '$source' after the Release build; check the Streaming target framework and output path"
+    }
+
+    Copy-Item -LiteralPath $source -Destination (Join-Path $ManagedPluginsDir $pluginName) -Force
+    Write-Host "Copied managed plugin: $source -> $ManagedPluginsDir"
+}
