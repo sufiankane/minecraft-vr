@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Streaming\Cubeglass.Streaming.csproj" />
+    <ProjectReference Include="..\..\src\Gameplay\Cubeglass.Gameplay.csproj" />
   </ItemGroup>
 
 </Project>

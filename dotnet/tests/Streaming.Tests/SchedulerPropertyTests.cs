@@ -46,6 +46,71 @@ namespace Cubeglass.Streaming.Tests
             Check.One("random paths respect the retention window", DeterministicConfig(100), property);
         }
 
+        [Test]
+        public void RandomWaypointPathsDrainToTheDesiredSetWithinBudgets()
+        {
+            Arbitrary<int[]> waypoints = Arb.Array(Arb.From(Gen.Choose(-48, 48)));
+            Property property = Prop.ForAll(
+                waypoints,
+                (int[] script) =>
+                {
+                    RunWaypointProperty(script);
+                    return Prop.ToProperty(true);
+                });
+
+            Check.One("random waypoint paths drain within budgets", DeterministicConfig(120), property);
+        }
+
+        /// <summary>
+        /// Walks a random waypoint path in chunk space one chunk per frame,
+        /// checking every frame's budgets, and drains to the desired set at
+        /// each waypoint.
+        /// </summary>
+        private static void RunWaypointProperty(int[] script)
+        {
+            if (script.Length < 4)
+            {
+                return;
+            }
+
+            var config = new StreamingConfig
+            {
+                ViewDistanceChunks = 2,
+                UnloadHysteresis = 0,
+                MaxLoadsPerFrame = 3,
+                MaxUnloadsPerFrame = 2,
+                MaxMeshUploadsPerFrame = 2,
+                VerticalRadiusChunks = 1,
+            };
+            var scheduler = new ChunkStreamingScheduler(config, 4242L);
+            int x = 0;
+            int z = 0;
+            int waypointCount = Math.Min(6, script.Length / 2);
+
+            for (int i = 0; i < waypointCount; i++)
+            {
+                int targetX = Math.Clamp(x + (script[i * 2] % 5), -40, 40);
+                int targetZ = Math.Clamp(z + (script[(i * 2) + 1] % 5), -40, 40);
+
+                while (x != targetX || z != targetZ)
+                {
+                    if (x != targetX)
+                    {
+                        x += Math.Sign(targetX - x);
+                    }
+                    else
+                    {
+                        z += Math.Sign(targetZ - z);
+                    }
+
+                    StepFrame(scheduler, config, Center(x, 0, z));
+                }
+
+                Drain(scheduler, config, Center(x, 0, z));
+                AssertResident(scheduler, config, x, 0, z, hysteresis: 0, requireExactDesired: true);
+            }
+        }
+
         private static void RunPathProperty(int[] script, int hysteresis, bool requireExactDesired)
         {
             if (script.Length < 4)
@@ -81,51 +146,60 @@ namespace Cubeglass.Streaming.Tests
         {
             for (int guard = 0; guard < DrainGuard; guard++)
             {
-                IReadOnlyList<StreamingAction> actions = scheduler.Update(position);
-                int loads = 0;
-                int unloads = 0;
-                int uploads = 0;
-
-                for (int i = 0; i < actions.Count; i++)
-                {
-                    StreamingAction action = actions[i];
-                    switch (action.Kind)
-                    {
-                        case StreamingActionKind.Load:
-                            loads++;
-                            scheduler.NotifyMeshReady(action.Chunk);
-                            break;
-                        case StreamingActionKind.Unload:
-                            unloads++;
-                            break;
-                        default:
-                            uploads++;
-                            break;
-                    }
-                }
-
-                if (loads > config.MaxLoadsPerFrame)
-                {
-                    throw new InvalidOperationException($"frame emitted {loads} loads, budget {config.MaxLoadsPerFrame}");
-                }
-
-                if (unloads > config.MaxUnloadsPerFrame)
-                {
-                    throw new InvalidOperationException($"frame emitted {unloads} unloads, budget {config.MaxUnloadsPerFrame}");
-                }
-
-                if (uploads > config.MaxMeshUploadsPerFrame)
-                {
-                    throw new InvalidOperationException($"frame emitted {uploads} uploads, budget {config.MaxMeshUploadsPerFrame}");
-                }
-
-                if (actions.Count == 0)
+                if (StepFrame(scheduler, config, position) == 0)
                 {
                     return;
                 }
             }
 
             throw new InvalidOperationException("the scheduler did not drain within the guard");
+        }
+
+        /// <summary>
+        /// Applies one scheduler frame, confirms every per-frame budget and
+        /// confirms meshes so uploads can be emitted. Returns the action count.
+        /// </summary>
+        private static int StepFrame(ChunkStreamingScheduler scheduler, StreamingConfig config, Vec3 position)
+        {
+            IReadOnlyList<StreamingAction> actions = scheduler.Update(position);
+            int loads = 0;
+            int unloads = 0;
+            int uploads = 0;
+
+            for (int i = 0; i < actions.Count; i++)
+            {
+                StreamingAction action = actions[i];
+                switch (action.Kind)
+                {
+                    case StreamingActionKind.Load:
+                        loads++;
+                        scheduler.NotifyMeshReady(action.Chunk);
+                        break;
+                    case StreamingActionKind.Unload:
+                        unloads++;
+                        break;
+                    default:
+                        uploads++;
+                        break;
+                }
+            }
+
+            if (loads > config.MaxLoadsPerFrame)
+            {
+                throw new InvalidOperationException($"frame emitted {loads} loads, budget {config.MaxLoadsPerFrame}");
+            }
+
+            if (unloads > config.MaxUnloadsPerFrame)
+            {
+                throw new InvalidOperationException($"frame emitted {unloads} unloads, budget {config.MaxUnloadsPerFrame}");
+            }
+
+            if (uploads > config.MaxMeshUploadsPerFrame)
+            {
+                throw new InvalidOperationException($"frame emitted {uploads} uploads, budget {config.MaxMeshUploadsPerFrame}");
+            }
+
+            return actions.Count;
         }
 
         private static void AssertResident(

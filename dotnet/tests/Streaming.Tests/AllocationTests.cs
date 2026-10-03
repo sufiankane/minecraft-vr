@@ -10,6 +10,7 @@ namespace Cubeglass.Streaming.Tests
     {
         private const int WarmupIterations = 1_000;
         private const int MeasuredIterations = 2_000;
+        private const int SteadyStateWarmupSteps = 15_000;
 
         [Test]
         public void UpdateAllocatesNothingAfterWarmup()
@@ -38,6 +39,41 @@ namespace Cubeglass.Streaming.Tests
                 allocated,
                 Is.Zero,
                 $"Update allocated {allocated} bytes over {MeasuredIterations} frames");
+        }
+
+        [Test]
+        public void SessionSteadyStateAllocatesNothingAfterWarmup()
+        {
+            var harness = new SessionHarness(
+                new StreamingConfig
+                {
+                    ViewDistanceChunks = 3,
+                    UnloadHysteresis = 2,
+                    MaxLoadsPerFrame = 4,
+                    MaxUnloadsPerFrame = 4,
+                    MaxMeshUploadsPerFrame = 4,
+                    VerticalRadiusChunks = 0,
+                },
+                99L);
+
+            harness.Run(SteadyStateWarmupSteps, SessionHarness.CanonicalDt);
+            Assert.That(harness.WalkCompleted, Is.True, "the warm-up must finish the walk");
+            Assert.That(
+                harness.EditsApplied,
+                Is.EqualTo(SessionHarness.ExpectedEditCount),
+                "the warm-up must apply every edit");
+
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < MeasuredIterations; i++)
+            {
+                harness.Step(SessionHarness.CanonicalDt);
+            }
+
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.That(
+                allocated,
+                Is.Zero,
+                $"the steady-state session step allocated {allocated} bytes over {MeasuredIterations} frames");
         }
 
         private static long RunOscillation(ChunkStreamingScheduler scheduler, int iterations)
