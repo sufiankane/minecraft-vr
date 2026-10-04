@@ -31,6 +31,7 @@
 // `CG_ERR_UNSUPPORTED` naming both versions in `LastHeaderError()`.
 
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
@@ -38,6 +39,14 @@
 #include "cg_types.h"
 
 namespace cg::bridge {
+
+/// The region is little-endian by construction (CXX-20): the `CGSHM001` magic
+/// is the reversed-byte-order bit pattern below, and the seqlock payloads are
+/// copied as raw 8-byte words of native floats. A big-endian target needs a
+/// new layout/ABI rather than silently misreading the region.
+static_assert(std::endian::native == std::endian::little,
+              "the shared-memory region is little-endian by construction (magic bit pattern and raw 8-byte word "
+              "payloads); a big-endian target needs a new layout and ABI");
 
 /// Magic at byte 0: the eight ASCII bytes `CGSHM001` read as a little-endian
 /// `uint64_t` (byte 0 is the least significant byte), so the region's first
