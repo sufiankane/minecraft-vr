@@ -95,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     contracts_parser.add_argument(
         "--update",
         action="store_true",
-        help="Regenerate contracts/abi-baseline.json (refused unless CG_ABI_VERSION changed).",
+        help="Regenerate contracts/abi-baseline.json (refused unless the live fingerprints match KNOWN_FINGERPRINTS).",
     )
     coverage_parser = subparsers.add_parser(
         "coverage",

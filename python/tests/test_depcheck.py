@@ -258,6 +258,131 @@ def test_commented_out_includes_are_not_flagged(tmp_path: Path, capsys: pytest.C
     assert lines == []
 
 
+def test_line_continuation_include_is_caught(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["windows.h"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(tmp_path, "cpp/core-math/src/bad.cpp", "#in\\\nclude <windows.h>\n")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:1 forbidIncludes"]
+
+
+def test_comment_marker_inside_a_string_cannot_hide_an_include(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["windows.h"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(
+        tmp_path,
+        "cpp/core-math/src/bad.cpp",
+        'const char *open = "/*";\n#include <windows.h>\nconst char *close = "*/";\n',
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:2 forbidIncludes"]
+
+
+def test_csharp_using_directive_split_by_a_continuation_is_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"]}}}')
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text("us\\\ning System.IO;\n", encoding="utf-8")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:1 forbidNamespaces"]
+
+
+def test_fully_qualified_forbidden_namespace_is_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"], "allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Bad\n"
+        "    {\n"
+        "        public static byte[] Read(string p) => System.IO.File.ReadAllBytes(p);\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:5 forbidNamespaces"]
+
+
+def test_fully_qualified_allowed_prefix_is_not_flagged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.Threading"], '
+        '"allowNamespaces": ["System.Threading.Tasks"], "allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Allowed.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Allowed\n"
+        "    {\n"
+        "        public static void Run() => _ = System.Threading.Tasks.Task.CompletedTask;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_qualified_namespace_in_literals_and_comments_is_not_flagged(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"], "allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Ok.cs").write_text(
+        "// System.IO.File in a line comment\n"
+        "/* System.IO.File in a block comment */\n"
+        "/// <see cref=\"System.IO.File\"/>\n"
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Ok\n"
+        "    {\n"
+        "        public const string Normal = \"System.IO.File\";\n"
+        "        public const string Verbatim = @\"System.IO.File\";\n"
+        "        public const string Interpolated = $\"System.IO.File\";\n"
+        "        public const string Raw = \"\"\"System.IO.File\"\"\";\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
 def test_nested_cpp_module_without_layers_entry_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -315,6 +440,46 @@ def test_nested_dotnet_project_without_layers_entry_fails(
     code, lines = run_cli(tmp_path, capsys)
     assert code == 1
     assert lines == ["dotnet/src/Group/Infer:0 layersEntryMissing"]
+
+
+def test_same_stem_nested_project_cannot_escape_layers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"dotnet": {"Cubeglass.Infer": {"allowedProjectReferences": []}}}')
+    for relative in ("Infer", "Group/Infer"):
+        directory = tmp_path / "dotnet" / "src" / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "Cubeglass.Infer.csproj").write_text("<Project />", encoding="utf-8")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Group/Infer:0 layersEntryMissing"]
+
+
+def test_nested_dotnet_project_with_a_path_key_is_scanned(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Group/Infer": {"forbidNamespaces": ["System.IO"], "allowedProjectReferences": []}}}',
+    )
+    project = tmp_path / "dotnet" / "src" / "Group" / "Infer"
+    project.mkdir(parents=True)
+    (project / "Cubeglass.Infer.csproj").write_text("<Project />", encoding="utf-8")
+    (project / "Bad.cs").write_text(
+        "namespace Cubeglass.Infer\n"
+        "{\n"
+        "    public static class Bad\n"
+        "    {\n"
+        "        public static byte[] Read(string p) => System.IO.File.ReadAllBytes(p);\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Group/Infer/Bad.cs:5 forbidNamespaces"]
 
 
 def test_global_qualified_usings_are_reported_with_line(capsys: pytest.CaptureFixture[str]) -> None:
