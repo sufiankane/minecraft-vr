@@ -1,19 +1,27 @@
-// glasses_soak: the S5 glasses soak and RSS leak gate (task 4).
+// glasses_soak: the S5 glasses soak, leak and latency gate (task 4, TD-007).
 //
 // Drives the deterministic fake head pose source at a wall-paced `--rate` for
 // `--minutes` while a consumer thread reads `TryGetLatest` continuously. Every
 // 60 s it prints the elapsed time, the published/read/fresh sample counts, the
 // current process RSS and the cumulative read-to-read gap p95 (the gap
 // between consecutive successful reads, a fixed log2-nanosecond histogram,
-// allocation-free). At exit it prints the RSS growth after the first-minute
-// baseline and exits non-zero when that growth exceeds 1 MiB. Ctrl+C stops the
-// run cleanly through a signal flag.
+// allocation-free).
+//
+// At exit four gates are evaluated:
+//   - RSS growth after the first-minute baseline must stay within 1 MiB
+//     (CXX-04: a failed reading fails the gate);
+//   - the read-to-read gap p95 must stay at or below `--latency-p95-ms`
+//     (default 50 ms, deliberately generous for loaded CI runners);
+//   - the process thread count and handle count must not exceed the baseline
+//     taken right after the consumer starts (NFR-07's no-leaked-threads-or-
+//     handles half; Windows toolhelp/handle-count, Linux /proc).
+// Ctrl+C stops the run cleanly through a signal flag.
 //
 // The RSS reading is the current resident set: `GetProcessMemoryInfo` working
 // set on Windows and `/proc/self/statm` on Linux (not the `getrusage` peak, so
 // growth that stays below a transient peak is still visible); macOS falls back
-// to `ru_maxrss`. A failed reading is *not* treated as zero: it fails the gate
-// (CXX-04).
+// to `ru_maxrss` and has no cheap thread/handle query, so the count gates are
+// skipped there and reported as such.
 //
 // `fresh` counts reads that observed a new sequence number; `read` counts every
 // successful TryGetLatest (the render-path read), and `misses` counts the
@@ -21,10 +29,10 @@
 // exhaustion). The fake's ManualClock is dragged onto the steady host timeline
 // so a sample time is a host instant.
 //
-// usage: glasses_soak [--rate HZ] [--minutes N]
+// usage: glasses_soak [--rate HZ] [--minutes N] [--latency-p95-ms N]
 //
-// exit codes: 0 clean run within the RSS budget; 1 RSS growth over the budget,
-// a source failure or a usage error.
+// exit codes: 0 clean run within every gate; 1 a gate failed, a source failure
+// or a usage error.
 
 #include <atomic>
 #include <bit>
@@ -34,6 +42,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <optional>
 #include <string_view>
 #include <system_error>
@@ -57,7 +66,9 @@
 
 #include <psapi.h>
 #include <timeapi.h>
+#include <tlhelp32.h>
 #else
+#include <dirent.h>
 #include <sys/resource.h>
 #include <unistd.h>
 #endif
@@ -112,6 +123,10 @@ class ScopedTimerResolution {
 struct Options {
     double rate_hz = 500.0;
     double minutes = 30.0;
+    /// Read-to-read gap p95 budget in milliseconds (TD-007). Generous by
+    /// default: the soak is a regression gate, not a benchmark, and a loaded
+    /// CI runner must not fail on scheduling noise.
+    double latency_p95_ms = 50.0;
 };
 
 enum class ParseOutcome { Ok, Help, Error };
@@ -127,22 +142,24 @@ bool ParseDouble(std::string_view text, double &out) noexcept {
 }
 
 void PrintUsage(std::FILE *stream) {
-    std::fputs("glasses_soak: S5 fake-source soak and RSS leak gate\n"
+    std::fputs("glasses_soak: S5 fake-source soak, RSS leak and latency gate\n"
                "\n"
-               "usage: glasses_soak [--rate HZ] [--minutes N]\n"
+               "usage: glasses_soak [--rate HZ] [--minutes N] [--latency-p95-ms N]\n"
                "\n"
                "options:\n"
-               "  --rate HZ     fake source sample rate in hertz (default 500)\n"
-               "  --minutes N   run time in minutes (default 30)\n"
-               "  -h, --help    print this help\n"
+               "  --rate HZ            fake source sample rate in hertz (default 500)\n"
+               "  --minutes N          run time in minutes (default 30)\n"
+               "  --latency-p95-ms N   read-to-read gap p95 budget in ms (default 50)\n"
+               "  -h, --help           print this help\n"
                "\n"
                "A producer publishes fake samples at wall-paced --rate deadlines while\n"
                "a consumer thread reads TryGetLatest continuously. Every 60 s the tool\n"
                "prints the elapsed time, the published/read/fresh sample counts, the\n"
-               "current process RSS and the cumulative read-to-read gap p95 (the gap\n"
-               "between consecutive successful reads); at exit it prints the RSS growth\n"
-               "after the first-minute baseline and exits non-zero when it exceeds\n"
-               "1 MiB or when an RSS reading is unavailable.\n",
+               "current process RSS and the cumulative read-to-read gap p95. At exit it\n"
+               "gates the RSS growth after the first-minute baseline (1 MiB), the p95\n"
+               "against --latency-p95-ms, and the process thread/handle counts against\n"
+               "the baseline taken right after the consumer starts; a failed reading or\n"
+               "an exceeded budget exits non-zero.\n",
                stream);
 }
 
@@ -169,6 +186,11 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string_v
         } else if (arg == "--minutes") {
             if (!ParseDouble(value, options.minutes) || options.minutes <= 0.0) {
                 error = "--minutes must be a finite positive number";
+                return ParseOutcome::Error;
+            }
+        } else if (arg == "--latency-p95-ms") {
+            if (!ParseDouble(value, options.latency_p95_ms) || options.latency_p95_ms <= 0.0) {
+                error = "--latency-p95-ms must be a finite positive number";
                 return ParseOutcome::Error;
             }
         } else {
@@ -218,6 +240,85 @@ std::optional<std::uint64_t> ResidentBytes() noexcept {
 }
 
 double Mib(std::uint64_t bytes) noexcept { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
+
+/// Whether this platform implements the thread/handle count queries (TD-007).
+#if defined(_WIN32) || defined(__linux__)
+constexpr bool kProcessCountsSupported = true;
+#else
+constexpr bool kProcessCountsSupported = false;
+#endif
+
+/// Threads owned by this process, or `std::nullopt` on query failure.
+/// Windows: a toolhelp snapshot filtered by the current process id. Linux:
+/// the `Threads:` line of `/proc/self/status`. Unsupported platforms return
+/// nullopt and the tool skips the gate (reported, not silently passed).
+std::optional<std::uint64_t> ProcessThreadCount() noexcept {
+#if defined(_WIN32)
+    HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+    const DWORD self = ::GetCurrentProcessId();
+    std::uint64_t count = 0;
+    THREADENTRY32 entry{};
+    entry.dwSize = sizeof(entry);
+    if (::Thread32First(snapshot, &entry) != 0) {
+        do {
+            if (entry.th32OwnerProcessID == self) {
+                ++count;
+            }
+            entry.dwSize = sizeof(entry);
+        } while (::Thread32Next(snapshot, &entry) != 0);
+    }
+    ::CloseHandle(snapshot);
+    return count;
+#elif defined(__linux__)
+    std::FILE *file = std::fopen("/proc/self/status", "r");
+    if (file == nullptr) {
+        return std::nullopt;
+    }
+    std::optional<std::uint64_t> threads;
+    char line[256];
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        unsigned long long parsed = 0;
+        if (std::sscanf(line, "Threads: %llu", &parsed) == 1) {
+            threads = static_cast<std::uint64_t>(parsed);
+            break;
+        }
+    }
+    std::fclose(file);
+    return threads;
+#else
+    return std::nullopt;
+#endif
+}
+
+/// Handles (Windows) or open file descriptors (Linux) held by this process, or
+/// `std::nullopt` on query failure.
+std::optional<std::uint64_t> ProcessHandleCount() noexcept {
+#if defined(_WIN32)
+    DWORD count = 0;
+    if (::GetProcessHandleCount(::GetCurrentProcess(), &count) == 0) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(count);
+#elif defined(__linux__)
+    DIR *directory = ::opendir("/proc/self/fd");
+    if (directory == nullptr) {
+        return std::nullopt;
+    }
+    std::uint64_t count = 0;
+    while (const dirent *entry = ::readdir(directory)) {
+        if (std::strcmp(entry->d_name, ".") != 0 && std::strcmp(entry->d_name, "..") != 0) {
+            ++count;
+        }
+    }
+    ::closedir(directory);
+    return count;
+#else
+    return std::nullopt;
+#endif
+}
 
 HeadSample PlaceholderSample() noexcept {
     return HeadSample{0, cg::Pose{cg::core_math::Vec3{0.0, 0.0, 0.0}, cg::core_math::Quat::kIdentity},
@@ -331,14 +432,18 @@ int Run(const Options &options) {
 
     const double total_seconds = options.minutes * 60.0;
     const HostTime period_ns = static_cast<HostTime>(std::llround(kNanosecondsPerSecond / options.rate_hz));
+    // TD-007: the count baseline is taken right after the consumer starts (so
+    // it includes that thread); the final reading is taken after the join.
+    const std::optional<std::uint64_t> baseline_threads = kProcessCountsSupported ? ProcessThreadCount() : std::nullopt;
+    const std::optional<std::uint64_t> baseline_handles = kProcessCountsSupported ? ProcessHandleCount() : std::nullopt;
     std::uint64_t published = 0;
     std::optional<std::uint64_t> baseline_rss;
     double baseline_seconds = 0.0;
     bool reported = false;
     double next_report_seconds = kReportIntervalSeconds;
 
-    std::printf("glasses_soak: rate=%.3f Hz minutes=%.3f rss budget=%.2f MiB\n", options.rate_hz, options.minutes,
-                Mib(kRssBudgetBytes));
+    std::printf("glasses_soak: rate=%.3f Hz minutes=%.3f rss budget=%.2f MiB latency p95 budget=%.2f ms\n",
+                options.rate_hz, options.minutes, Mib(kRssBudgetBytes), options.latency_p95_ms);
     std::fflush(stdout);
 
     for (;;) {
@@ -395,6 +500,9 @@ int Run(const Options &options) {
 
     const double elapsed_seconds = ToSeconds(ElapsedSince(start));
     const std::optional<std::uint64_t> final_rss = ResidentBytes();
+    const std::optional<std::uint64_t> final_threads = kProcessCountsSupported ? ProcessThreadCount() : std::nullopt;
+    const std::optional<std::uint64_t> final_handles = kProcessCountsSupported ? ProcessHandleCount() : std::nullopt;
+    const double p95_ns = P95ReadGapNs(counters);
     // Format both readings into separate buffers once: formatting two values
     // through one shared buffer in a single printf would print the same text
     // twice (argument evaluation order is unspecified), hiding the baseline.
@@ -408,46 +516,69 @@ int Run(const Options &options) {
                 static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), final_rss_text,
-                P95ReadGapNs(counters) / 1e3);
+                p95_ns / 1e3);
     if (g_stop_requested != 0) {
         std::printf("[soak] stopped by signal\n");
     }
 
+    // TD-007 gates: latency, then the thread/handle counts. They are evaluated
+    // before the RSS short-run early-out so even a smoke-length run checks
+    // them. A missing count reading fails on a platform that supports the
+    // query; unsupported platforms report the skip explicitly.
+    bool failed = false;
+    const cg::soak::LatencyGateResult latency = cg::soak::EvaluateLatencyGate(p95_ns, options.latency_p95_ms * 1e6);
+    std::printf("[soak] latency gate: p95=%.2f us threshold=%.2f ms -> %s\n", latency.p95_ns / 1e3,
+                latency.threshold_ns / 1e6, latency.pass ? "PASS" : "FAIL");
+    failed = failed || !latency.pass;
+    if (kProcessCountsSupported) {
+        const cg::soak::CountGateResult threads = cg::soak::EvaluateCountGate(baseline_threads, final_threads);
+        const cg::soak::CountGateResult handles = cg::soak::EvaluateCountGate(baseline_handles, final_handles);
+        std::printf("[soak] thread gate: baseline=%llu final=%llu -> %s\n",
+                    static_cast<unsigned long long>(threads.baseline),
+                    static_cast<unsigned long long>(threads.final_count), threads.pass ? "PASS" : "FAIL");
+        std::printf("[soak] handle gate: baseline=%llu final=%llu -> %s\n",
+                    static_cast<unsigned long long>(handles.baseline),
+                    static_cast<unsigned long long>(handles.final_count), handles.pass ? "PASS" : "FAIL");
+        failed = failed || !threads.pass || !handles.pass;
+    } else {
+        std::printf("[soak] thread/handle gates: skipped (query unsupported on this platform)\n");
+    }
+
     if (!reported && !baseline_rss.has_value()) {
         // The run ended before the first report: no baseline exists by design,
-        // so the gate cannot be evaluated. This is the documented short-run
+        // so the RSS gate cannot be evaluated. This is the documented short-run
         // behaviour, not a reading failure.
         std::printf("[soak] rss delta: no baseline (run shorter than %.0f s)\n", kReportIntervalSeconds);
         std::fflush(stdout);
-        return 0;
+        return failed ? 1 : 0;
     }
 
     const cg::soak::RssGateResult gate = cg::soak::EvaluateRssGate(baseline_rss, final_rss, kRssBudgetBytes);
     switch (gate.reason) {
     case cg::soak::RssGateReason::MissingBaseline:
         std::printf("[soak] FAIL: baseline RSS reading unavailable; the leak gate cannot be evaluated\n");
-        std::fflush(stdout);
-        return 1;
+        failed = true;
+        break;
     case cg::soak::RssGateReason::MissingFinal:
         std::printf("[soak] FAIL: final RSS reading unavailable; the leak gate cannot be evaluated\n");
-        std::fflush(stdout);
-        return 1;
+        failed = true;
+        break;
     case cg::soak::RssGateReason::OverBudget:
         std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
                     baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
         std::printf("[soak] FAIL: RSS growth %.2f MiB exceeds the %.2f MiB budget\n", Mib(gate.growth_bytes),
                     Mib(kRssBudgetBytes));
-        std::fflush(stdout);
-        return 1;
+        failed = true;
+        break;
     case cg::soak::RssGateReason::WithinBudget:
+        std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
+                    baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
+        std::printf("[soak] PASS: RSS growth %.2f MiB within the %.2f MiB budget\n", Mib(gate.growth_bytes),
+                    Mib(kRssBudgetBytes));
         break;
     }
-    std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
-                baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
-    std::printf("[soak] PASS: RSS growth %.2f MiB within the %.2f MiB budget\n", Mib(gate.growth_bytes),
-                Mib(kRssBudgetBytes));
     std::fflush(stdout);
-    return 0;
+    return failed ? 1 : 0;
 }
 
 } // namespace

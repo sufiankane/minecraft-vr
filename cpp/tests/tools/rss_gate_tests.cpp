@@ -1,6 +1,7 @@
-// Unit tests for the soak RSS accounting (CXX-04): the gate must fail on a
-// missing reading, pass at or below the budget, and never wrap on large
-// hostile values.
+// Unit tests for the soak gate accounting (CXX-04, TD-007): the RSS and
+// thread/handle gates must fail on a missing reading, pass at or below the
+// budget, and never wrap on large hostile values; the latency gate compares
+// the p95 against its threshold.
 #include "rss_gate.hpp"
 
 #include <cstdint>
@@ -81,6 +82,48 @@ TEST(RssGateTest, FormattingTwoReadingsIntoSeparateBuffersKeepsBothTexts) {
     char unavailable[32] = {};
     FormatRssBytes(unavailable, sizeof(unavailable), std::nullopt);
     EXPECT_STREQ(unavailable, "unavailable");
+}
+
+// --- TD-007: thread/handle count gate and latency gate ---------------------
+
+TEST(CountGateTest, EqualOrShrinkingCountsPass) {
+    const CountGateResult equal = EvaluateCountGate(7, 7);
+    EXPECT_TRUE(equal.pass);
+    EXPECT_EQ(equal.reason, CountGateReason::WithinBaseline);
+    EXPECT_EQ(equal.baseline, 7U);
+    EXPECT_EQ(equal.final_count, 7U);
+
+    const CountGateResult shrunk = EvaluateCountGate(7, 5);
+    EXPECT_TRUE(shrunk.pass);
+    EXPECT_EQ(shrunk.reason, CountGateReason::WithinBaseline);
+}
+
+TEST(CountGateTest, GrowthFailsAndReportsBothCounts) {
+    const CountGateResult grown = EvaluateCountGate(3, 4);
+    EXPECT_FALSE(grown.pass);
+    EXPECT_EQ(grown.reason, CountGateReason::Grew);
+    EXPECT_EQ(grown.baseline, 3U);
+    EXPECT_EQ(grown.final_count, 4U);
+}
+
+TEST(CountGateTest, MissingReadingsFailTheGate) {
+    const CountGateResult no_baseline = EvaluateCountGate(std::nullopt, 2);
+    EXPECT_FALSE(no_baseline.pass);
+    EXPECT_EQ(no_baseline.reason, CountGateReason::MissingBaseline);
+
+    const CountGateResult no_final = EvaluateCountGate(2, std::nullopt);
+    EXPECT_FALSE(no_final.pass);
+    EXPECT_EQ(no_final.reason, CountGateReason::MissingFinal);
+}
+
+TEST(LatencyGateTest, AtOrBelowThresholdPassesAndAboveFails) {
+    EXPECT_TRUE(EvaluateLatencyGate(1'000.0, 1'000.0).pass);
+    EXPECT_TRUE(EvaluateLatencyGate(999.0, 1'000.0).pass);
+
+    const LatencyGateResult over = EvaluateLatencyGate(1'001.0, 1'000.0);
+    EXPECT_FALSE(over.pass);
+    EXPECT_DOUBLE_EQ(over.p95_ns, 1'001.0);
+    EXPECT_DOUBLE_EQ(over.threshold_ns, 1'000.0);
 }
 
 } // namespace
