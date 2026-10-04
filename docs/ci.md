@@ -281,7 +281,9 @@ required jobs are secret-free and `windows-latest` has no editor), so
 where the suites become mandatory in CI: the EditMode and PlayMode suites run
 before the player build and any failure fails the job. On this route the
 release installs the pinned Unity CLI (`1.0.0-beta.11`) and Editor
-(`6000.6.3f1`), activates the licence from `UNITY_LICENSE` (offline `.ulf`) or
+(`6000.6.3f1`), installs the CLI's managed licensing client
+(`unity plugin install licensingClient`, required before any activation on a
+fresh runner), activates the licence from `UNITY_LICENSE` (offline `.ulf`) or
 `UNITY_SERIAL` and runs the same
 `unity test unity/Cubeglass --mode EditMode --non-interactive` and
 `--mode PlayMode --non-interactive` suites ci-local runs locally. The release

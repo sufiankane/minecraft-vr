@@ -243,6 +243,19 @@ jobs:
             exit 1
           }
 
+      - name: Install the Unity licensing client
+        shell: pwsh
+        run: |
+          # `unity license activate` talks to the licensing client daemon; the
+          # CLI manages that component itself, but a fresh runner has not
+          # installed it yet (error: "Can't reach the Unity licensing client").
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          & $unity plugin install licensingClient
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Installing the managed Unity licensing client failed with exit code $LASTEXITCODE."
+            exit 1
+          }
+
       - name: Activate the Unity licence for the release gate
         shell: pwsh
         env:
