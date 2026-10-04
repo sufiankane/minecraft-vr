@@ -50,9 +50,11 @@ name: Release
 #      user's account.
 #   3. On that user's PATH: the GitHub runner agent, the Unity CLI (`unity`)
 #      and Visual Studio Build Tools with the C++ x64 toolset (CMake and Ninja
-#      come from its developer shell). The GitHub CLI (`gh`) is needed only for
-#      the release attach; without it the job skips the attach with a warning
-#      and the player stays available as the workflow artefact. A vcpkg
+#      come from its developer shell). The release attach prefers the GitHub CLI
+#      (`gh`) but no longer requires it: without gh it falls back to the REST
+#      API with the job's GITHUB_TOKEN (scripts/publish-release-assets.ps1), so
+#      the player is attached either way and stays available as the workflow
+#      artefact when no release exists. A vcpkg
 #      checkout is reused when present (`VCPKG_ROOT` or `%USERPROFILE%\vcpkg`),
 #      with its HEAD checked against `cpp/vcpkg.json`'s `builtin-baseline`
 #      (a mismatch warns and proceeds) and `vcpkg.exe` bootstrapped when
@@ -217,11 +219,30 @@ jobs:
       # UNITY_SERIAL secret, and run the exact commands ci-local runs.
       # Any failure here fails the release before the player build.
 
-      - name: Install the Unity CLI (pinned 1.0.0-beta.11)
+      - name: Install the Unity CLI (pinned 1.0.0-beta.11, SHA-256 verified)
         shell: pwsh
+        env:
+          # During an upgrade: verify the new installer script, then set this
+          # repository variable (or update the constant below) so the pin moves
+          # deliberately (TD-040).
+          CG_UNITY_CLI_SHA256_OVERRIDE: ${{ vars.CG_UNITY_CLI_SHA256_OVERRIDE }}
         run: |
+          $expected = $env:CG_UNITY_CLI_SHA256_OVERRIDE
+          if ([string]::IsNullOrWhiteSpace($expected)) {
+            # SHA-256 of the installer served at the pinned URL for the CLI
+            # 1.0.0-beta.11 download. Unity can re-issue the script; a mismatch
+            # fails here with the override instructions instead of executing
+            # changed remote code.
+            $expected = 'b7f8003180c35d5fd5300c919bf4855359f39d87e9ced1091a71b2e960be8861'
+          }
           $installer = Join-Path $env:RUNNER_TEMP 'unity-cli-install.ps1'
           Invoke-WebRequest -UseBasicParsing -Uri 'https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1' -OutFile $installer
+          $actual = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected.ToLowerInvariant()) {
+            Write-Host "::error::Unity CLI installer SHA-256 mismatch: expected $($expected.ToLowerInvariant()), got $actual. The script behind the pinned URL changed; review the new script and update the pin (set the CG_UNITY_CLI_SHA256_OVERRIDE repository variable, or the constant in .github/workflows/release.yml) before re-running."
+            exit 1
+          }
+          Write-Host "Unity CLI installer SHA-256 verified ($actual)."
           & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -Target '1.0.0-beta.11'
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Unity CLI install failed with exit code $LASTEXITCODE."
@@ -368,10 +389,13 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     # The only writer on this route: write is scoped to this dependent job, so
-    # the build job (and every one of its steps, including the unpinned Unity
-    # CDN installer) runs read-only.
+    # the build job (and every one of its steps, including the pinned Unity CDN
+    # installer) runs read-only. `id-token`/`attestations` are for the build
+    # provenance attestation (TD-055).
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Download the player artefact and its checksum
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -379,33 +403,26 @@ jobs:
           name: Cubeglass-windows-x64
           path: dist
 
+      - name: Attest the player build provenance
+        # TD-055: GitHub-signed build provenance for the shipped zip; the
+        # checksum files are unchanged and still attached. Verification:
+        #   gh attestation verify dist/Cubeglass-windows-x64.zip --repo <owner>/<repo>
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/Cubeglass-windows-x64.zip
+
       - name: Attach the player and its checksum to the v0.1.0 release when it exists
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # A missing release is a normal outcome, not a step failure. Capture
-          # the probe output and exit code explicitly and clear the native exit
-          # state so the runner's appended `exit $LASTEXITCODE` check cannot
-          # fail the first dispatch (I-1); pwsh 7.4+ may also turn a non-zero
-          # native exit into a terminating error, so opt out for the probe.
-          $PSNativeCommandUseErrorActionPreference = $false
-          $probe = gh release view v0.1.0 2>&1
-          $releaseExists = $LASTEXITCODE -eq 0
-          $global:LASTEXITCODE = 0
-          if (-not $releaseExists) {
-            Write-Host ("v0.1.0 does not exist yet (probe output: {0}); the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50)." -f (($probe | Out-String).Trim()))
-            exit 0
-          }
-          $upload = gh release upload v0.1.0 dist/Cubeglass-windows-x64.zip dist/Cubeglass-windows-x64.zip.sha256 --clobber 2>&1
-          $uploadStatus = $LASTEXITCODE
-          $global:LASTEXITCODE = 0
-          if ($uploadStatus -ne 0) {
-            Write-Host ($upload | Out-String)
-            Write-Host "::error::gh release upload failed with exit code $uploadStatus."
-            exit 1
-          }
-          Write-Host 'Attached Cubeglass-windows-x64.zip and Cubeglass-windows-x64.zip.sha256 to the v0.1.0 release.'
+          # A missing release is a normal outcome, not a step failure.
+          # scripts/publish-release-assets.ps1 prefers gh and falls back to the
+          # REST API (delete-then-upload clobber) when gh is absent (TD-036).
+          ./scripts/publish-release-assets.ps1 -Tag v0.1.0 -Assets @(
+            'dist/Cubeglass-windows-x64.zip',
+            'dist/Cubeglass-windows-x64.zip.sha256')
 
   build-self-hosted:
     name: Build player (self-hosted Windows)
@@ -505,13 +522,18 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - name: Toolchain versions
+      - name: Toolchain versions (pinned Unity CLI assertion)
         shell: powershell
         run: |
           dotnet --version
           cmake --version
           ninja --version
-          unity --version
+          $line = (unity --version | Out-String).Trim()
+          Write-Host $line
+          if ($line -notmatch '1\.0\.0-beta\.11') {
+            Write-Host "::error::The self-hosted runner's Unity CLI is not the pinned 1.0.0-beta.11 (got: $line). Install the pinned CLI ('https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1' -Target 1.0.0-beta.11) or bump the pin in .github/workflows/release.yml and docs/toolchains.md together (TD-040)."
+            exit 1
+          }
 
       # Release, not the preset's Debug default: the player ships this DLL,
       # and a Debug build links the non-redistributable debug CRT, which would
@@ -623,9 +645,12 @@ jobs:
     runs-on: [self-hosted, windows]
     timeout-minutes: 15
     # The only writer on this route: write is scoped to this dependent job, so
-    # the build job (and every one of its steps) runs read-only.
+    # the build job (and every one of its steps) runs read-only. `id-token` and
+    # `attestations` are for the build provenance attestation (TD-055).
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Download the player artefact and its checksum
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -633,39 +658,22 @@ jobs:
           name: Cubeglass-v0.1.0-win-x64
           path: dist
 
+      - name: Attest the player build provenance
+        # TD-055: GitHub-signed build provenance for the shipped zip; verification:
+        #   gh attestation verify dist/Cubeglass-v0.1.0-win-x64.zip --repo <owner>/<repo>
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/Cubeglass-v0.1.0-win-x64.zip
+
       - name: Attach the player and its checksum to the v0.1.0 release when it exists
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          # The release attach is optional runner tooling: without `gh` the
-          # build still succeeds and the player stays available as the
-          # workflow artefact, so skip with a warning instead of failing.
-          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-            Write-Host "::warning::The GitHub CLI (gh) is not on PATH for this self-hosted runner; skipping the v0.1.0 attach. Install gh and re-run to publish the player to the release."
-            exit 0
-          }
-          # A missing release is a normal outcome, not a step failure. Capture
-          # the probe output and exit code explicitly and clear the native
-          # exit state so the runner's appended `exit $LASTEXITCODE` check
-          # cannot fail the first dispatch (I-1). The error preference is
-          # relaxed around the probe because Windows PowerShell 5.1 turns a
-          # redirected stderr line into a NativeCommandError under the
-          # runner's `$ErrorActionPreference = 'Stop'`.
-          $ErrorActionPreference = 'Continue'
-          $probe = gh release view v0.1.0 2>&1
-          $releaseExists = $LASTEXITCODE -eq 0
-          $global:LASTEXITCODE = 0
-          if (-not $releaseExists) {
-            Write-Host ("v0.1.0 does not exist yet (probe output: {0}); the player stays available as the Cubeglass-v0.1.0-win-x64 workflow artefact (the tag is owner-gated per R50)." -f (($probe | Out-String).Trim()))
-            exit 0
-          }
-          $upload = gh release upload v0.1.0 dist/Cubeglass-v0.1.0-win-x64.zip dist/Cubeglass-v0.1.0-win-x64.zip.sha256 --clobber 2>&1
-          $uploadStatus = $LASTEXITCODE
-          $global:LASTEXITCODE = 0
-          if ($uploadStatus -ne 0) {
-            Write-Host ($upload | Out-String)
-            Write-Host "::error::gh release upload failed with exit code $uploadStatus."
-            exit 1
-          }
-          Write-Host 'Attached Cubeglass-v0.1.0-win-x64.zip and Cubeglass-v0.1.0-win-x64.zip.sha256 to the v0.1.0 release.'
+          # gh is preferred when installed; the script falls back to the REST
+          # API with GITHUB_TOKEN otherwise (TD-036). A missing release is a
+          # normal outcome.
+          ./scripts/publish-release-assets.ps1 -Tag v0.1.0 -Assets @(
+            'dist/Cubeglass-v0.1.0-win-x64.zip',
+            'dist/Cubeglass-v0.1.0-win-x64.zip.sha256')
