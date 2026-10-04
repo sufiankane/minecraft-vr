@@ -165,7 +165,7 @@ namespace Cubeglass.Streaming.Tests
             _scheduler = new ChunkStreamingScheduler(config, seed);
             _mesher = new GreedyMesher(new AtlasLayout(16, 16), _pool);
             _world = new World(_generator);
-            _world.ChunkChanged += MarkDirty;
+            _world.ChunkChanged += edit => MarkDirty(edit.Chunk);
             _player = new PlayerState
             {
                 Position = new Vec3(
