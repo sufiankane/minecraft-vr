@@ -550,8 +550,9 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>
         /// Generates at most one deferred chunk for the current Unity frame and
-        /// reports it ready to the scheduler. Returns 1 when a chunk was
-        /// generated, 0 otherwise.
+        /// reports it ready to the scheduler. A generation failure also burns
+        /// the frame's attempt (one loud error per frame, never one per queued
+        /// chunk). Returns 1 when a chunk was generated, 0 otherwise.
         /// </summary>
         public int ProcessDeferredLoads()
         {
@@ -597,17 +598,20 @@ namespace Cubeglass.Unity.Rendering
                     // One bad chunk must not kill the frame or stall every
                     // other deferred load (review M-2). The chunk is dropped
                     // with a loud error and stays a hole until the scheduler
-                    // reloads it; the budget marks this frame used so a
-                    // failing generator cannot spin once per queue entry.
-                    // (If the throw happened after world.LoadChunk, the world
-                    // keeps the generated chunk; compaction drops it from the
-                    // neighbour snapshot once it is no longer live.)
+                    // reloads it. Returning here burns the frame's attempt
+                    // budget: a systemic generator fault must log at most one
+                    // error per frame instead of one per queued entry
+                    // (review R-3). (If the throw happened after
+                    // world.LoadChunk, the world keeps the generated chunk;
+                    // compaction drops it from the neighbour snapshot once it
+                    // is no longer live.)
                     generationFailures++;
                     lastGenerateFrame = Time.frameCount;
                     Debug.LogError(
                         "ChunkViewManager: generating chunk (" + chunk.X + ", " + chunk.Y + ", " + chunk.Z
                         + ") failed: " + exception.Message
                         + "; the chunk stays unloaded until the scheduler reloads it.");
+                    return 0;
                 }
             }
 
