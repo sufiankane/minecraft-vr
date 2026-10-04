@@ -32,9 +32,12 @@ inline constexpr std::int64_t kViturePollTimeoutNs = 100'000'000;
 ///   otherwise.
 /// - `SetDisplayMode`/`GetRefreshHz` are display calls. They only run while
 ///   the pose source is stopped (configure before `Start`/after `Stop`):
-///   `VitureDisplayControl` enforces this with an is-running predicate and
-///   reports `NotReady` while a poll could be in flight, so they are never
-///   concurrent with `PollPose`.
+///   `VitureDisplayControl` runs every display action through a `DeviceGate`
+///   (`VitureHeadPoseSource::WithDeviceStopped`), which refuses with
+///   `NotReady` while a poll could be in flight and otherwise holds the
+///   source's lifecycle mutex for the action, so they can never be concurrent
+///   with `PollPose` or a `Start`/`Stop` transition (CXX-01). Configure the
+///   display before `Start` or after `Stop`.
 /// - `SdkVersion` is diagnostic and may be called from any thread.
 /// - `RequestStop()` is the one cross-thread call: the thread asking the
 ///   polling thread to finish (the wrapper's `Stop()`) sets it before
