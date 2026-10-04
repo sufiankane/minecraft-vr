@@ -305,8 +305,12 @@ Known non-blocking items; none affects the software half of the exit gate:
   cell-carrying edit signal is the fix if remesh cost ever matters.
 - **Per-edit dirty-set allocation.** `ChunkEditPropagation.GetAffectedChunks`
   allocates a `new ChunkCoord[8]` scratch array per call and, for the common
-  1/2/4-chunk cases, a second right-sized copy (≤ ~128 B per edit). The call is
-  on the per-cell edit path (Unity dirty-set fan-out and boot replay), not the
+  1/2/4-chunk cases, a second right-sized copy (108/120/144 B respectively).
+  The call is currently exercised by tests only; Unity's
+  `ChunkViewManager.HandleChunkChanged` fans the Chebyshev-1 superset (27
+  chunks) through `FillRemeshNeighbourhood`, which uses this method's rule as a
+  subset proof rather than calling it. The allocation is on the per-cell edit
+  path, not the
   per-frame path, and the remesh side's per-upload snapshot allocations are
   already recorded above. A `Span<ChunkCoord>`-with-count or caller-owned
   buffer would remove the allocation but changes the public shape, so it is
@@ -335,3 +339,5 @@ quit/pause flush has a bounded 2 s wait; `SaveBatches` retains each chunk's
 full edit map for the session; one `FileWorldStore` per world is required;
 `Gamepad Turn X` maps the 4th joystick axis and may need an `InputManager.asset`
 adjustment on the HIL pad.
+
+_Programme-wide review record: docs/reviews/2026-10-03-full-review.md (findings, fixes, dispositions, owner actions)._
