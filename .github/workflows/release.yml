@@ -1,24 +1,77 @@
 name: Release
 
-# Dispatch-only (R49): the v0.1.0 player build is an owner event. The build
-# needs the Unity licence secrets; without them this workflow fails with an
-# actionable message instead of silently skipping the release artefact.
+# Dispatch-only (R49): the v0.1.0 player build is an owner event. The
+# `build_target` dispatch input chooses between two build paths:
 #
-# Tagged releases are test-gated (I-6): before the player build, the pinned
-# Unity CLI installs the pinned Editor, activates the licence and runs the same
-# EditMode + PlayMode suites ci-local runs, failing the release on any failure.
+#   hosted (default)  `windows-x64-player` on GitHub-hosted windows-latest.
+#                     Needs the UNITY_LICENSE, UNITY_EMAIL and UNITY_PASSWORD
+#                     repository secrets; without them it fails before any
+#                     build step with an actionable message instead of
+#                     silently skipping the release artefact.
+#
+#   self-hosted       `build-self-hosted` on a Windows runner installed on the
+#                     machine whose Unity editor is already activated through
+#                     the Unity Hub (Unity Personal here). It needs no Unity
+#                     secrets: the machine's own Hub activation is the licence,
+#                     and the machine already builds the player with
+#                     `unity run unity/Cubeglass -- -executeMethod
+#                     Cubeglass.Editor.BuildPlayer.BuildWindows64`.
+#
+# Why the self-hosted path exists: the owner's Unity Personal is
+# Hub-activated, and unattended CLI activation has no usable option on this
+# account. `unity license activate --serial` needs a Pro/Plus/Enterprise
+# serial, `unity license activate --floating` needs a floating licence server,
+# and the offline `unity license activate --file` (.ulf) flow is deprecated
+# for Hub-activated accounts (there is no licence file to export).
+# `--personal` does not work unattended. The licensed machine can just build.
+#
+# Self-hosted runner setup (one-off, on the licensed machine):
+#   1. GitHub: repo -> Settings -> Actions -> Runners -> New self-hosted
+#      runner -> Windows. Run config.cmd and add the labels this job selects:
+#      `self-hosted` and `windows`.
+#   2. Run the runner as the Windows user that activated Unity through the
+#      Hub: the Personal licence lives in that user's profile
+#      (%LOCALAPPDATA%\Unity\licenses), so a service under a system account
+#      cannot see it. Start it with run.cmd, or register the service with that
+#      user's account.
+#   3. On that user's PATH: the GitHub runner agent, the Unity CLI (`unity`)
+#      and Visual Studio Build Tools with the C++ x64 toolset (CMake and Ninja
+#      come from its developer shell). The GitHub CLI (`gh`) is needed only for
+#      the release attach; without it the job skips the attach with a warning
+#      and the player stays available as the workflow artefact. A vcpkg
+#      checkout at the pinned baseline is reused when present
+#      (%USERPROFILE%\vcpkg); otherwise the job clones and bootstraps one
+#      under the runner temp dir.
+#   4. The job uses `shell: powershell` (Windows PowerShell 5.1), not `pwsh`:
+#      the licensed machine has no PowerShell 7 and every repo script it calls
+#      declares `#requires -Version 5.1`.
+#
+# Tagged releases are test-gated (I-6): on the hosted path, before the player
+# build, the pinned Unity CLI installs the pinned Editor, activates the licence
+# and runs the same EditMode + PlayMode suites ci-local runs, failing the
+# release on any failure.
 #
 # The player compiles the managed Cubeglass plugins and P/Invokes the native
 # cg_unity_bridge.dll, so both are built on the runner and staged into the
 # Unity project before the player build (the same files scripts/ci-local.ps1
 # stages locally). The staged DLLs are git-ignored, so the checkout stays
-# clean for the builder. vcpkg is cloned and installs under the runner temp
-# dir, never inside the checkout, because game-ci's dirty check runs
-# `git status --porcelain` before Unity and an untracked in-workspace vcpkg
-# would fail it. Without this staging the Unity compile fails and a player
-# built from a clean checkout would ship no head tracking.
+# clean for the builder. On the hosted path vcpkg is cloned and installs under
+# the runner temp dir, never inside the checkout, because game-ci's dirty check
+# runs `git status --porcelain` before Unity and an untracked in-workspace
+# vcpkg would fail it. The self-hosted path keeps the dependency tree next to
+# the machine's vcpkg checkout for the same reason and so it survives between
+# runs. Without this staging the Unity compile fails and a player built from a
+# clean checkout would ship no head tracking.
 on:
   workflow_dispatch:
+    inputs:
+      build_target:
+        description: 'Build path: hosted uses the Unity licence secrets; self-hosted uses the Hub-activated Windows runner.'
+        type: choice
+        options:
+          - hosted
+          - self-hosted
+        default: hosted
 
 permissions:
   contents: read
@@ -30,6 +83,9 @@ concurrency:
 jobs:
   windows-x64-player:
     name: windows-x64-player
+    # Only one path runs per dispatch: this is the default (`build_target:
+    # hosted`), the self-hosted job below is the opt-in.
+    if: inputs.build_target == 'hosted'
     runs-on: windows-latest
     timeout-minutes: 180
     # The only writer is the final `gh release upload`; everything else runs
@@ -286,3 +342,187 @@ jobs:
             exit 1
           }
           Write-Host 'Attached Cubeglass-windows-x64.zip to the v0.1.0 release.'
+
+  build-self-hosted:
+    name: Build player (self-hosted Windows)
+    if: inputs.build_target == 'self-hosted'
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 60
+    # `gh release upload` is the only writer; everything else runs with the
+    # read-only default token, like the hosted job.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: dotnet/global.json
+
+      - name: Build the managed plugins (Release)
+        shell: powershell
+        run: dotnet build dotnet/Cubeglass.sln --configuration Release
+
+      - name: Stage the managed plugins into the Unity project
+        shell: powershell
+        run: ./scripts/sync-unity-plugins.ps1
+
+      # vcpkg resolution: prefer the machine's own checkout at the pinned
+      # baseline (this machine keeps %USERPROFILE%\vcpkg there) and only clone
+      # and bootstrap into the runner temp dir when neither VCPKG_ROOT nor the
+      # profile checkout has the toolchain file. VCPKG_ROOT is written to
+      # GITHUB_ENV because the CMake preset's toolchain file reads it from the
+      # environment; the installed tree is kept next to the checkout, outside
+      # the workspace, so the checkout action's clean cannot wipe it between
+      # runs (the hosted job gets the same effect from its cache).
+      - name: Resolve vcpkg
+        shell: powershell
+        run: |
+          $baseline = 'eb2d3a3279fd019cb7733072d86900d0ad2a1aef'
+          $candidates = @($env:VCPKG_ROOT, (Join-Path $env:USERPROFILE 'vcpkg'))
+          $root = $candidates |
+            Where-Object { $_ -and (Test-Path -LiteralPath (Join-Path $_ 'scripts\buildsystems\vcpkg.cmake')) } |
+            Select-Object -First 1
+          if ($root) {
+            $head = (& git -C $root rev-parse HEAD | Out-String).Trim()
+            Write-Host "Using the machine vcpkg at $root (HEAD $head; cpp/vcpkg.json pins $baseline)."
+          }
+          else {
+            $root = Join-Path $env:RUNNER_TEMP 'vcpkg'
+            if (-not (Test-Path -LiteralPath (Join-Path $root 'scripts\buildsystems\vcpkg.cmake'))) {
+              git clone https://github.com/microsoft/vcpkg.git $root
+              if ($LASTEXITCODE -ne 0) {
+                Write-Host "::error::git clone of vcpkg failed with exit code $LASTEXITCODE."
+                exit 1
+              }
+            }
+            git -C $root checkout $baseline
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::vcpkg checkout $baseline failed with exit code $LASTEXITCODE."
+              exit 1
+            }
+            & (Join-Path $root 'bootstrap-vcpkg.bat') -disableMetrics
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::vcpkg bootstrap failed with exit code $LASTEXITCODE."
+              exit 1
+            }
+          }
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "VCPKG_ROOT=$root`r`n")
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "VCPKG_INSTALLED_DIR=$root\installed`r`n")
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      - name: Toolchain versions
+        shell: powershell
+        run: |
+          dotnet --version
+          cmake --version
+          ninja --version
+          unity --version
+
+      # Release, not the preset's Debug default: the player ships this DLL,
+      # and a Debug build links the non-redistributable debug CRT, which would
+      # fail to load on a machine without the Visual Studio debug runtimes.
+      # cg_bridge is always part of the project (no build switch).
+      - name: Configure the native bridge (Release)
+        shell: powershell
+        working-directory: cpp
+        run: cmake --preset windows-msvc -DCMAKE_BUILD_TYPE=Release "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR"
+
+      - name: Build the native bridge
+        shell: powershell
+        working-directory: cpp
+        run: cmake --build --preset windows-msvc --target cg_bridge
+
+      - name: Stage the native bridge into the Unity project
+        shell: powershell
+        run: |
+          $source = 'cpp/build/windows-msvc/bridge/cg_unity_bridge.dll'
+          $destination = 'unity/Cubeglass/Assets/Plugins/win-x64'
+          if (-not (Test-Path -LiteralPath $source)) {
+            Write-Host "::error::The native bridge build did not produce $source."
+            exit 1
+          }
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          Copy-Item -LiteralPath $source -Destination (Join-Path $destination 'cg_unity_bridge.dll') -Force
+          Write-Host "Copied native bridge DLL: $source -> $destination"
+
+      # The machine's Hub activation is the licence: no secret, no `unity
+      # license activate`, no editor install (the pinned 6000.6.3f1 editor is
+      # already there). The build method exits non-zero on a failed build, and
+      # the guard below catches a silent no-output run (for example an
+      # unlicensed runner user) with the licence hint.
+      - name: Build the Windows x64 player (self-hosted)
+        shell: powershell
+        run: |
+          unity run unity/Cubeglass -- -executeMethod Cubeglass.Editor.BuildPlayer.BuildWindows64
+          $buildExit = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($buildExit -ne 0) {
+            Write-Host "::error::unity run failed with exit code $buildExit. Check that the runner's Windows user owns the Unity Hub activation (%LOCALAPPDATA%\Unity\licenses) and that Unity 6000.6.3f1 is installed, then re-run this job."
+            exit 1
+          }
+          $player = 'unity/Cubeglass/build/StandaloneWindows64/Cubeglass/Cubeglass.exe'
+          if (-not (Test-Path -LiteralPath $player)) {
+            Write-Host "::error::The self-hosted build produced no $player. The runner's Windows user needs an activated Unity licence: open the Unity Hub on the runner, sign in and activate Unity Personal (Hub activation is per-user, under %LOCALAPPDATA%\Unity\licenses), then re-run this job."
+            exit 1
+          }
+          Write-Host "Player present: $player"
+
+      - name: Package the player
+        shell: powershell
+        run: |
+          $player = 'unity/Cubeglass/build/StandaloneWindows64/Cubeglass'
+          $zip = 'unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip'
+          if (-not (Test-Path -LiteralPath (Join-Path $player 'Cubeglass.exe'))) {
+            Write-Host "::error::The Unity build did not produce $player\Cubeglass.exe."
+            exit 1
+          }
+          Compress-Archive -Path $player -DestinationPath $zip -Force
+          Get-Item -LiteralPath $zip | Select-Object FullName, Length
+
+      - name: Upload the player artefact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Cubeglass-v0.1.0-win-x64
+          path: unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip
+          if-no-files-found: error
+
+      - name: Attach the player to the v0.1.0 release when it exists
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The release attach is optional runner tooling: without `gh` the
+          # build still succeeds and the player stays available as the
+          # workflow artefact, so skip with a warning instead of failing.
+          if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            Write-Host "::warning::The GitHub CLI (gh) is not on PATH for this self-hosted runner; skipping the v0.1.0 attach. Install gh and re-run to publish the player to the release."
+            exit 0
+          }
+          # A missing release is a normal outcome, not a step failure. Capture
+          # the probe output and exit code explicitly and clear the native
+          # exit state so the runner's appended `exit $LASTEXITCODE` check
+          # cannot fail the first dispatch (I-1). The error preference is
+          # relaxed around the probe because Windows PowerShell 5.1 turns a
+          # redirected stderr line into a NativeCommandError under the
+          # runner's `$ErrorActionPreference = 'Stop'`.
+          $ErrorActionPreference = 'Continue'
+          $probe = gh release view v0.1.0 2>&1
+          $releaseExists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0
+          if (-not $releaseExists) {
+            Write-Host ("v0.1.0 does not exist yet (probe output: {0}); the player stays available as the Cubeglass-v0.1.0-win-x64 workflow artefact (the tag is owner-gated per R50)." -f (($probe | Out-String).Trim()))
+            exit 0
+          }
+          $upload = gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip --clobber 2>&1
+          $uploadStatus = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($uploadStatus -ne 0) {
+            Write-Host ($upload | Out-String)
+            Write-Host "::error::gh release upload failed with exit code $uploadStatus."
+            exit 1
+          }
+          Write-Host 'Attached Cubeglass-v0.1.0-win-x64.zip to the v0.1.0 release.'

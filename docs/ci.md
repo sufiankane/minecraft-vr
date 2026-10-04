@@ -236,12 +236,26 @@ truth for what is enforced where.
 ## Release workflow
 
 `.github/workflows/release.yml` is **dispatch-only** (`workflow_dispatch`) and
-does not run on pull requests or pushes. It builds the Windows x64 player on
-`windows-latest` and attaches it to the `v0.1.0` release when that tag exists;
-the tag itself is owner-gated and not created by CI (R50). The workflow first
-requires three repository secrets — `UNITY_LICENSE`, `UNITY_EMAIL` and
-`UNITY_PASSWORD` — and fails before any build step with an error naming every
-missing one. With the secrets present it builds the managed plugins
+does not run on pull requests or pushes. The `build_target` input chooses one of
+two build routes and skips the other job:
+
+| Route | Runner | Unity licence |
+| --- | --- | --- |
+| `hosted` (default) | `windows-latest` | `UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD` secrets |
+| `self-hosted` | `[self-hosted, windows]` | the machine's own Unity Hub activation (no secrets) |
+
+Both routes attach the player to the `v0.1.0` release when that tag exists; the
+tag itself is owner-gated and not created by CI (R50). A missing release is a
+normal outcome on either route: the probe captures its exit code, clears the
+native exit state, and the player stays available as the workflow artefact (the
+bug fixed in the 2026-10-03 infra review, I-1).
+
+### Route 1: `hosted` (default)
+
+Builds the Windows x64 player on `windows-latest`. It first requires three
+repository secrets — `UNITY_LICENSE`, `UNITY_EMAIL` and `UNITY_PASSWORD` — and
+fails before any build step with an error naming every missing one. With the
+secrets present it builds the managed plugins
 (`dotnet build dotnet/Cubeglass.sln --configuration Release` and
 `scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` target from the
 pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
@@ -265,12 +279,52 @@ while the Unity secrets are in scope (Unity 6000.6.3f1 from
 `ProjectSettings/ProjectVersion.txt`, `StandaloneWindows64`) and the committed
 build method `Cubeglass.Editor.BuildPlayer.BuildWindows64`, packages
 `Cubeglass-windows-x64.zip`, uploads it as the `Cubeglass-windows-x64` artefact
-and attaches the archive to the release when `v0.1.0` exists. A missing release
-is a normal outcome: the probe captures its exit code, clears the native exit
-state, and the player stays available as the workflow artefact (the bug fixed in
-the 2026-10-03 infra review, I-1). Until the HIL playtest exists, the release
-notes in [`releases/v0.1.0.md`](releases/v0.1.0.md) describe a release candidate
-and the `stage-7-complete` tag is withheld.
+and attaches the archive to the release when `v0.1.0` exists.
+
+### Route 2: `self-hosted`
+
+Builds on a self-hosted Windows runner (`runs-on: [self-hosted, windows]`) — the
+machine whose Unity editor is already activated through the Unity Hub. It needs
+no Unity secrets: the machine's own Hub activation (Unity Personal here) is the
+licence, and the job runs
+`unity run unity/Cubeglass -- -executeMethod Cubeglass.Editor.BuildPlayer.BuildWindows64`
+directly, with no editor install and no activation step. The build is guarded:
+a non-zero `unity run` exit code or a missing
+`unity/Cubeglass/build/StandaloneWindows64/Cubeglass/Cubeglass.exe` fails the
+job with a message naming the Hub-activation requirement. The player is
+packaged as `Cubeglass-v0.1.0-win-x64.zip` and uploaded as the
+`Cubeglass-v0.1.0-win-x64` artefact before the attach.
+
+Runner setup (one-off): repo → **Settings → Actions → Runners → New self-hosted
+runner → Windows**; run `config.cmd` with the labels `self-hosted, windows`.
+Start the runner as the Windows user that activated Unity through the Hub: the
+Personal licence lives in that user's profile under
+`%LOCALAPPDATA%\Unity\licenses`, so a service under a system account cannot see
+it. That user's PATH needs the Unity CLI (`unity`), the GitHub runner agent and
+Visual Studio Build Tools with the C++ x64 toolset (CMake and Ninja come from
+its developer shell); `gh` is needed only for the release attach, and the job
+skips the attach with a warning when it is absent. The job reuses a vcpkg
+checkout at the pinned baseline when one is present (`%USERPROFILE%\vcpkg`) and
+otherwise clones and bootstraps one under the runner temp dir, keeping the
+dependency tree outside the workspace so the checkout clean cannot wipe it
+between runs.
+
+### Licence options
+
+Unattended Unity activation (not needed by the self-hosted route, which uses
+the machine's Hub activation) accepts only the following;
+`unity license activate --personal` does not work unattended:
+
+| Option | Needs | Available here |
+| --- | --- | --- |
+| Editor serial (`unity license activate --serial`) | a Pro/Plus/Enterprise serial | no: the account is Unity Personal |
+| Floating licence server (`unity license activate --floating`) | a reachable Unity licence server | no |
+| Offline licence file (`unity license activate --file`) | an exported `.ulf` | no: deprecated for Hub-activated accounts |
+| Self-hosted runner with Hub activation | the licensed Windows machine | **yes** — the `self-hosted` route |
+
+Until the HIL playtest exists, the release notes in
+[`releases/v0.1.0.md`](releases/v0.1.0.md) describe a release candidate and the
+`stage-7-complete` tag is withheld.
 
 All four workflows pin every action to a full commit SHA with a version comment,
 and `.github/dependabot.yml` proposes grouped minor/patch updates weekly for
