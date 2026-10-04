@@ -40,7 +40,8 @@ TEST(RecentreStateTest, PublishBetweenTheFieldReadsIsDetectedAndNeverPaired) {
 
     const RecentreState::Value loaded = state.Load();
     EXPECT_EQ(loaded, (RecentreState::Value{-20.0, 9, false, 2}));
-    EXPECT_NE(std::make_pair(loaded.yaw_offset_deg, loaded.until_seq), std::make_pair(-20.0, 5.0))
+    EXPECT_NE(std::make_pair(loaded.yaw_offset_deg, loaded.until_seq),
+              std::make_pair(-20.0, static_cast<std::int64_t>(5)))
         << "the reader must never pair the new offset with the old until_seq";
 }
 
