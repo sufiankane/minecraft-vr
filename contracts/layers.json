@@ -13,5 +13,6 @@
               "Cubeglass.Gameplay":  { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
                                        "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel"] },
               "Cubeglass.Streaming": { "forbidNamespaces": ["UnityEngine", "UnityEditor", "System.IO", "System.Threading"],
-                                       "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel", "Cubeglass.Mesh"] } }
+                                       "allowedProjectReferences": ["Cubeglass.CoreMath", "Cubeglass.Voxel", "Cubeglass.Mesh"] } },
+  "deferred": { "cpp": ["handcore"], "dotnet": [] }
 }

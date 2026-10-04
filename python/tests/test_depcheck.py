@@ -90,8 +90,100 @@ def test_disallowed_project_reference_is_reported_with_line(capsys: pytest.Captu
     assert "dotnet/src/Voxel/Cubeglass.Voxel.csproj:8 allowedProjectReferences" in lines
 
 
-def test_missing_module_directory_is_skipped(capsys: pytest.CaptureFixture[str]) -> None:
+def test_stale_configured_modules_are_reported(capsys: pytest.CaptureFixture[str]) -> None:
     code, lines = run_cli(FIXTURES / "missing_module", capsys)
+    assert code == 1
+    assert lines == [
+        "cpp/core-math:0 layersEntryStale",
+        "cpp/handcore:0 layersEntryStale",
+        "dotnet/src/Gameplay:0 layersEntryStale",
+    ]
+
+
+def _write_layers(root: Path, payload: str) -> None:
+    contracts = root / "contracts"
+    contracts.mkdir(parents=True, exist_ok=True)
+    (contracts / "layers.json").write_text(payload, encoding="utf-8")
+
+
+def _add_cpp_module(root: Path, name: str) -> None:
+    module = root / "cpp" / name
+    module.mkdir(parents=True, exist_ok=True)
+    (module / "CMakeLists.txt").write_text(
+        f"cmake_minimum_required(VERSION 3.20)\nproject(cg_{name} CXX)\n", encoding="utf-8"
+    )
+
+
+def _add_dotnet_project(root: Path, project: str) -> None:
+    directory = root / "dotnet" / "src" / project.rsplit(".", 1)[-1]
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{project}.csproj").write_text("<Project />", encoding="utf-8")
+
+
+def test_cpp_module_without_layers_entry_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {}}')
+    _add_cpp_module(tmp_path, "recorder")
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/recorder:0 layersEntryMissing"]
+
+
+def test_dotnet_project_without_layers_entry_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"dotnet": {}}')
+    _add_dotnet_project(tmp_path, "Cubeglass.Infer")
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Infer:0 layersEntryMissing"]
+
+
+def test_stale_cpp_and_dotnet_layers_entries_fail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"cpp": {"core-math": {"forbidIncludes": []}}, "dotnet": {"Cubeglass.HandService": {}}}',
+    )
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == [
+        "cpp/core-math:0 layersEntryStale",
+        "dotnet/src/HandService:0 layersEntryStale",
+    ]
+
+
+def test_complete_module_tree_passes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(
+        tmp_path,
+        '{"cpp": {"core-math": {"forbidIncludes": []}}, "dotnet": {"Cubeglass.CoreMath": {}}}',
+    )
+    _add_cpp_module(tmp_path, "core-math")
+    _add_dotnet_project(tmp_path, "Cubeglass.CoreMath")
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_deferred_cpp_module_may_be_absent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(
+        tmp_path,
+        '{"cpp": {"handcore": {"forbidIncludes": []}}, "deferred": {"cpp": ["handcore"], "dotnet": []}}',
+    )
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_cpp_tests_and_tools_directories_are_not_modules(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {}}')
+    for name in ("tests", "tools", "build-linux", "build"):
+        _add_cpp_module(tmp_path, name)
+    code, lines = run_cli(tmp_path, capsys)
     assert code == 0
     assert lines == []
 
@@ -113,6 +205,7 @@ def test_generated_build_output_is_ignored(tmp_path: Path, capsys: pytest.Captur
     )
     source = root / "dotnet" / "src" / "CoreMath"
     source.mkdir(parents=True)
+    (source / "Cubeglass.CoreMath.csproj").write_text("<Project />", encoding="utf-8")
     (source / "Real.cs").write_text("using System.IO;\n", encoding="utf-8")
     for directory in ("obj", "bin"):
         generated = source / directory / "Debug" / "Generated.cs"
