@@ -1,5 +1,6 @@
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -14,16 +15,20 @@ namespace {
 
 using test::FakeVitureApi;
 
-// A name that no build or install tree provides, so LoadLibraryW/dlopen must
-// fail without any vendor DLL present.
-constexpr const char *kMissingDll = "cg_no_such_viture_sdk_2a.dll";
+/// An absolute path outside the working directory that no build or install
+/// tree provides, so LoadLibraryExW/dlopen must fail without any vendor DLL.
+/// Relative paths are rejected earlier by the path policy (InvalidArgument).
+std::string MissingDllPath() {
+    return (std::filesystem::temp_directory_path() / "cg_no_such_viture_sdk_2a.dll").string();
+}
 
 TEST(VitureLoader, MissingLibraryIsUnsupportedAndNamesThePath) {
-    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(kMissingDll);
+    const std::string missing = MissingDllPath();
+    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(missing);
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), StatusCode::Unsupported);
-    EXPECT_NE(std::string(result.status().message()).find(kMissingDll), std::string::npos)
+    EXPECT_NE(std::string(result.status().message()).find("cg_no_such_viture_sdk_2a.dll"), std::string::npos)
         << "message was: " << result.status().message();
 }
 
