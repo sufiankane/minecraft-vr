@@ -219,17 +219,6 @@ std::optional<std::uint64_t> ResidentBytes() noexcept {
 
 double Mib(std::uint64_t bytes) noexcept { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
 
-/// Formats one RSS reading for a report line: "x.xx MiB", or "unavailable"
-/// when the query failed (the gate then fails rather than reading zero).
-const char *RssText(std::optional<std::uint64_t> rss) noexcept {
-    static thread_local char buffer[32];
-    if (!rss.has_value()) {
-        return "unavailable";
-    }
-    std::snprintf(buffer, sizeof(buffer), "%.2f MiB", Mib(*rss));
-    return buffer;
-}
-
 HeadSample PlaceholderSample() noexcept {
     return HeadSample{0, cg::Pose{cg::core_math::Vec3{0.0, 0.0, 0.0}, cg::core_math::Quat::kIdentity},
                       TrackState::Stable, 0};
@@ -361,11 +350,13 @@ int Run(const Options &options) {
 
         if (elapsed_seconds >= next_report_seconds) {
             const std::optional<std::uint64_t> rss = ResidentBytes();
+            char rss_text[32];
+            cg::soak::FormatRssBytes(rss_text, sizeof(rss_text), rss);
             std::printf("[soak] t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%s\n", elapsed_seconds,
                         static_cast<unsigned long long>(published),
                         static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                         static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
-                        static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), RssText(rss));
+                        static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), rss_text);
             std::printf("[soak] latency t=%.1f s reads=%llu fresh=%llu p95_read_gap=%.2f us "
                         "(cumulative, bucket bound)\n",
                         elapsed_seconds,
@@ -404,12 +395,19 @@ int Run(const Options &options) {
 
     const double elapsed_seconds = ToSeconds(ElapsedSince(start));
     const std::optional<std::uint64_t> final_rss = ResidentBytes();
+    // Format both readings into separate buffers once: formatting two values
+    // through one shared buffer in a single printf would print the same text
+    // twice (argument evaluation order is unspecified), hiding the baseline.
+    char baseline_rss_text[32];
+    char final_rss_text[32];
+    cg::soak::FormatRssBytes(baseline_rss_text, sizeof(baseline_rss_text), baseline_rss);
+    cg::soak::FormatRssBytes(final_rss_text, sizeof(final_rss_text), final_rss);
     std::printf("[soak] done t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%s "
                 "p95_read_gap=%.2f us\n",
                 elapsed_seconds, static_cast<unsigned long long>(published),
                 static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
-                static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), RssText(final_rss),
+                static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), final_rss_text,
                 P95ReadGapNs(counters) / 1e3);
     if (g_stop_requested != 0) {
         std::printf("[soak] stopped by signal\n");
@@ -436,7 +434,7 @@ int Run(const Options &options) {
         return 1;
     case cg::soak::RssGateReason::OverBudget:
         std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
-                    RssText(baseline_rss), RssText(final_rss), Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
+                    baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
         std::printf("[soak] FAIL: RSS growth %.2f MiB exceeds the %.2f MiB budget\n", Mib(gate.growth_bytes),
                     Mib(kRssBudgetBytes));
         std::fflush(stdout);
@@ -445,7 +443,7 @@ int Run(const Options &options) {
         break;
     }
     std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
-                RssText(baseline_rss), RssText(final_rss), Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
+                baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
     std::printf("[soak] PASS: RSS growth %.2f MiB within the %.2f MiB budget\n", Mib(gate.growth_bytes),
                 Mib(kRssBudgetBytes));
     std::fflush(stdout);

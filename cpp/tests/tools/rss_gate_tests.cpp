@@ -67,5 +67,21 @@ TEST(RssGateTest, LargeValuesDoNotWrap) {
     EXPECT_EQ(huge.growth_bytes, std::numeric_limits<std::uint64_t>::max());
 }
 
+TEST(RssGateTest, FormattingTwoReadingsIntoSeparateBuffersKeepsBothTexts) {
+    // Regression for the soak summary printing baseline and final through one
+    // shared thread-local buffer: both arguments evaluated to the same text.
+    char baseline[32] = {};
+    char final_rss[32] = {};
+    FormatRssBytes(baseline, sizeof(baseline), 5 * kMib);
+    FormatRssBytes(final_rss, sizeof(final_rss), 6 * kMib);
+    EXPECT_STREQ(baseline, "5.00 MiB");
+    EXPECT_STREQ(final_rss, "6.00 MiB");
+    EXPECT_STRNE(baseline, final_rss);
+
+    char unavailable[32] = {};
+    FormatRssBytes(unavailable, sizeof(unavailable), std::nullopt);
+    EXPECT_STREQ(unavailable, "unavailable");
+}
+
 } // namespace
 } // namespace cg::soak

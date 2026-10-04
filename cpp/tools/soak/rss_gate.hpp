@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <optional>
 
 namespace cg::soak {
@@ -42,6 +44,25 @@ struct RssGateResult {
         return RssGateResult{false, growth, RssGateReason::OverBudget};
     }
     return RssGateResult{true, growth, RssGateReason::WithinBudget};
+}
+
+/// Formats one RSS reading into the caller's buffer: `"x.xx MiB"`, or
+/// `"unavailable"` when the query failed.
+///
+/// The caller supplies the storage (CXX-04 follow-up): formatting two readings
+/// in one `printf` through a shared buffer would print the same value twice
+/// because the evaluation order of the arguments is unspecified. A recipient
+/// that needs both texts holds two buffers (or formats twice), so the two
+/// readings can never alias.
+inline void FormatRssBytes(char *buffer, std::size_t size, std::optional<std::uint64_t> rss) noexcept {
+    if (buffer == nullptr || size == 0) {
+        return;
+    }
+    if (!rss.has_value()) {
+        std::snprintf(buffer, size, "unavailable");
+        return;
+    }
+    std::snprintf(buffer, size, "%.2f MiB", static_cast<double>(*rss) / (1024.0 * 1024.0));
 }
 
 } // namespace cg::soak
