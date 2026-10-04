@@ -18,7 +18,11 @@
 | CI / tooling / docs | 2 | 6 | 10 | #42 |
 | **Total** | **2** | **13** | **35** | |
 
-All 15 Critical/Important findings are fixed and verified; 0 remain open. Deferred minors are listed at the end.
+All Critical/Important findings are fixed and verified; 0 remain open. The four
+domain reviews produced 2 Critical and 13 Important; five further Important
+items were found and fixed while verifying those (N-4, N-5, U-4, U-5, U-6), so
+the disposition tables below list 18 Important rows in total. Deferred minors
+are listed at the end.
 
 ## Critical and Important findings — disposition
 
