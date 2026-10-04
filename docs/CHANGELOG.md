@@ -11,6 +11,43 @@ Every entry below is derived from `git log --oneline --decorate`, `git tag -l`,
 and PR number shown in the log; no dates or PRs are invented. The verified tree
 for this document is `docs/full-docs` / `main` = `0d3ecb6` (#50).
 
+## [Unreleased] - 2026-10-04 second critical review
+
+**Head:** `fix/critical-review` (merged after this entry's commit). The second,
+adversarial review treated the code as a life-saving device: four domain
+reviewers, every Critical/Important fixed and re-verified by the reviewer who
+raised it.
+
+### Added
+- Full documentation set: `docs/ARCHITECTURE.md`, `docs/CONTRACTS.md`,
+  `docs/CHANGELOG.md`, `docs/ONBOARDING.md`, `docs/adr/README.md` (#51).
+- Second critical review record: `docs/reviews/2026-10-04-critical-review.md`.
+- Tech-debt rows TD-048..TD-061 (textual-scan limits, gate discipline, loader
+  and shm trust, scans, baseline lifecycle, artefact signing, synthetic-Stable,
+  registry parse validation, deferred C++/Unity minors, attach-job verification).
+
+### Fixed
+- Contract gate: code-anchored `KNOWN_FINGERPRINTS`/`KNOWN_ABI_VERSIONS` close
+  the baseline-rewrite bypass; digraph includes, line continuations, string
+  literals, fully-qualified namespaces and macro includes are caught; recursive
+  module discovery (`41073ac`, `bd89ee3`).
+- Native: display/lifecycle TOCTOU, recentre arming race and one-frame pairing
+  snapshot, Release test lane, soak RSS gate fail-closed, loader path/search
+  hardening (`2a6c7ac..cae93d4`, `9b6e51b`).
+- .NET: unknown-id totality, streaming config validation, collision/placement
+  integer safety plus eight minors (`a8a272b..d7058b6`).
+- Unity: bridge probe retry/fallback reporting, flush + atomic store swap,
+  NaN/Inf guards, unknown-id mirror, budget ceiling, five follow-ups
+  (`168b7eb..bc541b4`).
+- CI/release: shared Unity results gate on both routes, checksum artefacts,
+  scoped write tokens with attach jobs, nightly zero-report guard, pinned gcovr,
+  release-lane timeouts (`c6f1283..9690761`).
+
+### Verified
+- Local gates at the fix head: C++ Debug 6/6 and `windows-release` 6/6
+  (+300x race repeats), .NET 524/524, Python 117/117, Unity EditMode 152/152 and
+  PlayMode 50/50 with scene hashes unchanged, `ci-local -SkipUnity` ALL LANES
+  PASS. Hosted checks remained billing-blocked (TD-045).
 ## [Unreleased] — post-S7 (#37–#50)
 
 **Head:** `0d3ecb6` (#50); no tag. This block covers everything after the S7

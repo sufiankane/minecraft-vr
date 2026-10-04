@@ -396,3 +396,14 @@ is provisional until then). This section is filled in before
 - SDD ruling R39 (a pose slot read that exhausts its bounded retries returns
   false; the caller keeps its previous frame, never a torn sample).
 - Escalation: `docs/questions/S5-HIL.md` (U-01, U-08; pending hardware).
+
+## Amendment (2026-10-04, critical review)
+
+Recentre state is published as one RecentreState seqlock snapshot (offset,
+validity sequence, pending flag, generation; Store/Load mirror the PoseSlot
+ordering). Exhausting the 64-read retry window drops a correction for one frame
+(same class as R39) rather than returning a torn pair. Test seams
+(BeginLoad/FinishLoad, SetTestRecentreArmHook) are documented test-only
+surface. U-08-dependent: Stop() can block behind an in-flight vendor display
+call now that lifecycle and display calls share lifecycle_mutex_; the
+acceptable bound is to be measured at HIL (TD-051 class).

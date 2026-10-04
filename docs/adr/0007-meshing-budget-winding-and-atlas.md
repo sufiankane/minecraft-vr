@@ -252,3 +252,11 @@ after pool warm-up).
   [ADR-0004](0004-coordinate-unit-time-conventions.md),
   [ADR-0005](0005-voxel-purity-and-async-boundary.md),
   [ADR-0006](0006-chunk-storage-and-save-format.md).
+
+## Amendment (2026-10-04, critical review)
+
+Meshers consume the total registry contract (ADR-0006 amendment): an unknown id
+renders through the fallback definition (tile 0) and is treated as non-opaque
+and non-solid, so culling, greedy merging and AO are unaffected by corrupted
+saves. The fallback is deliberately visible rather than invisible so data damage
+is diagnosable.

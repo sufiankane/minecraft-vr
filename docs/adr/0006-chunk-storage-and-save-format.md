@@ -162,3 +162,13 @@ that no exception escapes (Task 4).
 - Dossier sections: 5.9, 6 (S2), 7, 8, 9.
 - Related ADRs: [ADR-0003](0003-testing-strategy.md),
   [ADR-0005](0005-voxel-purity-and-async-boundary.md).
+
+## Amendment (2026-10-04, critical review)
+
+Block ids read from saves are untrusted input. IBlockRegistry.Get is total:
+unknown ids resolve to an air-equivalent fallback (non-solid, non-opaque,
+hardness 0, atlas tile 0) so a corrupted or future save cannot throw out of the
+frame tick; the meshers and interaction service consume that contract and render
+the placeholder as a visible tile-0 cube. Where planes are chosen, ids are
+preserved in deltas; only the behaviour of unknown ids is defined. Pinned by
+UnknownBlockIdTests (CoreCLR) and the Unity mirror tests.
