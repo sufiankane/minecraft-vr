@@ -13,7 +13,9 @@ target_include_directories(
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../contracts"
            "${CMAKE_CURRENT_SOURCE_DIR}/../../contracts/cpp"
 )
-target_link_libraries(cg_bridge PRIVATE cg::core_math cg_warnings)
+# TD-010: cg_warnings is PUBLIC so consumers of cg_unity_bridge.h and
+# shm_layout.hpp compile under the shared warning regime.
+target_link_libraries(cg_bridge PRIVATE cg::core_math PUBLIC cg_warnings)
 
 # CXX-19: `copy_payload` in src/bridge.cpp accesses the C payload storage
 # through `std::atomic_ref<std::uint64_t>` (the documented object-model

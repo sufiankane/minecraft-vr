@@ -15,7 +15,10 @@ target_include_directories(
     PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include" "${CMAKE_CURRENT_SOURCE_DIR}/../../contracts/cpp"
            "${CMAKE_CURRENT_SOURCE_DIR}/../../contracts"
 )
-target_link_libraries(cg_glasses PUBLIC cg::core_math PRIVATE cg_warnings)
+# TD-010: cg_warnings is PUBLIC because these public headers are consumed
+# directly; a consumer must compile them under the same /W4 /WX (MSVC) or
+# -Wall -Wextra -Wconversion -Werror (GCC/Clang) regime.
+target_link_libraries(cg_glasses PUBLIC cg::core_math cg_warnings)
 if(NOT WIN32)
     target_link_libraries(cg_glasses PRIVATE ${CMAKE_DL_LIBS})
 endif()
