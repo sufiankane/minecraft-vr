@@ -4,7 +4,7 @@ The nightly lane produces benchmark JSON (Google Benchmark for the C++ target,
 BenchmarkDotNet's JSON exporter for the .NET projects). This module turns those
 payloads into a name -> nanoseconds mapping, captures a baseline file when none
 is committed yet, and fails when a benchmark present in both the baseline and
-the current run regresses by more than the threshold (15 percent by default,
+the current run regresses by more than the threshold (10 percent by default,
 matching dossier section 9 item 9).
 
 The committed baseline lives at ``docs/perf/nightly-baseline.json`` and has the
@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-DEFAULT_THRESHOLD_PERCENT = 15.0
+DEFAULT_THRESHOLD_PERCENT = 10.0
 BASELINE_KEY = "benchmarks"
 
 _UNIT_TO_NS: dict[str, float] = {

@@ -67,15 +67,15 @@ def test_unknown_google_time_unit_is_an_error() -> None:
 
 
 def test_regression_over_threshold_names_the_offender() -> None:
-    violations = regressions({"cpp/BM_A": 100.0}, {"cpp/BM_A": 116.0})
+    violations = regressions({"cpp/BM_A": 100.0}, {"cpp/BM_A": 111.0})
     assert len(violations) == 1
     assert "cpp/BM_A" in violations[0]
-    assert "+16.0%" in violations[0]
-    assert "threshold 15%" in violations[0]
+    assert "+11.0%" in violations[0]
+    assert "threshold 10%" in violations[0]
 
 
 def test_regression_at_the_threshold_boundary_passes() -> None:
-    assert regressions({"cpp/BM_A": 100.0}, {"cpp/BM_A": 115.0}) == []
+    assert regressions({"cpp/BM_A": 100.0}, {"cpp/BM_A": 110.0}) == []
 
 
 def test_only_benchmarks_present_in_both_are_compared() -> None:
@@ -181,4 +181,4 @@ def test_cli_passes_within_threshold(tmp_path: Path, capsys: pytest.CaptureFixtu
     )
     captured = capsys.readouterr().out
     assert code == 0
-    assert "within 15%" in captured
+    assert "within 10%" in captured

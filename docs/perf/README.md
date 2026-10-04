@@ -51,11 +51,10 @@ The nightly lane enforces performance, it no longer only records it:
   with `--budget-ms 2`.
 - `bench-compare` runs `python -m depcheck benchregress` over the benchmark JSON
   from both jobs and `docs/perf/nightly-baseline.json`. Any benchmark present in
-  both the run and the baseline that regresses by more than **15 percent** fails
+  both the run and the baseline that regresses by more than **10 percent** fails
   the job and names the offender (`<name>: <baseline> ns -> <run> ns
-  (+x%, threshold 15%)`). The dossier threshold is applied per benchmark; the
-  15 percent figure (rather than the dossier's 10 percent) absorbs shared-runner
-  noise and is a `--threshold` flag if it needs tightening.
+  (+x%, threshold 10%)`). The threshold matches dossier section 9 item 9 and is
+  a `--threshold` flag (`depcheck benchregress`) if it ever needs tuning.
 - The baseline is **captured on the first run**: while
   `docs/perf/nightly-baseline.json` is missing, `bench-compare` passes with a
   `baseline established` message and uploads the captured run as the

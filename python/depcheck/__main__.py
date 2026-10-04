@@ -120,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     bench_parser = subparsers.add_parser(
         "benchregress",
-        help="Compare benchmark JSON against docs/perf/nightly-baseline.json (15 percent threshold).",
+        help="Compare benchmark JSON against docs/perf/nightly-baseline.json (10 percent threshold).",
     )
     bench_parser.add_argument("--baseline", type=Path, required=True, help="Committed baseline JSON.")
     bench_parser.add_argument("--format", choices=("google", "bdn"), required=True, help="Benchmark JSON format.")
