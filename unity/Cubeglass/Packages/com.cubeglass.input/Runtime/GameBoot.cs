@@ -32,7 +32,10 @@ namespace Cubeglass.Unity.Input
     /// <para>
     /// The spawn seed is one-way (scene pose into <c>PlayerState</c>); the
     /// bridge owns the state afterwards and drives <see cref="PlayerRoot"/>
-    /// from it, so nothing reads the transform back.
+    /// from it, so nothing reads the transform back. If the bridge is not
+    /// ready at <c>Start</c> the seed is deferred and retried every frame
+    /// (with one warning), so a late initialization cannot strand the player
+    /// at the internal origin (review M-1).
     /// </para>
     /// </remarks>
     [DefaultExecutionOrder(-300)]
@@ -49,6 +52,8 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private PlayerRoot playerRoot;
 
         private FileWorldStore store;
+        private bool seeded;
+        private bool seedRetryWarned;
 
         /// <summary>
         /// Test seam: when non-empty, overrides the serialized world name for
@@ -124,6 +129,14 @@ namespace Cubeglass.Unity.Input
             SeedPlayerFromSpawn();
         }
 
+        private void Update()
+        {
+            if (!seeded)
+            {
+                SeedPlayerFromSpawn();
+            }
+        }
+
         /// <summary>Destroys the store after draining queued writes.</summary>
         private void OnDestroy()
         {
@@ -136,11 +149,24 @@ namespace Cubeglass.Unity.Input
 
         private void SeedPlayerFromSpawn()
         {
-            if (bridge == null || playerRoot == null || !bridge.EnsureInitialized())
+            if (seeded)
             {
                 return;
             }
 
+            if (bridge == null || playerRoot == null)
+            {
+                WarnSeedDeferred("the bridge or the player root is not wired");
+                return;
+            }
+
+            if (!bridge.EnsureInitialized())
+            {
+                WarnSeedDeferred("the bridge is not initialized yet");
+                return;
+            }
+
+            seeded = true;
             Vector3 unity = playerRoot.transform.position;
             Vec3 position = UnityConvert.ToUnity(new Vec3(unity.x, unity.y, unity.z));
             Vector3 forward = playerRoot.transform.forward;
@@ -148,6 +174,25 @@ namespace Cubeglass.Unity.Input
             bridge.Player.Position = position;
             bridge.Player.YawRadians = yaw;
             playerRoot.SetPlayerPose(position, yaw);
+        }
+
+        /// <summary>
+        /// Review M-1: a one-shot seed that silently no-ops leaves the player
+        /// at the internal origin (far below/inside the terrain). Warn once and
+        /// let <c>Update</c> retry on later frames, so a bridge that finishes
+        /// initializing after <c>Start</c> still seeds the authored spawn.
+        /// </summary>
+        private void WarnSeedDeferred(string reason)
+        {
+            if (seedRetryWarned)
+            {
+                return;
+            }
+
+            seedRetryWarned = true;
+            Debug.LogWarning(
+                "GameBoot: could not seed the player from the scene spawn because " + reason
+                + "; retrying every frame until the bridge is ready.");
         }
     }
 }
