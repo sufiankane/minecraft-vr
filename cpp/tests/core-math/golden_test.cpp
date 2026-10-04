@@ -275,4 +275,81 @@ TEST(GoldenFixture, AllCasesMatchFixture) {
     EXPECT_EQ(DispatcherOps(), fixture_ops) << "every dispatch branch must be reachable from the fixture";
 }
 
+/// CXX-16: independent recomputation of golden values, decoupled from the
+/// JSON fixture. Every expected constant below is hand-derived and written
+/// literally with its derivation in the comment; nothing is read from
+/// `transforms.json`, so a corrupted fixture (or one regenerated from the
+/// implementation, which would be tautological) cannot make this pass. The
+/// fixture driver above covers the whole op surface; this test re-derives the
+/// arithmetic for the same cases from first principles. A Python derivation
+/// script was deliberately not added: the constants below are small enough to
+/// verify by hand, and a generator would have to re-implement the maths it is
+/// meant to cross-check.
+TEST(GoldenFixture, HandDerivedConstantsMatchIndependently) {
+    // sqrt(2)/2 = sin/cos of 45 degrees, to 32 significant digits.
+    constexpr double kSqrt2Over2 = 0.70710678118654752440084436210485;
+    // cos(22.5 deg) and sin(22.5 deg) (half of the 45-degree half-angle used
+    // by a halfway slerp between identity and a 90-degree rotation).
+    constexpr double kCos22_5 = 0.92387953251128675612818318939679;
+    constexpr double kSin22_5 = 0.38268343236508977172845998403040;
+
+    const Quat yaw90 = Quat::FromComponents(kSqrt2Over2, 0.0, kSqrt2Over2, 0.0);
+    const Quat pitch90 = Quat::FromComponents(kSqrt2Over2, kSqrt2Over2, 0.0, 0.0);
+
+    // Hamilton product (w1*w2 - v1.v2, w1*v2 + w2*v1 + v1 x v2) for
+    // v1 = (0,s,0), v2 = (s,0,0), s^2 = 1/2:
+    //   w = s^2 = 1/2, x = s^2 = 1/2, y = s^2 = 1/2, z = -s^2 = -1/2.
+    const Quat product = yaw90 * pitch90;
+    EXPECT_NEAR(product.w(), 0.5, 1e-15);
+    EXPECT_NEAR(product.x(), 0.5, 1e-15);
+    EXPECT_NEAR(product.y(), 0.5, 1e-15);
+    EXPECT_NEAR(product.z(), -0.5, 1e-15);
+
+    // A +90-degree pitch about +X carries +Y to +Z; a +90-degree yaw about +Y
+    // carries -Z to -X (right-handed, y up).
+    const Vec3 pitched_up = pitch90.Rotate(Vec3{0.0, 1.0, 0.0});
+    EXPECT_NEAR(pitched_up.x, 0.0, 1e-15);
+    EXPECT_NEAR(pitched_up.y, 0.0, 1e-15);
+    EXPECT_NEAR(pitched_up.z, 1.0, 1e-15);
+    const Vec3 yawed_forward = yaw90.Rotate(Vec3{0.0, 0.0, -1.0});
+    EXPECT_NEAR(yawed_forward.x, -1.0, 1e-15);
+    EXPECT_NEAR(yawed_forward.y, 0.0, 1e-15);
+    EXPECT_NEAR(yawed_forward.z, 0.0, 1e-15);
+
+    // A halfway slerp to a 90-degree rotation is a 45-degree rotation:
+    // (cos 22.5 deg, 0, sin 22.5 deg, 0).
+    const Quat midpoint = Slerp(Quat::kIdentity, yaw90, 0.5);
+    EXPECT_NEAR(midpoint.w(), kCos22_5, 1e-15);
+    EXPECT_NEAR(midpoint.x(), 0.0, 1e-15);
+    EXPECT_NEAR(midpoint.y(), kSin22_5, 1e-15);
+    EXPECT_NEAR(midpoint.z(), 0.0, 1e-15);
+
+    // pose_compose: child origin (0,0,-1) under a yaw-90 parent at (1,2,3)
+    // rotates to (-1,0,0), so the child lands at (1-1, 2, 3) = (0, 2, 3).
+    const Pose parent{Pose{Vec3{1.0, 2.0, 3.0}, yaw90}};
+    const Pose child{Pose{Vec3{0.0, 0.0, -1.0}, Quat::kIdentity}};
+    const Pose composed = Compose(parent, child);
+    EXPECT_NEAR(composed.position.x, 0.0, 1e-15);
+    EXPECT_NEAR(composed.position.y, 2.0, 1e-15);
+    EXPECT_NEAR(composed.position.z, 3.0, 1e-15);
+
+    // clock_map: every offset host_ns - sdk_seconds*1e9 is an exact integer.
+    // Odd case offsets: {500000, 400000, 600000} -> median 500000, so
+    // 4.0 s maps to 4'000'000'000 + 500'000. Even case offsets:
+    // {400000, 500000, 600000, 400000} -> sorted {400000, 400000, 500000,
+    // 600000} -> median (400000+500000)/2 = 450000, so 5.0 s maps to
+    // 5'000'000'000 + 450'000.
+    ClockMapper odd;
+    odd.AddSample(1.0, 1'000'500'000);
+    odd.AddSample(2.0, 2'000'400'000);
+    odd.AddSample(3.0, 3'000'600'000);
+    EXPECT_EQ(odd.Map(4.0), 4'000'500'000);
+    ClockMapper even;
+    even.AddSample(1.0, 1'000'400'000);
+    even.AddSample(2.0, 2'000'500'000);
+    even.AddSample(3.0, 3'000'600'000);
+    even.AddSample(4.0, 4'000'400'000);
+    EXPECT_EQ(even.Map(5.0), 5'000'450'000);
+}
+
 } // namespace
