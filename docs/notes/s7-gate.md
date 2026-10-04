@@ -19,19 +19,21 @@
 
 | Suite | Result | Counts |
 | --- | --- | --- |
-| EditMode | Passed | `total=100 passed=100 failed=0 skipped=0` |
-| PlayMode | Passed | `total=40 passed=40 failed=0 skipped=0` |
+| EditMode | Passed | `total=111 passed=111 failed=0 skipped=0` |
+| PlayMode | Passed | `total=44 passed=44 failed=0 skipped=0` |
 
-EditMode (100) is the S6 suite plus the S7 input/rendering additions:
-Rendering.Tests 51 (rig, overlay, window, PlayerRoot, chunk views, input
-mapping, gaze, comfort), Input.Tests 29, Bridge.Tests 10, CoreMathTests 5,
-Editor.Tests 4 (the discriminating spawn-column pins added by the Task 4d
-fix rounds), Placeholder 1. PlayMode (40) is the S6 rig/frame-budget tests plus
-the S7 chunk-view, gameplay, persistence and game-scene suites in
+EditMode (111) is the S6 suite plus the S7 input/rendering additions:
+Rendering.Tests 55 (rig, overlay, window, PlayerRoot, chunk views, input
+mapping, gaze, comfort, the committed-game-scene window/HUD composition pins
+and the pose-selector fallback contract), Input.Tests 36, Bridge.Tests 10,
+CoreMathTests 5, Editor.Tests 4 (the discriminating spawn-column pins added by
+the Task 4d fix rounds), Placeholder 1. PlayMode (44) is the S6 rig/frame-budget
+tests plus the S7 chunk-view, gameplay, persistence and game-scene suites in
 `Cubeglass.Unity.Rendering.PlayTests.dll`; Task 4d adds the game-scene
 frame-budget measurement
 (`GameFrameBudgetPlayModeTests.GameSceneHoldsTheFrameBudgetAtViewDistanceEight`,
-section 6).
+section 6), and the S7 review fix round adds the hotbar-anchor viewport check,
+the failed-write flush checks and the remesh-failure pool-release check.
 
 Commands (from the repository root):
 
@@ -128,6 +130,18 @@ Two Criticals were found in review and fixed with pre-fix failure evidence
    `QueuedWritesIncludesTheInFlightWrite` (both failed against the pre-fix
    store). In-session unload/reload keeps unflushed edits, and `Dispose`
    completes pending flush waiters.
+3. **Silent failed-write flush (S7 review fix).** `FlushAsync` treated a
+   failed write as a finished one, so a quit immediately after an IO error
+   reported a clean flush and dropped the edits. `FileWorldStore.FlushAsync`
+   now returns `FlushResult { Completed, FailedWrites }`, failures are latched
+   until a drain reports them (so the empty-queue fast path cannot hide an
+   earlier failure), and `SaveBatches.Flush` logs an error and counts
+   `FailedFlushes` when a completed drain had failed writes. Regressions:
+   `FailedWriteSurfacesANonSuccessFlushAndKeepsThePreviousFile` (failed flush
+   reports the failure, the previous complete file is byte-identical
+   afterwards, and the store recovers once the lock is released) and
+   `QuitFlushReportsFailedWritesLoudly` (the quit path logs the failure and
+   does not count a timeout).
 
 ## 6. Frame-time record (M1 content load)
 
@@ -140,16 +154,19 @@ eye). `frame` is the slice tick + stereo render submission; `render` is the two
 
 | Statistic | Off frame (ms) | Off render (ms) | On frame (ms) | On render (ms) |
 | --- | ---: | ---: | ---: | ---: |
-| mean | 1.392 | 1.214 | 1.411 | 1.230 |
-| p50 | 1.293 | 1.114 | 1.309 | 1.132 |
-| p95 | 2.141 | 1.898 | 2.177 | 1.930 |
-| p99 | 2.749 | 2.547 | 2.875 | 2.645 |
+| mean | 1.178 | 1.024 | 1.219 | 1.061 |
+| p50 | 1.136 | 0.982 | 1.162 | 1.011 |
+| p95 | 1.576 | 1.393 | 1.645 | 1.429 |
+| p99 | 2.020 | 1.854 | 2.004 | 1.824 |
 
-Target: **≤ 11.1 ms** at 90 Hz (ADR-0010). Observed headroom is **8.0×** at the
-mean and **4.0×** at p99 (overlay off; 7.9×/3.9× with the overlay enabled). The
+Target: **≤ 11.1 ms** at 90 Hz (ADR-0010). Observed headroom is **9.4×** at the
+mean and **5.5×** at p99 (overlay off; 9.1×/5.5× with the overlay enabled). The
 number is CPU-side submission in the headless PlayMode lane, not a presented
 GPU frame; the RTX 5070 p99 requirement on the glasses is HIL/player-build
-verified (section 11).
+verified (section 11). The table is the S7 review fix re-run (2026-10-04) of the
+same committed scene, which now carries the `WindowManager`; it supersedes the
+initial Task 4d record (mean 1.392 ms off / p99 2.749 ms off) and sits inside
+the recorded editor-process variance.
 
 Machine: AMD Ryzen AI 9 365 w/ Radeon 880M (20 logical CPUs), 23 GiB RAM,
 NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
@@ -158,12 +175,19 @@ NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
 ## 7. Scenes and build settings
 
 - `unity/Cubeglass/Assets/Scenes/Game.unity` — SHA-256
+  `2B97305E45F6E8B5ED130B33F6DBC6F589B2DB8278C3E063B7A72DF3A0627767`
+  (S7 review fix re-run, 2026-10-04; two consecutive rebuilds are
+  byte-identical). The rebuild adds the `WindowManager` (borderless fullscreen,
+  90 Hz, primary display, `applyInEditor` off — wired from the rig's
+  `StereoRigConfig` exactly like calibration) and pins the eye-height HUD
+  anchor (`AnchorEyeHeight` 0.9 m, `AnchorDropMeters` 0.2 m) in the committed
+  scene; the earlier Task 4d hash was
   `E4179B18C9FFE36F40F339C5C6938D18176A287C32CC72AC9AB6702A9BDCEE3C`.
   Rebuilt during the Task 4d fix rounds with the corrected spawn sampler: the
   builder now samples the height at the internal column the authored Unity
   spawn cell mirrors to (`internalZ = -unityZ`, floored: `(8, -9)`) instead of
   the naive `(8, 8)`, and places the Unity spawn back at the mirror of that
-  cell centre. The rebuilt bytes are unchanged because the seed-1 column
+  cell centre. The rebuilt bytes were unchanged because the seed-1 column
   heights coincide (`HeightAt(8, 8, 1) = HeightAt(8, -9, 1) = 10`), which is
   exactly the coincidence the fix removes. `Cubeglass.Editor.Tests` pins the
   contract discriminatingly: `InternalColumnForUnity` is asserted directly for
@@ -196,10 +220,10 @@ NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
 ## 8. Local lanes
 
 `powershell -File scripts/ci-local.ps1 -SkipUnity` → **ALL LANES PASS** (exit
-0): python-env 6.7 s, cpp-windows 12.4 s (ctest 5/5), dotnet 22.7 s (463
-tests: 78 + 118 + 24 + 156 + 87), python 2 s (45 tests), depcheck 0.3 s, unity
+0): python-env 6.7 s, cpp-windows 16.8 s (ctest 5/5), dotnet 19.3 s (471
+tests: 78 + 121 + 24 + 161 + 87), python 2.3 s (45 tests), depcheck 0.3 s, unity
 SKIP. The Unity lane was exercised separately with the two `unity test`
-commands in section 1 (both exit 0; EditMode 100/100, PlayMode 40/40,
+commands in section 1 (both exit 0; EditMode 111/111, PlayMode 44/44,
 0 skipped).
 
 ## 9. CI verification (merged S7 PRs)
@@ -295,6 +319,16 @@ Known non-blocking items; none affects the software half of the exit gate:
   assembly `Cubeglass.Voxel.dll` optionally references; the sync script copies
   only the four Cubeglass assemblies and the runtime never touches
   `BlockRegistry`. Revisit if the managed plugins change.
+- **Monocular left-eye HUD (stereo depth deferred to M2+).** The whole HUD
+  (reticle + hotbar) is one screen-space IMGUI pass projected through the left
+  eye camera only, so in the 3840×1080 side-by-side target it is composited
+  into the left half and the right eye sees no HUD. The reticle is
+  screen-centred, so its apparent direction is the same for both eye views; the
+  hotbar is placed inside the per-eye vertical FOV at eye height with a 0.2 m
+  world-locked drop (ADR-0011, `ComfortTests.HotbarAnchorSitsInsideTheDefaultPerEyeFov`).
+  Per-eye HUD geometry with genuine stereo depth is M2+ work; the S7 HIL
+  checklist asks the owner to confirm left-eye readability and right-eye
+  comfort on the glasses.
 
 Additional carried notes (documented in the task reports, not blockers): the
 quit/pause flush has a bounded 2 s wait; `SaveBatches` retains each chunk's

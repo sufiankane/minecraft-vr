@@ -164,6 +164,31 @@ compacts; a cached reference would send edits to a detached world whose
 `ChunkChanged` no longer reaches the remesh subscription. Re-resolving was
 chosen over a `WorldReplaced` callback on the manager as the smaller change.
 
+### HUD placement and SBS presentation (S7 review fix)
+
+- The hotbar anchors at the rig's eye height — `PlayerRoot` feet plus
+  `PlayerRoot.EyeHeightMeters` (0.9 m) — at a documented forward distance
+  (`WorldUi.DefaultAnchorDistanceMeters`, 1.5 m) with a small **world-locked
+  drop** (`WorldUi.DefaultAnchorDropMeters`, 0.2 m, ≈7.6° below the eye axis).
+  For the ADR-0010 default 45° per-eye horizontal FOV at 16:9 per eye
+  (vertical half-FOV ≈13.1°), the strip's bottom edge is ≈9.8° below the
+  axis, inside the frustum; the old feet-anchored composition put the strip
+  ≈31° below the eye and off-screen. `ComfortTests` pins the anchor maths and
+  the per-eye FOV margin, and `GameSceneCompositionTests`/
+  `GameScenePlayModeTests` pin the committed scene values and the on-screen
+  projection.
+- The HUD remains a single screen-space IMGUI pass projected through the
+  **left eye camera only**: in the 3840×1080 side-by-side target the left eye
+  sees the reticle and hotbar and the right eye sees none, and there is no
+  stereo depth. The reticle is screen-centred, so its direction is the same
+  for both eye views. A per-eye/world-space HUD with stereo depth is deferred
+  to M2+; the S7 HIL checklist records the monocular presentation as known.
+- The calibration scene's `SyntheticPoseDrive` follows the same input
+  contract: `InputFrame.TurnSnap` is a degrees-per-second rate integrated with
+  the frame delta, and the discrete snap edge (F / Shift+F) is consumed once
+  per frame through `ISnapInputSource` like `GameplayBridge`, never multiplied
+  by `dt`.
+
 ## Consequences
 
 - Good: one conversion each way; a mirrored world cannot silently pass because
@@ -188,12 +213,17 @@ chosen over a `WorldReplaced` callback on the manager as the smaller change.
 - EditMode: `ChunkViewEditModeTests` six-face cross products after the mirror;
   `LateLatchPoseTests` head-relative rotation, ignored position and recentre
   baseline; `PlayerRootTests` conversion and heading; `InputMappingTests`
-  degrees-per-second turn and the signed snap direction edge.
+  degrees-per-second turn and the signed snap direction edge; `ComfortTests`
+  hotbar eye-height anchor and default-FOV margin; `SyntheticPoseDriveTests`
+  calibration turn-snap integration and one-shot snap edge;
+  `GameSceneCompositionTests` the committed Game scene's window config and HUD
+  anchor wiring.
 - PlayMode: gaze ray hits the rendered surface in front; dirty remesh after
   break/place; a multi-chunk dirty burst respects the per-frame upload cap; an
   edit after a world compaction still remeshes through the live world;
   45 deg/s scripted turn yields 45 degrees; snap edge survives pose ticks;
-  recentre clears heading and head offset.
+  recentre clears heading and head offset; the hotbar anchor projects inside
+  the left camera viewport of the committed scene.
 - `LEDGER`/review: no adapter contains a second Z-flip; the mesh path's mirror
   and winding flip appear in the same function.
 
