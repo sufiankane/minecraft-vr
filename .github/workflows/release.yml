@@ -409,9 +409,19 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        with:
-          global-json-file: dotnet/global.json
+      # The runner is a controlled machine that already has the pinned SDK, and
+      # actions/setup-dotnet cannot install into C:\Program Files\dotnet without
+      # elevation (it failed on the first self-hosted dispatch). Verify instead.
+      - name: Verify the pinned .NET SDK (self-hosted)
+        shell: powershell
+        run: |
+          $wanted = (Get-Content dotnet/global.json -Raw | ConvertFrom-Json).sdk.version
+          $installed = @(& dotnet --list-sdks)
+          if (-not ($installed | Where-Object { $_ -match ('^' + [regex]::Escape($wanted)) })) {
+            Write-Host "::error::The self-hosted runner needs .NET SDK $wanted (dotnet/global.json); installed: $($installed -join '; '). Install it with winget or the official installer, then re-run."
+            exit 1
+          }
+          Write-Host "dotnet SDK $wanted present."
 
       - name: Build the managed plugins (Release)
         shell: powershell
