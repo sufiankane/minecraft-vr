@@ -239,6 +239,9 @@ truth for what is enforced where.
 does not run on pull requests or pushes. The `build_target` input chooses one of
 two build routes and skips the other job:
 
+The licensing and test-gating decision behind the two routes is recorded in
+[ADR-0012](adr/0012-ci-unity-licensing-and-release-routes.md).
+
 | Route | Runner | Unity licence | Unity suites |
 | --- | --- | --- | --- |
 | `hosted` (default) | `windows-latest` | `UNITY_LICENSE` alone (offline `.ulf`) **or** `UNITY_SERIAL` alone (serial) | EditMode + PlayMode before the build |
@@ -270,7 +273,7 @@ With credentials present it builds the managed plugins
 `scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` target from the
 pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
 `unity/Cubeglass/Assets/Plugins/win-x64/`. The staged DLLs are git-ignored, so
-`allowDirtyBuild: false` still holds.
+the checkout stays clean for the builder.
 
 Tagged releases are test-gated on both routes. Per-PR CI does not run Unity (the
 required jobs are secret-free and `windows-latest` has no editor), so
@@ -335,7 +338,7 @@ needs neither (it uses the machine's Hub activation):
 | Mode | Secrets | Command | Needs |
 | --- | --- | --- | --- |
 | Offline licence file | `UNITY_LICENSE` only | `unity license activate --file` | a Personal/Student `.ulf` from license.unity3d.com/manual |
-| Serial | `UNITY_SERIAL` | `unity license activate --serial` | a Plus/Pro/Education serial |
+| Serial | `UNITY_SERIAL` only | `unity license activate --serial` | a Plus/Pro/Education serial |
 | Floating licence server | — | `unity license activate --floating` | a reachable Unity licence server; not wired into the workflow |
 | Self-hosted runner with Hub activation | none | — | the licensed Windows machine — the `self-hosted` route |
 
