@@ -18,6 +18,10 @@ namespace cg::core_math {
 ///
 /// Defined behaviours:
 /// - before any sample the offset is zero, so `Map(sdk) == ToNanoseconds(sdk)`;
+/// - the first `AddSample` anchors the window, so mapping that sample's SDK
+///   instant returns its host time exactly (the adapter records the sample
+///   before its first `Map`, so a published `HeadSample::time` is never in the
+///   SDK's own epoch; a regression reset re-seeds the window the same way);
 /// - a non-finite `sdk_seconds` passed to `AddSample` is ignored;
 /// - `Map` of a non-finite `sdk_seconds` returns 0 (never undefined);
 /// - `IsReady` reports true from `kReadySampleCount` samples onward.

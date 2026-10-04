@@ -139,6 +139,26 @@ TEST(ClockMapperTest, MapBeforeFirstSampleIsPureConversion) {
     EXPECT_EQ(mapper.Map(-1.25), ToNanoseconds(-1.25));
 }
 
+/// CXX-06 rule: the *first* recorded sample anchors the map. The adapter
+/// records the SDK sample before its first `Map`, so the published instant is
+/// that sample's host `now` and the SDK's own seconds epoch never leaks. This
+/// pins the exactly-representable case and the reset/seeding rule.
+TEST(ClockMapperTest, FirstSampleAnchorsTheMapToItsHostTime) {
+    ClockMapper mapper;
+    // Exactly representable: offset = 1.0 - 1234.0, Map(1234.0) == 1.0 s.
+    mapper.AddSample(1234.0, 1'000'000'000);
+
+    EXPECT_EQ(mapper.SampleCount(), 1U);
+    EXPECT_DOUBLE_EQ(mapper.OffsetSeconds(), -1233.0);
+    EXPECT_EQ(mapper.Map(1234.0), 1'000'000'000);
+
+    // A fresh mapper seeded from a later sample re-anchors (the adapter's
+    // regression-reset path): the same SDK instant maps to the new host time.
+    ClockMapper reseeded;
+    reseeded.AddSample(1234.0, 9'000'000'000);
+    EXPECT_EQ(reseeded.Map(1234.0), 9'000'000'000);
+}
+
 TEST(ClockMapperTest, NonFiniteMapQueryIsZero) {
     ClockMapper mapper;
     mapper.AddSample(1.0, HostAt(1.0, 0.5));
