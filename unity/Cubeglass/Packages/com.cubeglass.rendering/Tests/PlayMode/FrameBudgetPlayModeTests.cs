@@ -26,10 +26,16 @@ namespace Cubeglass.Unity.Rendering.PlayTests
     /// scene tick, not the Game View present or IMGUI. The measurement forces
     /// the synthetic pose provider (<see cref="PoseProviderSelector.ForceSyntheticForTests"/>)
     /// exactly like the game-scene smoke and budget, so a live bridge region on
-    /// the machine cannot change the measured path. The measured number is the
-    /// wall time of one full stereo frame (both eye renders) on the machine that
-    /// ran the suite; it is evidence, not a hard CI gate, so the test does not
-    /// fail when the budget is missed.
+    /// the machine cannot change the measured path.
+    /// <para>
+    /// Review I-11: the recorded p99 is asserted against a documented headless
+    /// ceiling so a regression fails the release lane. The measured number is
+    /// a CPU-side proxy (render submission + scene tick, no present and no
+    /// GPU completion); the real ADR-0010 11.1 ms frame budget is
+    /// HIL/player-verified. The ceiling is set from the release machine's
+    /// measured p99 with ~2x headroom, so scheduler noise does not trip it but
+    /// a real regression does.
+    /// </para>
     /// </remarks>
     public class FrameBudgetPlayModeTests
     {
@@ -50,6 +56,18 @@ namespace Cubeglass.Unity.Rendering.PlayTests
 
         /// <summary>ADR-0010 target frame time at 90 Hz.</summary>
         public const double TargetFrameMilliseconds = 11.1;
+
+        /// <summary>
+        /// Review I-11 headless p99 ceiling in milliseconds. This is a CPU-side
+        /// proxy for frame cost (render submission plus scene tick, no present,
+        /// no GPU wait), not the ADR-0010 11.1 ms GPU budget; the GPU budget is
+        /// HIL/player-verified. The review suggested 5 ms, but the release
+        /// machine measured 6.1 ms p99 (mean 2.0 ms) with background load, so
+        /// the documented headless ceiling is 15 ms: about twice the observed
+        /// p99, generous enough not to fail on scheduler noise, while a real
+        /// regression (co-changed with this lane) still trips it.
+        /// </summary>
+        public const double HeadlessP99CeilingMilliseconds = 15.0;
 
         private Scene calibrationScene;
         private StereoRig rig;
@@ -191,6 +209,13 @@ namespace Cubeglass.Unity.Rendering.PlayTests
 
             Assert.AreEqual(MeasuredFrames, frames, "600 measured frames elapsed");
             Assert.Greater(mean, 0.0, "the measured frame time is positive");
+            Assert.LessOrEqual(
+                p99,
+                HeadlessP99CeilingMilliseconds,
+                "render p99 {0:F3} ms exceeds the documented headless ceiling {1:F1} ms (review I-11); "
+                + "this is a CPU-side proxy, not the 11.1 ms GPU budget",
+                p99,
+                HeadlessP99CeilingMilliseconds);
         }
 
         [Serializable]
@@ -205,6 +230,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             public int warmupFrames;
             public int measuredFrames;
             public float targetFrameMilliseconds;
+            public float headlessP99CeilingMilliseconds;
             public float meanMilliseconds;
             public float medianMilliseconds;
             public float p95Milliseconds;
@@ -236,6 +262,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
                 warmupFrames = WarmupFrames,
                 measuredFrames = MeasuredFrames,
                 targetFrameMilliseconds = (float)TargetFrameMilliseconds,
+                headlessP99CeilingMilliseconds = (float)HeadlessP99CeilingMilliseconds,
                 meanMilliseconds = (float)mean,
                 medianMilliseconds = (float)median,
                 p95Milliseconds = (float)p95,
