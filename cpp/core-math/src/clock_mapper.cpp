@@ -6,11 +6,21 @@
 
 namespace cg::core_math {
 
+namespace {
+
+/// Median of an even sample count averages the two middle samples.
+constexpr double kEvenMedianDivisor = 2.0;
+
+} // namespace
+
 void ClockMapper::AddSample(double sdk_seconds, HostTime host_time) noexcept {
     if (!std::isfinite(sdk_seconds)) {
         return;
     }
 
+    // `next_sample_` is maintained modulo kWindowSize by the line below.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index,
+    // cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
     offsets_[next_sample_] = static_cast<double>(host_time) / static_cast<double>(kNanosecondsPerSecond) - sdk_seconds;
     next_sample_ = (next_sample_ + 1) % kWindowSize;
     if (sample_count_ < kWindowSize) {
@@ -28,9 +38,16 @@ double ClockMapper::OffsetSeconds() const noexcept {
 
     const std::size_t middle = sample_count_ / 2;
     if (sample_count_ % 2 != 0) {
+        // `middle` is in [0, sample_count_) and sample_count_ <= kWindowSize.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index,
+        // cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
         return sorted[middle];
     }
-    return (sorted[middle - 1] + sorted[middle]) / 2.0;
+    // `middle - 1` and `middle` are in [0, sample_count_) because an even
+    // count of at least two is guaranteed here.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index,
+    // cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
+    return (sorted[middle - 1] + sorted[middle]) / kEvenMedianDivisor;
 }
 
 HostTime ClockMapper::Map(double sdk_seconds) const noexcept {

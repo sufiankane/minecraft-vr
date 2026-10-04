@@ -14,6 +14,10 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegreesToRadians = kPi / 180.0;
 constexpr std::int64_t kMaxPredictNs = 100'000'000;
 
+/// Maps the RNG's unit interval to [-1, 1]: `scale * unit - offset`.
+constexpr double kUnitToSignedScale = 2.0;
+constexpr double kUnitToSignedOffset = 1.0;
+
 } // namespace
 
 FakeScript FakeScript::Static() noexcept { return FakeScript{}; }
@@ -32,6 +36,10 @@ FakeScript FakeScript::PitchSweep(double degrees_per_second) noexcept {
     return script;
 }
 
+// The factory parameters are positional integers mirroring the script
+// vocabulary (`after`, `count`); a wrapper type would not make the call sites
+// clearer.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 FakeScript FakeScript::Dropout(std::uint64_t after, std::uint64_t count) noexcept {
     FakeScript script;
     script.pattern = Pattern::Dropout;
@@ -40,6 +48,7 @@ FakeScript FakeScript::Dropout(std::uint64_t after, std::uint64_t count) noexcep
     return script;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 FakeScript FakeScript::Unstable(std::uint64_t after, std::uint64_t count) noexcept {
     FakeScript script;
     script.pattern = Pattern::Unstable;
@@ -48,6 +57,7 @@ FakeScript FakeScript::Unstable(std::uint64_t after, std::uint64_t count) noexce
     return script;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 FakeScript FakeScript::Jitter(double amplitude_degrees, std::uint32_t seed) noexcept {
     FakeScript script;
     script.pattern = Pattern::Jitter;
@@ -217,7 +227,7 @@ core_math::Quat FakeHeadPoseSource::RawRotation() const noexcept {
 
 double FakeHeadPoseSource::RandomSymmetric(double amplitude) noexcept {
     const double unit = static_cast<double>(rng_()) / static_cast<double>(std::mt19937::max());
-    return (2.0 * unit - 1.0) * amplitude;
+    return (kUnitToSignedScale * unit - kUnitToSignedOffset) * amplitude;
 }
 
 } // namespace cg::glasses

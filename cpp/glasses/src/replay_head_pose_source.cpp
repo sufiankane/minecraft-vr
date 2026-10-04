@@ -1,6 +1,7 @@
 #include "cg/glasses/replay_head_pose_source.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <fstream>
@@ -25,8 +26,12 @@ constexpr double kDegreesToRadians = kPi / 180.0;
 constexpr std::int64_t kMaxPredictNs = 100'000'000;
 constexpr std::size_t kColumnCount = 10;
 
-constexpr std::string_view kHeaderColumns[kColumnCount] = {"host_time_ns", "sdk_time_s", "px", "py", "pz",
-                                                           "qw",           "qx",         "qy", "qz", "status"};
+constexpr std::size_t kFirstPositionColumn = 2;
+constexpr std::size_t kFirstQuaternionColumn = 5;
+constexpr std::size_t kStatusColumn = 9;
+
+constexpr std::array<std::string_view, kColumnCount> kHeaderColumns{"host_time_ns", "sdk_time_s", "px", "py", "pz",
+                                                                    "qw",           "qx",         "qy", "qz", "status"};
 
 [[nodiscard]] std::string_view Trim(std::string_view text) noexcept {
     const auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
@@ -57,9 +62,12 @@ constexpr std::string_view kHeaderColumns[kColumnCount] = {"host_time_ns", "sdk_
     if (text.empty()) {
         return false;
     }
-    const char *first = text.data();
+    // `from_chars` takes a pointer range, so one past-the-end pointer must be
+    // formed; both bounds point into the same string_view.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     const char *last = text.data() + text.size();
-    const std::from_chars_result result = std::from_chars(first, last, out);
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+    const std::from_chars_result result = std::from_chars(text.data(), last, out);
     return result.ec == std::errc{} && result.ptr == last;
 }
 
@@ -67,9 +75,10 @@ constexpr std::string_view kHeaderColumns[kColumnCount] = {"host_time_ns", "sdk_
     if (text.empty()) {
         return false;
     }
-    const char *first = text.data();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     const char *last = text.data() + text.size();
-    const std::from_chars_result result = std::from_chars(first, last, out, std::chars_format::general);
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage)
+    const std::from_chars_result result = std::from_chars(text.data(), last, out, std::chars_format::general);
     return result.ec == std::errc{} && result.ptr == last && std::isfinite(out);
 }
 
@@ -88,7 +97,7 @@ constexpr std::string_view kHeaderColumns[kColumnCount] = {"host_time_ns", "sdk_
         return false;
     }
     for (std::size_t column = 0; column < kColumnCount; ++column) {
-        if (Trim(fields[column]) != kHeaderColumns[column]) {
+        if (Trim(fields.at(column)) != kHeaderColumns.at(column)) {
             return false;
         }
     }
@@ -159,7 +168,7 @@ Result<void> ReplayHeadPoseSource::Load() {
         }
 
         std::int64_t host_time_ns = 0;
-        if (!ParseInt64(Trim(fields[0]), host_time_ns)) {
+        if (!ParseInt64(Trim(fields.at(0)), host_time_ns)) {
             return Fail(line_number, "host_time_ns is not an integer");
         }
         if (have_previous_time && host_time_ns <= previous_host_time) {
@@ -174,27 +183,27 @@ Result<void> ReplayHeadPoseSource::Load() {
         }
 
         double sdk_time_s = 0.0;
-        if (!ParseFiniteDouble(Trim(fields[1]), sdk_time_s)) {
+        if (!ParseFiniteDouble(Trim(fields.at(1)), sdk_time_s)) {
             return Fail(line_number, "sdk_time_s is not a finite number");
         }
 
-        double position[3] = {0.0, 0.0, 0.0};
-        constexpr std::string_view kPositionNames[3] = {"px", "py", "pz"};
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            if (!ParseFiniteDouble(Trim(fields[2 + axis]), position[axis])) {
-                return Fail(line_number, std::string(kPositionNames[axis]) + " is not a finite number");
+        std::array<double, 3> position{0.0, 0.0, 0.0};
+        constexpr std::array<std::string_view, 3> kPositionNames{"px", "py", "pz"};
+        for (std::size_t axis = 0; axis < position.size(); ++axis) {
+            if (!ParseFiniteDouble(Trim(fields.at(kFirstPositionColumn + axis)), position.at(axis))) {
+                return Fail(line_number, std::string(kPositionNames.at(axis)) + " is not a finite number");
             }
         }
 
-        double quaternion[4] = {0.0, 0.0, 0.0, 0.0};
-        constexpr std::string_view kQuaternionNames[4] = {"qw", "qx", "qy", "qz"};
-        for (std::size_t part = 0; part < 4; ++part) {
-            if (!ParseFiniteDouble(Trim(fields[5 + part]), quaternion[part])) {
-                return Fail(line_number, std::string(kQuaternionNames[part]) + " is not a finite number");
+        std::array<double, 4> quaternion{0.0, 0.0, 0.0, 0.0};
+        constexpr std::array<std::string_view, 4> kQuaternionNames{"qw", "qx", "qy", "qz"};
+        for (std::size_t part = 0; part < quaternion.size(); ++part) {
+            if (!ParseFiniteDouble(Trim(fields.at(kFirstQuaternionColumn + part)), quaternion.at(part))) {
+                return Fail(line_number, std::string(kQuaternionNames.at(part)) + " is not a finite number");
             }
         }
 
-        const std::string_view status_text = Trim(fields[9]);
+        const std::string_view status_text = Trim(fields.at(kStatusColumn));
         const std::string status = ToLowerAscii(status_text);
         TrackState state = TrackState::Stable;
         if (status == "stable") {
@@ -209,8 +218,8 @@ Result<void> ReplayHeadPoseSource::Load() {
         }
 
         const core_math::Pose pose{
-            core_math::Vec3{position[0], position[1], position[2]},
-            core_math::Quat::FromComponents(quaternion[0], quaternion[1], quaternion[2], quaternion[3])};
+            core_math::Vec3{position.at(0), position.at(1), position.at(2)},
+            core_math::Quat::FromComponents(quaternion.at(0), quaternion.at(1), quaternion.at(2), quaternion.at(3))};
         rows_.push_back(Row{host_time_ns, pose, state});
         previous_host_time = host_time_ns;
         have_previous_time = true;
@@ -241,7 +250,7 @@ void ReplayHeadPoseSource::PublishNext() noexcept {
     if (!running_.load(std::memory_order_acquire) || next_index_ >= rows_.size()) {
         return;
     }
-    const Row &row = rows_[next_index_++];
+    const Row &row = rows_.at(next_index_++);
     // Advance in unsigned arithmetic through the shared helper: a recorded
     // row time below the current clock (or a delta that cannot be represented)
     // advances nothing instead of invoking signed-overflow UB (CXX-05).

@@ -12,7 +12,15 @@ namespace cg::glasses {
 class IHostClock {
   public:
     virtual ~IHostClock() = default;
+    IHostClock(const IHostClock &) = delete;
+    IHostClock &operator=(const IHostClock &) = delete;
+    IHostClock(IHostClock &&) = delete;
+    IHostClock &operator=(IHostClock &&) = delete;
 
+  protected:
+    IHostClock() = default;
+
+  public:
     /// The current instant. No allocation, no exceptions.
     [[nodiscard]] virtual HostTime Now() const noexcept = 0;
 };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 
@@ -13,6 +14,9 @@ namespace cg::glasses {
 /// return sooner when `RequestStop()` was called. 100 ms spans four 25 Hz
 /// sample periods (dossier F-05), so a healthy poll never reaches the cap.
 inline constexpr std::int64_t kViturePollTimeoutNs = 100'000'000;
+
+/// Number of floats in the SDK pose layout `[px, py, pz, qw, qx, qy, qz]`.
+inline constexpr std::size_t kViturePoseFloatCount = 7;
 
 /// The seam between `cg-glasses` and the VITURE SDK (ADR-0001, ADR-0009).
 ///
@@ -50,7 +54,15 @@ inline constexpr std::int64_t kViturePollTimeoutNs = 100'000'000;
 class IVitureApi {
   public:
     virtual ~IVitureApi() = default;
+    IVitureApi(const IVitureApi &) = delete;
+    IVitureApi &operator=(const IVitureApi &) = delete;
+    IVitureApi(IVitureApi &&) = delete;
+    IVitureApi &operator=(IVitureApi &&) = delete;
 
+  protected:
+    IVitureApi() = default;
+
+  public:
     /// Creates and initialises the device, selecting 3DoF (dossier F-03).
     /// A second call without an intervening `DestroyDevice` is caller error.
     virtual Result<void> CreateDevice() = 0;
@@ -80,11 +92,12 @@ class IVitureApi {
     /// it publishes.
     virtual Result<cg_head_sample> PollPose() = 0;
 
-    /// Makes `pose`, layout `[px, py, pz, qw, qx, qy, qz]`, the new origin:
-    /// position and yaw take the given pose, pitch and roll stay
-    /// gravity-anchored (dossier F-04). Requires a live device and reports
-    /// `NotReady` when the device was destroyed or never created.
-    virtual Result<void> ResetOriginCarina(const float pose[7]) = 0;
+    /// Makes `pose`, layout `[px, py, pz, qw, qx, qy, qz]` (see
+    /// `kViturePoseFloatCount`), the new origin: position and yaw take the
+    /// given pose, pitch and roll stay gravity-anchored (dossier F-04).
+    /// Requires a live device and reports `NotReady` when the device was
+    /// destroyed or never created.
+    virtual Result<void> ResetOriginCarina(const std::array<float, kViturePoseFloatCount> &pose) = 0;
 
     /// Selects side-by-side display at `refresh_hz`. The exact vendor
     /// semantics are U-08 (pending HIL, ADR-0009).

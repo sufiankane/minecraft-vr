@@ -39,10 +39,18 @@ class PoseSlot {
     static constexpr int kMaxReadAttempts = 64;
 
     PoseSlot() noexcept = default;
+    ~PoseSlot() = default;
     PoseSlot(const PoseSlot &) = delete;
     PoseSlot &operator=(const PoseSlot &) = delete;
+    PoseSlot(PoseSlot &&) = delete;
+    PoseSlot &operator=(PoseSlot &&) = delete;
 
     /// Publishes `sample` as the newest value. Single writer only.
+    // The seqlock works on a fixed-size word buffer bounded by the compile-time
+    // `kWordCount` static asserts; checked indexing would add a throw path to
+    // the wait-free publish contract.
+    // NOLINTBEGIN(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+    // cppcoreguidelines-pro-bounds-constant-array-index)
     void Publish(const HeadSample &sample) noexcept {
         std::uint64_t words[kWordCount];
         std::memcpy(words, &sample, sizeof(HeadSample));
@@ -86,6 +94,8 @@ class PoseSlot {
         }
         return false;
     }
+    // NOLINTEND(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+    // cppcoreguidelines-pro-bounds-constant-array-index)
 
     /// Test-only publish seam, scoped to this slot instance (TD-002). When
     /// armed, `Publish` calls `hook(context)` after storing the odd version
@@ -125,6 +135,9 @@ class PoseSlot {
     TestPublishHook test_publish_hook_ = nullptr;
     void *test_publish_context_ = nullptr;
 
+    // The fixed C array is the wait-free seqlock storage; see the block
+    // comment in `Publish`.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
     mutable std::uint64_t payload_[kWordCount]{};
     // The atomic word accesses target `payload_` directly, so the storage's
     // own alignment is what matters (CXX-07); `HeadSample`'s alignment is

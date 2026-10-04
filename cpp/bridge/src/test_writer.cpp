@@ -13,7 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <new>
+#include <string_view>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -38,8 +40,15 @@ static_assert(kHandSlotOffset + sizeof(HandSlot) <= kTestRegionSize, "the test r
 static_assert(kShmAbiVersion == 2, "the test writer must publish the region ABI version it declares");
 
 #if defined(_WIN32)
+// A wide string literal is the natural form for the Win32 name; the length is
+// static_asserted against the narrow name below.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
 constexpr wchar_t kStateNameW[] = L"Local\\cubeglass.v1.state";
-static_assert(sizeof(kStateNameW) / sizeof(wchar_t) == sizeof(kStateName), "the wide name mirrors kStateName");
+// The wide literal decays into the view on purpose here (a constexpr length
+// comparison, not a runtime API call).
+// NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+static_assert(std::wstring_view{kStateNameW}.size() == std::string_view{kStateName}.size(),
+              "the wide name mirrors kStateName");
 #elif defined(__unix__) || defined(__APPLE__)
 constexpr char kPosixStateName[] = "/cubeglass.v1.state";
 #endif
@@ -57,7 +66,10 @@ struct WriterHandle {
     bool owns_region{false};
 };
 
-/// Single test writer per process; the production service is single-writer too.
+/// Single test writer per process; the production service is single-writer too,
+/// so this mirrors the production model. Guarded by the public API's
+/// single-writer checks rather than by a lock.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 WriterHandle *g_writer = nullptr;
 
 std::uint64_t current_pid() noexcept {
@@ -71,8 +83,13 @@ std::uint64_t current_pid() noexcept {
 }
 
 /// Stores a payload word-wise through relaxed atomic accesses (the writer side
-/// of the reader's `copy_payload`).
+/// of the reader's `copy_payload`). The fixed-size local words buffer and the
+/// typed-view casts are the deliberate shm construction documented in
+/// `shm_layout.hpp`; the bounds are the compile-time `kWords` static assert.
 template <typename Payload> void store_payload(Payload *shared, const Payload &payload) noexcept {
+    // NOLINTBEGIN(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+    // cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-bounds-pointer-arithmetic,
+    // cppcoreguidelines-pro-bounds-constant-array-index)
     constexpr std::size_t kWords = sizeof(Payload) / sizeof(std::uint64_t);
     static_assert(sizeof(Payload) % sizeof(std::uint64_t) == 0, "payload must be 8-byte sized");
     std::uint64_t words[kWords];
@@ -81,6 +98,9 @@ template <typename Payload> void store_payload(Payload *shared, const Payload &p
     for (std::size_t word = 0; word < kWords; ++word) {
         std::atomic_ref<std::uint64_t>(target[word]).store(words[word], std::memory_order_relaxed);
     }
+    // NOLINTEND(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+    // cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-bounds-pointer-arithmetic,
+    // cppcoreguidelines-pro-bounds-constant-array-index)
 }
 
 /// Publishes one seqlock payload: bump `seq_a` odd, fence, write the payload,
@@ -103,6 +123,7 @@ void initialize_region(std::uint8_t *base) noexcept {
     // with a release store. A reader that acquire-loads `magic` first
     // happens-after these stores and needs no further ordering.
     std::memset(base, 0, kTestRegionSize);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto *header = reinterpret_cast<ShmHeader *>(base);
     std::atomic_ref<std::uint64_t>(header->writer_pid).store(current_pid(), std::memory_order_relaxed);
     std::atomic_ref<std::uint32_t>(header->abi_version).store(kShmAbiVersion, std::memory_order_relaxed);
@@ -128,9 +149,10 @@ cg_status cg_test_writer_create(void) {
     if (cg::bridge::g_writer != nullptr) {
         return CG_ERR_INVALID_ARG;
     }
-    WriterHandle *writer = nullptr;
+    std::unique_ptr<WriterHandle> writer;
 #if defined(_WIN32)
     HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
                                         static_cast<DWORD>(cg::bridge::kTestRegionSize), cg::bridge::kStateNameW);
     if (mapping == nullptr) {
         return CG_ERR_INTERNAL;
@@ -140,7 +162,7 @@ cg_status cg_test_writer_create(void) {
         CloseHandle(mapping);
         return CG_ERR_INTERNAL;
     }
-    writer = new (std::nothrow) WriterHandle{};
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
     if (writer == nullptr) {
         UnmapViewOfFile(view);
         CloseHandle(mapping);
@@ -162,7 +184,7 @@ cg_status cg_test_writer_create(void) {
         close(fd);
         return CG_ERR_INTERNAL;
     }
-    writer = new (std::nothrow) WriterHandle{};
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
     if (writer == nullptr) {
         munmap(view, cg::bridge::kTestRegionSize);
         close(fd);
@@ -175,7 +197,7 @@ cg_status cg_test_writer_create(void) {
 #endif
     writer->owns_region = true;
     cg::bridge::initialize_region(writer->base);
-    cg::bridge::g_writer = writer;
+    cg::bridge::g_writer = writer.release();
     return CG_OK;
 }
 
@@ -184,8 +206,9 @@ cg_status cg_test_writer_open(void) {
     if (cg::bridge::g_writer != nullptr) {
         return CG_ERR_INVALID_ARG;
     }
-    WriterHandle *writer = nullptr;
+    std::unique_ptr<WriterHandle> writer;
 #if defined(_WIN32)
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
     HANDLE mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, cg::bridge::kStateNameW);
     if (mapping == nullptr) {
         return GetLastError() == ERROR_FILE_NOT_FOUND ? CG_ERR_NOT_READY : CG_ERR_INTERNAL;
@@ -195,7 +218,7 @@ cg_status cg_test_writer_open(void) {
         CloseHandle(mapping);
         return CG_ERR_INTERNAL;
     }
-    writer = new (std::nothrow) WriterHandle{};
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
     if (writer == nullptr) {
         UnmapViewOfFile(view);
         CloseHandle(mapping);
@@ -224,7 +247,7 @@ cg_status cg_test_writer_open(void) {
         close(fd);
         return CG_ERR_INTERNAL;
     }
-    writer = new (std::nothrow) WriterHandle{};
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
     if (writer == nullptr) {
         munmap(view, cg::bridge::kTestRegionSize);
         close(fd);
@@ -235,10 +258,12 @@ cg_status cg_test_writer_open(void) {
 #else
     return CG_ERR_UNSUPPORTED;
 #endif
-    cg::bridge::g_writer = writer;
     // Assert the region's version before publishing through it: a foreign
     // region (legacy v1, or a future layout) must never be written with this
     // layout. Magic is acquired first, matching the reader protocol.
+    // Typed view over the mapped header; the byte offset is the layout
+    // contract from shm_layout.hpp.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     const auto *header = reinterpret_cast<const cg::bridge::ShmHeader *>(writer->base);
     const std::uint64_t magic = std::atomic_ref<const std::uint64_t>(header->magic).load(std::memory_order_acquire);
     const std::uint32_t abi = std::atomic_ref<const std::uint32_t>(header->abi_version).load(std::memory_order_relaxed);
@@ -246,6 +271,7 @@ cg_status cg_test_writer_open(void) {
         cg_test_writer_close();
         return CG_ERR_UNSUPPORTED;
     }
+    cg::bridge::g_writer = writer.release();
     return CG_OK;
 }
 
@@ -256,6 +282,8 @@ void cg_test_writer_close(void) {
     }
     WriterHandle *writer = cg::bridge::g_writer;
     cg::bridge::g_writer = nullptr;
+    // Frees the handle once the platform resources below are released.
+    const std::unique_ptr<WriterHandle> owner{writer};
 #if defined(_WIN32)
     if (writer->base != nullptr) {
         UnmapViewOfFile(writer->base);
@@ -277,7 +305,6 @@ void cg_test_writer_close(void) {
         }
     }
 #endif
-    delete writer;
 }
 
 cg_status cg_test_writer_publish_head(const cg_head_sample *sample) {
@@ -285,6 +312,9 @@ cg_status cg_test_writer_publish_head(const cg_head_sample *sample) {
     if (cg::bridge::g_writer == nullptr || sample == nullptr) {
         return CG_ERR_INVALID_ARG;
     }
+    // The slot view is the 5.6 layout: a typed view at a fixed byte offset in
+    // the mapped region, bounded by the region-size static asserts.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-bounds-pointer-arithmetic)
     auto *slot = reinterpret_cast<HeadSlot *>(cg::bridge::g_writer->base + cg::bridge::kHeadSlotOffset);
     cg::bridge::publish_payload(slot->seq_a, slot->seq_b, slot->sample, *sample);
     return CG_OK;
@@ -295,6 +325,7 @@ cg_status cg_test_writer_publish_hands(const cg_hand_frame *frame) {
     if (cg::bridge::g_writer == nullptr || frame == nullptr) {
         return CG_ERR_INVALID_ARG;
     }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-bounds-pointer-arithmetic)
     auto *slot = reinterpret_cast<HandSlot *>(cg::bridge::g_writer->base + cg::bridge::kHandSlotOffset);
     cg::bridge::publish_payload(slot->seq_a, slot->seq_b, slot->frame, *frame);
     return CG_OK;
@@ -304,6 +335,7 @@ cg_status cg_test_writer_set_heartbeat(cg_time_ns heartbeat_ns) {
     if (cg::bridge::g_writer == nullptr) {
         return CG_ERR_INVALID_ARG;
     }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto *header = reinterpret_cast<cg::bridge::ShmHeader *>(cg::bridge::g_writer->base);
     std::atomic_ref<std::int64_t>(header->heartbeat_ns).store(heartbeat_ns, std::memory_order_release);
     return CG_OK;
@@ -314,6 +346,7 @@ cg_status cg_test_writer_publish_head_raw(uint64_t seq_a, uint64_t seq_b, const 
     if (cg::bridge::g_writer == nullptr || sample == nullptr) {
         return CG_ERR_INVALID_ARG;
     }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-bounds-pointer-arithmetic)
     auto *slot = reinterpret_cast<HeadSlot *>(cg::bridge::g_writer->base + cg::bridge::kHeadSlotOffset);
     slot->seq_a.store(seq_a, std::memory_order_relaxed);
     cg::bridge::store_payload(&slot->sample, *sample);
@@ -325,6 +358,7 @@ cg_status cg_test_writer_read_command(uint32_t *out_command, uint32_t *out_ack) 
     if (cg::bridge::g_writer == nullptr || (out_command == nullptr && out_ack == nullptr)) {
         return CG_ERR_INVALID_ARG;
     }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto *header = reinterpret_cast<cg::bridge::ShmHeader *>(cg::bridge::g_writer->base);
     if (out_command != nullptr) {
         *out_command = std::atomic_ref<std::uint32_t>(header->command).load(std::memory_order_acquire);
@@ -339,6 +373,7 @@ cg_status cg_test_writer_ack_command(uint32_t ack) {
     if (cg::bridge::g_writer == nullptr) {
         return CG_ERR_INVALID_ARG;
     }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
     auto *header = reinterpret_cast<cg::bridge::ShmHeader *>(cg::bridge::g_writer->base);
     std::atomic_ref<std::uint32_t>(header->ack).store(ack, std::memory_order_release);
     return CG_OK;

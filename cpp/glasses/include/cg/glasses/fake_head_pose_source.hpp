@@ -17,7 +17,7 @@ namespace cg::glasses {
 /// `TrackState` while keeping the pose static; `AppearAfter` publishes nothing
 /// (clock still advances) until the delay has elapsed.
 struct FakeScript {
-    enum class Pattern { Static, YawSweep, PitchSweep, Dropout, Unstable, Jitter, AppearAfter };
+    enum class Pattern : std::uint8_t { Static, YawSweep, PitchSweep, Dropout, Unstable, Jitter, AppearAfter };
 
     Pattern pattern = Pattern::Static;
     /// Sweep speed in degrees/second, or jitter amplitude in degrees.
@@ -76,6 +76,8 @@ class FakeHeadPoseSource final : public IHeadPoseSource {
     ~FakeHeadPoseSource() override = default;
     FakeHeadPoseSource(const FakeHeadPoseSource &) = delete;
     FakeHeadPoseSource &operator=(const FakeHeadPoseSource &) = delete;
+    FakeHeadPoseSource(FakeHeadPoseSource &&) = delete;
+    FakeHeadPoseSource &operator=(FakeHeadPoseSource &&) = delete;
 
     Result<void> Start() override;
     void Stop() noexcept override;

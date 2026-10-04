@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -250,7 +251,7 @@ TEST(FakeVitureApi, ScriptsResultsAndRecordsDisplayAndRecentreArguments) {
     EXPECT_EQ(api.CreateDevice().status().code(), StatusCode::Device);
     EXPECT_TRUE(api.CreateDevice().ok());
 
-    const float kPose[7] = {1.0F, 2.0F, 3.0F, 1.0F, 0.0F, 0.0F, 0.0F};
+    const std::array<float, kViturePoseFloatCount> kPose{1.0F, 2.0F, 3.0F, 1.0F, 0.0F, 0.0F, 0.0F};
     EXPECT_TRUE(api.ResetOriginCarina(kPose).ok());
     EXPECT_EQ(api.reset_origin_calls.load(), 1U);
     EXPECT_TRUE(api.has_reset_pose.load(std::memory_order_acquire));

@@ -4,6 +4,10 @@
 
 namespace cg::core_math {
 
+/// Default tolerance of `Quat::IsNormalized`: the squared-norm distance from
+/// exactly 1 accepted by the contract tests.
+inline constexpr double kDefaultNormalizeTolerance = 1e-9;
+
 class Quat;
 
 /// Returns `q` scaled to unit length.
@@ -85,7 +89,7 @@ class Quat {
 
     /// True when the squared norm is within `tolerance` (inclusive) of 1.
     /// No allocation.
-    [[nodiscard]] bool IsNormalized(double tolerance = 1e-9) const noexcept;
+    [[nodiscard]] bool IsNormalized(double tolerance = kDefaultNormalizeTolerance) const noexcept;
 
   private:
     friend Quat Normalize(const Quat &q) noexcept;

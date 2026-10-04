@@ -146,7 +146,7 @@ TEST(BridgeAllocationTest, ReadHeadAndHandsAllocateNothing) {
     ASSERT_EQ(cg_test_writer_create(), CG_OK);
 
     // Far-future heartbeat: neither slot ever reads as stale during the loop.
-    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 1'000'000'000), CG_OK);
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns() + 3'600'000'000'000), CG_OK);
 
     cg_head_sample head{};
     head.host_time = 1;

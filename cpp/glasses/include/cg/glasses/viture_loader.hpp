@@ -10,7 +10,7 @@
 namespace cg::glasses {
 
 /// The loader's decision for a caller-supplied vendor-DLL path.
-enum class DllPathDecision {
+enum class DllPathDecision : std::uint8_t {
     /// The path may be opened: an absolute path outside the working directory,
     /// or a DLL next to the running executable.
     kAllow,

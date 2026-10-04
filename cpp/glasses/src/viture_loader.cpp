@@ -21,6 +21,7 @@
 #include "cg/glasses/viture_loader.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cstddef>
@@ -87,9 +88,13 @@ std::wstring Utf8ToWide(const std::string &text) {
 [[nodiscard]] std::string LastLibraryError() {
     const DWORD error = GetLastError();
     LPWSTR buffer = nullptr;
-    const DWORD length =
-        FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                       nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+    // FormatMessageW's ALLOCATE_BUFFER form takes a pointer to the output
+    // pointer; the cast is the documented Win32 calling convention, not a
+    // type pun on the data.
+    const DWORD length = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error, 0,
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
     std::string message;
     if (length != 0 && buffer != nullptr) {
         message = WideToUtf8(buffer, static_cast<int>(length));
@@ -157,19 +162,26 @@ void CloseLibrary(LibraryHandle handle) noexcept {
 
 #endif
 
-/// Reads environment variable `name`, or an empty string when unset. Uses the
-/// MSVC-safe `_dupenv_s` on Windows (plain `getenv` is a C4996 error under
-/// `/W4 /WX`).
+/// Reads environment variable `name`, or an empty string when unset.
+/// Windows uses the two-call `GetEnvironmentVariableW` (no allocation and no
+/// MSVC deprecation warning); POSIX uses `std::getenv`.
 [[nodiscard]] std::string ReadEnvironment(const char *name) {
 #ifdef _WIN32
-    char *value = nullptr;
-    std::size_t size = 0;
-    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+    const std::wstring wide_name = Utf8ToWide(name);
+    if (wide_name.empty()) {
         return {};
     }
-    std::string result{value};
-    std::free(value);
-    return result;
+    const DWORD needed = ::GetEnvironmentVariableW(wide_name.c_str(), nullptr, 0);
+    if (needed == 0) {
+        return {}; // unset, or an empty value: both mean "no pin"
+    }
+    std::wstring wide_value(static_cast<std::size_t>(needed), L'\0');
+    const DWORD written = ::GetEnvironmentVariableW(wide_name.c_str(), wide_value.data(), needed);
+    if (written == 0 || written >= needed) {
+        return {};
+    }
+    wide_value.resize(static_cast<std::size_t>(written));
+    return WideToUtf8(wide_value.c_str(), static_cast<int>(wide_value.size()));
 #else
     const char *value = std::getenv(name);
     return value == nullptr ? std::string{} : std::string{value};
@@ -185,8 +197,8 @@ void CloseLibrary(LibraryHandle handle) noexcept {
 /// content; signature verification remains open (TD-051).
 [[nodiscard]] bool SamePath(const std::filesystem::path &left, const std::filesystem::path &right) {
 #ifdef _WIN32
-    const std::wstring left_text = left.native();
-    const std::wstring right_text = right.native();
+    const std::wstring &left_text = left.native();
+    const std::wstring &right_text = right.native();
     return _wcsicmp(left_text.c_str(), right_text.c_str()) == 0;
 #else
     return left == right;
@@ -269,7 +281,10 @@ using CreateDeviceFn = cg_status (*)();
 using DestroyDeviceFn = void (*)();
 using StartPoseFn = cg_status (*)();
 using PollPoseFn = cg_status (*)(cg_head_sample *out);
-using ResetOriginCarinaFn = cg_status (*)(const float pose[7]);
+/// The SDK hands a pointer to seven floats ([px, py, pz, qw, qx, qy, qz]);
+/// a pointer parameter is ABI-identical to the vendor's `float[7]` and keeps
+/// the length in `kViturePoseFloatCount` instead of the type.
+using ResetOriginCarinaFn = cg_status (*)(const float *pose);
 using SetDisplayModeFn = cg_status (*)(std::uint32_t refresh_hz, bool sbs);
 using GetRefreshHzFn = cg_status (*)(std::uint32_t *out_refresh_hz);
 using SdkVersionFn = const char *(*)();
@@ -286,6 +301,9 @@ struct VitureApiFns {
 };
 
 // Placeholder export names (see the HIL note at the top).
+/// Length of a lower-case SHA-256 digest in hex characters (TD-051 pin).
+constexpr std::size_t kSha256HexLength = 64;
+
 constexpr const char *kCreateDeviceSymbol = "xr_device_provider_create";
 constexpr const char *kDestroyDeviceSymbol = "xr_device_provider_destroy";
 constexpr const char *kStartPoseSymbol = "xr_device_provider_start_pose";
@@ -311,8 +329,15 @@ template <typename Function>
     if (symbol == nullptr) {
         return false;
     }
+    // Copying the loader's data pointer into the function-pointer slot is the
+    // documented portable workaround for the missing standard conversion
+    // (casting between function pointer types is conditionally supported and
+    // MSVC warns with C4191, an error under /WX). The sizes are static_asserted
+    // above on every supported ABI.
+    // NOLINTBEGIN(bugprone-bitwise-pointer-cast, bugprone-multi-level-implicit-pointer-conversion)
     static_assert(sizeof(Function) == sizeof(symbol), "a function pointer must fit in a loader symbol");
     std::memcpy(&out, &symbol, sizeof(Function));
+    // NOLINTEND(bugprone-bitwise-pointer-cast, bugprone-multi-level-implicit-pointer-conversion)
     return true;
 }
 
@@ -369,6 +394,8 @@ class VendorVitureApi final : public IVitureApi {
 
     VendorVitureApi(const VendorVitureApi &) = delete;
     VendorVitureApi &operator=(const VendorVitureApi &) = delete;
+    VendorVitureApi(VendorVitureApi &&) = delete;
+    VendorVitureApi &operator=(VendorVitureApi &&) = delete;
 
     Result<void> CreateDevice() override { return ToResult(fns_.create_device()); }
 
@@ -391,7 +418,9 @@ class VendorVitureApi final : public IVitureApi {
         return Ok(sample);
     }
 
-    Result<void> ResetOriginCarina(const float pose[7]) override { return ToResult(fns_.reset_origin_carina(pose)); }
+    Result<void> ResetOriginCarina(const std::array<float, kViturePoseFloatCount> &pose) override {
+        return ToResult(fns_.reset_origin_carina(pose.data()));
+    }
 
     Result<void> SetDisplayMode(std::uint32_t refresh_hz, bool sbs) override {
         return ToResult(fns_.set_display_mode(refresh_hz, sbs));
@@ -484,7 +513,7 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
     const std::string pin = ReadEnvironment("CG_VITURE_DLL_SHA256");
     if (!pin.empty()) {
         std::string expected = pin;
-        if (expected.size() != 64U || !std::all_of(expected.begin(), expected.end(), [](char character) {
+        if (expected.size() != kSha256HexLength || !std::all_of(expected.begin(), expected.end(), [](char character) {
                 return std::isxdigit(static_cast<unsigned char>(character)) != 0;
             })) {
             return Err<std::unique_ptr<IVitureApi>>(

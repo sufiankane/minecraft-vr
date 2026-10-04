@@ -95,6 +95,8 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
 
     VitureHeadPoseSource(const VitureHeadPoseSource &) = delete;
     VitureHeadPoseSource &operator=(const VitureHeadPoseSource &) = delete;
+    VitureHeadPoseSource(VitureHeadPoseSource &&) = delete;
+    VitureHeadPoseSource &operator=(VitureHeadPoseSource &&) = delete;
 
     Result<void> Start() override;
     void Stop() noexcept override;
@@ -143,7 +145,7 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     }
 
   private:
-    void PollLoop(std::stop_token stop) noexcept;
+    void PollLoop(const std::stop_token &stop) noexcept;
     void SetupThread() noexcept;
 
     /// Polling-thread half of `Recenter`: consumes a posted request and calls
@@ -159,7 +161,7 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     /// Drops an unresolved request and its armed correction (`Stop` only).
     void WithdrawPendingRecentre() noexcept;
 
-    [[nodiscard]] bool WaitBackoff(Duration duration, std::stop_token stop) noexcept;
+    [[nodiscard]] bool WaitBackoff(Duration duration, const std::stop_token &stop) noexcept;
     [[nodiscard]] bool StopRequested(const std::stop_token &stop) const noexcept;
     void PublishQuiet(HostTime now) noexcept;
     void UpdateRate(const HeadSample &sample) noexcept;

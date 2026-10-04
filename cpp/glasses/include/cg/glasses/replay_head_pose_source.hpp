@@ -57,6 +57,8 @@ class ReplayHeadPoseSource final : public IHeadPoseSource {
     ~ReplayHeadPoseSource() override = default;
     ReplayHeadPoseSource(const ReplayHeadPoseSource &) = delete;
     ReplayHeadPoseSource &operator=(const ReplayHeadPoseSource &) = delete;
+    ReplayHeadPoseSource(ReplayHeadPoseSource &&) = delete;
+    ReplayHeadPoseSource &operator=(ReplayHeadPoseSource &&) = delete;
 
     /// Parses the whole CSV into memory, replacing any previous dataset and
     /// clearing its playback state: the slot is empty again (`TryGetLatest`

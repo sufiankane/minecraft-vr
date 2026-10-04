@@ -31,7 +31,15 @@ struct DisplayMode {
 class IDisplayControl {
   public:
     virtual ~IDisplayControl() = default;
+    IDisplayControl(const IDisplayControl &) = delete;
+    IDisplayControl &operator=(const IDisplayControl &) = delete;
+    IDisplayControl(IDisplayControl &&) = delete;
+    IDisplayControl &operator=(IDisplayControl &&) = delete;
 
+  protected:
+    IDisplayControl() = default;
+
+  public:
     /// The current display configuration, or the seam's failure.
     [[nodiscard]] virtual Result<DisplayMode> Get() const = 0;
 

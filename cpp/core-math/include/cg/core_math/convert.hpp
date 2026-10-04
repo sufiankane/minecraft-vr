@@ -8,10 +8,13 @@ namespace cg::core_math {
 
 /// Builds an internal `Pose` from a VITURE SDK pose.
 ///
-/// `sdk` has layout `[px, py, pz, qw, qx, qy, qz]` in floats: the position is
-/// widened to doubles and the quaternion is normalised through
-/// `Quat::FromComponents` (degenerate input becomes identity). No allocation.
-[[nodiscard]] Pose PoseFromSdk(const float sdk[7]) noexcept;
+/// `sdk` points at seven floats with layout `[px, py, pz, qw, qx, qy, qz]`:
+/// the position is widened to doubles and the quaternion is normalised through
+/// `Quat::FromComponents` (degenerate input becomes identity). A pointer is
+/// used deliberately (not `std::array`) because the SDK ABI hands a raw
+/// float array; the callers know the length from the same dossier contract.
+/// No allocation.
+[[nodiscard]] Pose PoseFromSdk(const float *sdk) noexcept;
 
 /// Maps an internal position to Unity space: `(x, y, -z)`. No allocation.
 [[nodiscard]] Vec3 ToUnityPosition(const Vec3 &position) noexcept;

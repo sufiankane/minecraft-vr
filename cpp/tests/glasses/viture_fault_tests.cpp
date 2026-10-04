@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -587,7 +588,7 @@ TEST(VitureFault, RecenterDoesNotStallThePollingThread) {
 /// destroyed and work again after a create.
 TEST(VitureFault, FakeVitureApiModelsDeviceLifetime) {
     FakeVitureApi api;
-    const float pose[7] = {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
+    const std::array<float, kViturePoseFloatCount> pose{0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
     EXPECT_EQ(api.PollPose().status().code(), StatusCode::NotReady);
     EXPECT_EQ(api.StartPose().status().code(), StatusCode::NotReady);
     EXPECT_EQ(api.ResetOriginCarina(pose).status().code(), StatusCode::NotReady);
