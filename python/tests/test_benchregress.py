@@ -159,6 +159,107 @@ def test_cli_fails_and_names_a_regressed_benchmark(
     assert "+30.0%" in captured
 
 
+def test_cli_accepts_multiple_current_files_and_names_the_regression(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = write_json(
+        tmp_path / "first.json",
+        {"benchmarks": [{"name": "BM_A", "real_time": 100.0, "time_unit": "ns"}]},
+    )
+    second = write_json(
+        tmp_path / "second.json",
+        {"benchmarks": [{"name": "BM_B", "real_time": 120.0, "time_unit": "ns"}]},
+    )
+    baseline = write_json(
+        tmp_path / "baseline.json",
+        {"benchmarks": {"dotnet/BM_A": 100.0, "dotnet/BM_B": 100.0}},
+    )
+
+    code = main(
+        [
+            "benchregress",
+            "--baseline",
+            str(baseline),
+            "--format",
+            "google",
+            "--prefix",
+            "dotnet",
+            "--current",
+            str(first),
+            str(second),
+        ]
+    )
+    captured = capsys.readouterr().out
+    assert code == 1
+    assert "dotnet/BM_B" in captured
+    assert "+20.0%" in captured
+    assert "dotnet/BM_A" not in captured
+
+
+def test_cli_first_run_captures_multiple_reports_and_prefixes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cpp = write_json(
+        tmp_path / "cpp.json",
+        {"benchmarks": [{"name": "BM_Cpp", "real_time": 5.0, "time_unit": "ns"}]},
+    )
+    dotnet_first = write_json(tmp_path / "dotnet-first.json", BDN_PAYLOAD)
+    dotnet_second = write_json(
+        tmp_path / "dotnet-second.json",
+        {"Benchmarks": [{"FullName": "X.Y.Z", "Statistics": {"Mean": 9.0}}]},
+    )
+    baseline = tmp_path / "missing-baseline.json"
+    capture = tmp_path / "capture.json"
+
+    code = main(
+        [
+            "benchregress",
+            "--baseline",
+            str(baseline),
+            "--format",
+            "bdn",
+            "--prefix",
+            "dotnet",
+            "--current",
+            str(dotnet_first),
+            str(dotnet_second),
+            "--capture",
+            str(capture),
+        ]
+    )
+    captured = capsys.readouterr().out
+    assert code == 0
+    assert "baseline established" in captured
+    assert load_baseline(capture) == {
+        "dotnet/Cubeglass.CoreMath.Benchmarks.AbiVersionBenchmarks.Value": 4.5,
+        "dotnet/X.Y.Z": 9.0,
+    }
+
+    code = main(
+        [
+            "benchregress",
+            "--baseline",
+            str(baseline),
+            "--format",
+            "google",
+            "--prefix",
+            "cpp",
+            "--current",
+            str(cpp),
+            "--capture",
+            str(capture),
+        ]
+    )
+    captured = capsys.readouterr().out
+    assert code == 0
+    assert "baseline established" in captured
+    assert load_baseline(capture) == {
+        "dotnet/Cubeglass.CoreMath.Benchmarks.AbiVersionBenchmarks.Value": 4.5,
+        "dotnet/X.Y.Z": 9.0,
+        "cpp/BM_Cpp": 5.0,
+    }
+
+
 def test_cli_passes_within_threshold(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     current = write_json(
         tmp_path / "current.json",

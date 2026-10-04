@@ -128,9 +128,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     bench_parser.add_argument(
         "--current",
         type=Path,
-        action="append",
+        nargs="+",
+        action="extend",
         required=True,
-        help="Benchmark JSON produced by this run (repeatable).",
+        help="Benchmark JSON produced by this run (one or more files; repeatable).",
     )
     bench_parser.add_argument(
         "--threshold",

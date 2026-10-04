@@ -184,9 +184,11 @@ Neither dependency enters a shipped artefact; both are test-only.
   the SDK input and accepted.
 - Bad: the 32-sample median lags a genuine offset step by up to 16 samples; the
   jitter/drift budgets are set around that.
-- Follow-up: the S6 adapter must call the CoreMath conversion functions; the
-  first contract file triggers the section 9.7 contract-compatibility gate
-  deferred in [ADR-0003](0003-testing-strategy.md).
+- Follow-up: the S6 adapter must call the CoreMath conversion functions. The
+  section 9.7 contract-compatibility gate this ADR expected from the deferred S1
+  follow-up did not land then; it was added on 2026-10-03 as
+  `python -m depcheck contracts` and is enforced in the required `depcheck` job
+  (see [ADR-0003](0003-testing-strategy.md)).
 
 ## Confirmation
 

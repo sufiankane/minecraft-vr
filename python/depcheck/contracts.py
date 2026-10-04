@@ -43,7 +43,9 @@ VERSION_MACRO = "CG_ABI_VERSION"
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"//[^\n\r]*")
 _WHITESPACE_RE = re.compile(r"\s+")
-_VERSION_RE = re.compile(rf"#\s*define\s+{VERSION_MACRO}\s+(\d+)")
+# Anchored to the start of a line and applied to comment-stripped text, so a
+# commented-out `#define CG_ABI_VERSION 99` can never masquerade as a bump.
+_VERSION_RE = re.compile(rf"(?m)^[ \t]*#[ \t]*define[ \t]+{VERSION_MACRO}[ \t]+(\d+)")
 
 
 class ContractError(Exception):
@@ -68,12 +70,20 @@ def _relative(parts: tuple[str, ...]) -> str:
     return "/".join(parts)
 
 
+def strip_comments(text: str) -> str:
+    """Remove comments while keeping line breaks, so line anchors stay valid."""
+
+    def _drop_block(match: re.Match[str]) -> str:
+        return "\n" * match.group(0).count("\n")
+
+    without_block_comments = _BLOCK_COMMENT_RE.sub(_drop_block, text)
+    return _LINE_COMMENT_RE.sub("", without_block_comments)
+
+
 def normalise(text: str) -> str:
     """Strip comments and whitespace so formatting-only edits are invisible."""
 
-    without_block_comments = _BLOCK_COMMENT_RE.sub(" ", text)
-    without_comments = _LINE_COMMENT_RE.sub(" ", without_block_comments)
-    return _WHITESPACE_RE.sub("", without_comments)
+    return _WHITESPACE_RE.sub("", strip_comments(text))
 
 
 def _read_contracts(root: Path) -> dict[str, str]:
@@ -91,11 +101,12 @@ def extract_abi_version(texts: dict[str, str]) -> int:
     """Return ``CG_ABI_VERSION`` from the contract headers.
 
     The macro lives in ``contracts/cg_types.h``; scanning every contract file
-    keeps the check working if the declaration ever moves.
+    keeps the check working if the declaration ever moves. Comment-stripped text
+    is scanned so a commented-out define cannot fake a version bump.
     """
 
     for relative in sorted(texts):
-        match = _VERSION_RE.search(texts[relative])
+        match = _VERSION_RE.search(strip_comments(texts[relative]))
         if match is not None:
             return int(match.group(1))
     raise ContractError(f"no {VERSION_MACRO} define found in the contract headers")

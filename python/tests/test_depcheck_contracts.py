@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from depcheck.__main__ import main
+from depcheck.contracts import extract_abi_version
 
 REPO_ROOT = Path(__file__).parents[2]
 
@@ -163,6 +164,43 @@ def test_update_refuses_when_version_did_not_change(
     assert code == 1
     assert "refusing to update" in captured.out
     assert baseline_path.read_text(encoding="utf-8") == before
+
+
+def test_version_ignores_commented_defines() -> None:
+    texts = {
+        "contracts/cg_types.h": (
+            "// #define CG_ABI_VERSION 99\n"
+            "/* #define CG_ABI_VERSION 98 */\n"
+            " #define CG_ABI_VERSION 7 // trailing comment\n"
+        )
+    }
+    assert extract_abi_version(texts) == 7
+
+
+def test_commented_out_define_cannot_fake_a_bump(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    initialise(tmp_path, capsys)
+    types = tmp_path / "contracts" / "cg_types.h"
+    types.write_text(
+        types.read_text(encoding="utf-8")
+        .replace("uint32_t sequence;", "uint32_t sequence;\n  uint32_t flags;")
+        .replace(
+            "#define CG_ABI_VERSION 2",
+            "// #define CG_ABI_VERSION 99\n#define CG_ABI_VERSION 2 /* 99 is commented out */",
+        ),
+        encoding="utf-8",
+    )
+
+    code = main(["contracts", "--root", str(tmp_path), "--update"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "refusing to update" in captured.out
+    assert "CG_ABI_VERSION is still 2" in captured.out
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert "CG_ABI_VERSION is still 2" in lines[0]
 
 
 def test_missing_baseline_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
