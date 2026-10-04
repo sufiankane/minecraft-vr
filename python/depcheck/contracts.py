@@ -14,6 +14,19 @@ the version is unchanged, so a contract edit cannot silently rebase the
 baseline without the required version bump. When no baseline exists yet,
 ``--update`` bootstraps it (there is no recorded version to compare against).
 
+The baseline is a generated record, not a source of truth: a baseline-only edit
+must never pass the gate. The gate therefore also pins the expected source
+versions in :data:`KNOWN_ABI_VERSIONS` (code, not data) and fails when the
+version extracted from the source disagrees with the anchor. A real contract
+change needs two reviewed edits — bump the source version *and* update the
+anchor — before ``--update`` regenerates the baseline. The baseline is also
+required to be internally consistent: its stored ``fingerprint`` is recomputed
+from its own ``files`` map, so hand-editing the fingerprint or the file hashes
+alone fails. The anchor covers ``contracts/cg_types.h`` (``CG_ABI_VERSION``)
+and the ``schema`` of ``contracts/golden/transforms.json``;
+``contracts/cg_unity_bridge.h`` carries no version of its own (it includes
+``cg_types.h`` and is covered by the same ABI version).
+
 Only the standard library is used and the fingerprint is deterministic:
 
 - every contract file is read as UTF-8 and normalised by removing ``//`` and
@@ -39,6 +52,15 @@ CONTRACT_FILES: tuple[tuple[str, ...], ...] = (
 )
 BASELINE_PARTS: tuple[str, ...] = ("contracts", "abi-baseline.json")
 VERSION_MACRO = "CG_ABI_VERSION"
+
+# Known-good source versions, maintained in code on purpose: the anchor is the
+# independent record that a baseline-only edit cannot forge. Keys are
+# repository-relative paths; C/C++ headers are read for ``VERSION_MACRO`` and
+# JSON fixtures for their integer ``schema``.
+KNOWN_ABI_VERSIONS: dict[str, int] = {
+    "contracts/cg_types.h": 2,
+    "contracts/golden/transforms.json": 1,
+}
 
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _LINE_COMMENT_RE = re.compile(r"//[^\n\r]*")
@@ -112,15 +134,63 @@ def extract_abi_version(texts: dict[str, str]) -> int:
     raise ContractError(f"no {VERSION_MACRO} define found in the contract headers")
 
 
+def _fingerprint(files: dict[str, str]) -> str:
+    """SHA-256 over the sorted ``relative-path:file-hash`` lines."""
+
+    return hashlib.sha256(
+        "\n".join(f"{relative}:{files[relative]}" for relative in sorted(files)).encode("utf-8")
+    ).hexdigest()
+
+
 def compute_state(root: Path) -> ContractState:
     """Compute the normalised ABI version and fingerprint under ``root``."""
 
     texts = _read_contracts(root)
     files = {relative: hashlib.sha256(normalise(text).encode("utf-8")).hexdigest() for relative, text in texts.items()}
-    fingerprint = hashlib.sha256(
-        "\n".join(f"{relative}:{files[relative]}" for relative in sorted(files)).encode("utf-8")
-    ).hexdigest()
-    return ContractState(version=extract_abi_version(texts), fingerprint=fingerprint, files=files)
+    return ContractState(version=extract_abi_version(texts), fingerprint=_fingerprint(files), files=files)
+
+
+def _read_anchor_version(root: Path, texts: dict[str, str], relative: str) -> int:
+    """Extract the version the anchor tracks for ``relative``.
+
+    Contract headers are read for ``VERSION_MACRO``; other anchored files are
+    JSON documents with an integer ``schema``.
+    """
+
+    if relative in texts:
+        match = _VERSION_RE.search(strip_comments(texts[relative]))
+        if match is None:
+            raise ContractError(f"{relative}: no {VERSION_MACRO} define found")
+        return int(match.group(1))
+    path = root.joinpath(*relative.split("/"))
+    if not path.is_file():
+        raise ContractError(f"missing contract file: {relative}")
+    try:
+        data: object = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ContractError(f"{relative}: invalid JSON ({error})") from error
+    if not isinstance(data, dict):
+        raise ContractError(f"{relative}: expected a JSON object at the top level")
+    schema = cast(dict[object, object], data).get("schema")
+    if not isinstance(schema, int) or isinstance(schema, bool):
+        raise ContractError(f"{relative}: expected an integer 'schema'")
+    return schema
+
+
+def _check_anchors(root: Path, texts: dict[str, str]) -> list[str]:
+    """Return the failures where a source version disagrees with the code anchor."""
+
+    update = "`python -m depcheck contracts --update`"
+    failures: list[str] = []
+    for relative, expected in KNOWN_ABI_VERSIONS.items():
+        actual = _read_anchor_version(root, texts, relative)
+        if actual != expected:
+            failures.append(
+                f"contracts: {relative} declares version {actual}, but the code anchor "
+                f"KNOWN_ABI_VERSIONS records {expected}; a real contract change needs both a source "
+                f"version bump and an anchor update (two reviewed edits), then {update}"
+            )
+    return failures
 
 
 def load_baseline(root: Path) -> ContractState | None:
@@ -167,17 +237,44 @@ def changed_files(state: ContractState, baseline: ContractState) -> list[str]:
 def check_contracts(root: Path) -> list[str]:
     """Return the contract-compatibility failures under ``root``.
 
-    An unchanged fingerprint passes. A changed fingerprint fails either because
-    the version was not bumped or because the bumped baseline was not
-    regenerated; both messages name the changed files.
+    The gate trusts neither the baseline's stored version nor its stored
+    fingerprint: the source version must match the code anchor
+    (:data:`KNOWN_ABI_VERSIONS`), the baseline version must match the source,
+    the baseline fingerprint must recompute from the baseline's own ``files``
+    map, and the source fingerprint must match the baseline. Only then does an
+    unchanged fingerprint pass; a changed fingerprint fails either because the
+    version was not bumped or because the bumped baseline was not regenerated,
+    and both messages name the changed files.
     """
 
     resolved = root.resolve()
+    texts = _read_contracts(resolved)
     state = compute_state(resolved)
     baseline = load_baseline(resolved)
     if baseline is None:
         return [f"{_relative(BASELINE_PARTS)}: missing ABI baseline; run `python -m depcheck contracts --update`"]
+    anchor_failures = _check_anchors(resolved, texts)
+    if anchor_failures:
+        return anchor_failures
+    if baseline.fingerprint != _fingerprint(baseline.files):
+        return [
+            (
+                f"{_relative(BASELINE_PARTS)}: fingerprint {baseline.fingerprint} does not match its own "
+                f"files map ({_fingerprint(baseline.files)}); the baseline file was edited by hand and is "
+                f"not a trustworthy record; restore it or run `python -m depcheck contracts --update` after "
+                f"a bump"
+            )
+        ]
     if state.fingerprint == baseline.fingerprint:
+        if state.version != baseline.version:
+            return [
+                (
+                    f"{_relative(BASELINE_PARTS)}: abiVersion {baseline.version} disagrees with "
+                    f"{VERSION_MACRO} {state.version}; the recorded baseline version is not the source "
+                    f"version; restore the baseline or run `python -m depcheck contracts --update` after "
+                    f"a bump"
+                )
+            ]
         return []
     detail = ", ".join(changed_files(state, baseline))
     update = "`python -m depcheck contracts --update`"
@@ -200,11 +297,16 @@ def update_baseline(root: Path) -> ContractState:
     """Regenerate the baseline, refusing while the ABI version is unchanged.
 
     Returns the state that is now recorded. Raises :class:`ContractError` when
-    the surface changed but ``CG_ABI_VERSION`` did not, so ``--update`` cannot
-    be used to accept a contract edit without a bump.
+    the source version disagrees with the code anchor or when the surface
+    changed but ``CG_ABI_VERSION`` did not, so ``--update`` cannot be used to
+    accept a contract edit without a bump and an anchor update.
     """
 
     resolved = root.resolve()
+    texts = _read_contracts(resolved)
+    anchor_failures = _check_anchors(resolved, texts)
+    if anchor_failures:
+        raise ContractError(anchor_failures[0])
     state = compute_state(resolved)
     baseline = load_baseline(resolved)
     if baseline is not None and state.fingerprint != baseline.fingerprint and state.version == baseline.version:

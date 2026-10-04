@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import depcheck.contracts as contracts_module
 from depcheck.__main__ import main
 from depcheck.contracts import extract_abi_version
 
@@ -60,12 +61,14 @@ def write_contracts(
 ) -> None:
     contracts = root / "contracts"
     (contracts / "cpp").mkdir(parents=True, exist_ok=True)
+    (contracts / "golden").mkdir(parents=True, exist_ok=True)
     (contracts / "cg_types.h").write_text(
         _TYPES.format(version=version, field=field), encoding="utf-8"
     )
     (contracts / "cg_unity_bridge.h").write_text(_BRIDGE.format(function=function), encoding="utf-8")
     (contracts / "cpp" / "ports.hpp").write_text(_PORTS, encoding="utf-8")
     (contracts / "cpp" / "result.hpp").write_text(_RESULT, encoding="utf-8")
+    (contracts / "golden" / "transforms.json").write_text('{\n  "schema": 1\n}\n', encoding="utf-8")
 
 
 def initialise(root: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -130,11 +133,18 @@ def test_header_addition_without_bump_fails(
     assert "CG_ABI_VERSION is still 2" in lines[0]
 
 
+def _anchor_with_version(version: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    anchors = dict(contracts_module.KNOWN_ABI_VERSIONS)
+    anchors["contracts/cg_types.h"] = version
+    monkeypatch.setattr(contracts_module, "KNOWN_ABI_VERSIONS", anchors)
+
+
 def test_bump_without_update_fails_then_update_passes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     initialise(tmp_path, capsys)
     write_contracts(tmp_path, version=3, field="\n  uint32_t flags;")
+    _anchor_with_version(3, monkeypatch)
 
     code, lines = run_check(tmp_path, capsys)
     assert code == 1
@@ -149,6 +159,67 @@ def test_bump_without_update_fails_then_update_passes(
 
     baseline = json.loads((tmp_path / "contracts" / "abi-baseline.json").read_text(encoding="utf-8"))
     assert baseline["abiVersion"] == 3
+
+
+def test_source_bump_without_anchor_update_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    initialise(tmp_path, capsys)
+    write_contracts(tmp_path, version=3, field="\n  uint32_t flags;")
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert "KNOWN_ABI_VERSIONS" in lines[0]
+    assert "contracts/cg_types.h declares version 3" in lines[0]
+
+    code = main(["contracts", "--root", str(tmp_path), "--update"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "KNOWN_ABI_VERSIONS" in captured.out
+
+
+def test_baseline_version_edited_alone_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    initialise(tmp_path, capsys)
+    baseline_path = tmp_path / "contracts" / "abi-baseline.json"
+    data = json.loads(baseline_path.read_text(encoding="utf-8"))
+    data["abiVersion"] = 3
+    baseline_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert len(lines) == 1
+    assert "abiVersion 3" in lines[0]
+    assert "CG_ABI_VERSION 2" in lines[0]
+
+
+def test_baseline_fingerprint_edited_alone_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    initialise(tmp_path, capsys)
+    baseline_path = tmp_path / "contracts" / "abi-baseline.json"
+    data = json.loads(baseline_path.read_text(encoding="utf-8"))
+    data["fingerprint"] = "0" * 64
+    baseline_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert len(lines) == 1
+    assert "does not match its own files map" in lines[0]
+
+
+def test_fixture_schema_edited_without_anchor_update_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    initialise(tmp_path, capsys)
+    fixture = tmp_path / "contracts" / "golden" / "transforms.json"
+    fixture.write_text('{\n  "schema": 2\n}\n', encoding="utf-8")
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert "transforms.json declares version 2" in lines[0]
+    assert "KNOWN_ABI_VERSIONS" in lines[0]
 
 
 def test_update_refuses_when_version_did_not_change(
