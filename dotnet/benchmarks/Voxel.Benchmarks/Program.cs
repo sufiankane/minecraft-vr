@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Exporters.Json;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
 using Cubeglass.CoreMath;
@@ -16,6 +17,7 @@ namespace Cubeglass.Voxel.Benchmarks
 
     [SimpleJob(warmupCount: 1, iterationCount: 3)]
     [MemoryDiagnoser]
+    [JsonExporter]
     public class VoxelBenchmarks
     {
         private const int Seed = 42;

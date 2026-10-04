@@ -65,9 +65,10 @@ cmake --build --preset windows-msvc
 ctest --preset ci
 ```
 
-Configure presets: `windows-msvc`, `linux-ci`, `linux-asan`, `linux-coverage`,
-`benchmarks`. Test preset: `ci` (bound to the `windows-msvc` configure preset;
-`cpp-linux-asan` in CI uses the `linux-asan` test preset).
+Configure presets: `windows-msvc`, `linux-ci`, `linux-asan`, `linux-tsan`,
+`linux-coverage`, `benchmarks`. Test presets: `ci` (bound to the `windows-msvc`
+configure preset), `linux-asan`, `linux-tsan` and `linux-coverage` (used by
+`ci.yml` on Linux).
 
 ### C# (.NET)
 

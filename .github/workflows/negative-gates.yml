@@ -10,12 +10,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: negative-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   expect-red-format:
     name: expect-red-format
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install clang-format
         run: sudo apt-get update && sudo apt-get install -y clang-format
@@ -40,10 +45,11 @@ jobs:
   expect-red-test:
     name: expect-red-test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 
@@ -70,10 +76,11 @@ jobs:
   expect-red-depcheck:
     name: expect-red-depcheck
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 

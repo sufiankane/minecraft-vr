@@ -4,6 +4,10 @@ name: Release
 # needs the Unity licence secrets; without them this workflow fails with an
 # actionable message instead of silently skipping the release artefact.
 #
+# Tagged releases are test-gated (I-6): before the player build, the pinned
+# Unity CLI installs the pinned Editor, activates the licence and runs the same
+# EditMode + PlayMode suites ci-local runs, failing the release on any failure.
+#
 # The player compiles the managed Cubeglass plugins and P/Invokes the native
 # cg_unity_bridge.dll, so both are built on the runner and staged into the
 # Unity project before the player build (the same files scripts/ci-local.ps1
@@ -17,14 +21,23 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows-x64-player:
     name: windows-x64-player
     runs-on: windows-latest
+    timeout-minutes: 180
+    # The only writer is the final `gh release upload`; everything else runs
+    # with the read-only default token.
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -49,7 +62,7 @@ jobs:
           }
           Write-Host 'Unity licence secrets present.'
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: dotnet/global.json
 
@@ -75,14 +88,14 @@ jobs:
         run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
 
       - name: Cache the vcpkg installed tree (outside the checkout)
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-installed
           key: vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-${{ hashFiles('cpp/vcpkg.json') }}
           restore-keys: |
             vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       # Release, not the preset's Debug default: the player ships this DLL,
       # and a Debug build links the non-redistributable debug CRT, which
@@ -117,15 +130,100 @@ jobs:
           Write-Host "Copied native bridge DLL: $source -> $destination"
 
       - name: Cache the Unity Library folder
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: unity/Cubeglass/Library
           key: unity-library-standalonewindows64-${{ hashFiles('unity/Cubeglass/Packages/manifest.json', 'unity/Cubeglass/ProjectSettings/ProjectVersion.txt') }}
           restore-keys: |
             unity-library-standalonewindows64-
 
+      # --- Release gate: Unity EditMode and PlayMode tests -------------------
+      # Install the pinned Unity CLI (the standalone binary, not the game-ci
+      # container) and the pinned Editor, activate the licence from the same
+      # secret game-ci consumes, and run the exact commands ci-local runs.
+      # Any failure here fails the release before the player build.
+
+      - name: Install the Unity CLI (pinned 1.0.0-beta.11)
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'unity-cli-install.ps1'
+          Invoke-WebRequest -UseBasicParsing -Uri 'https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1' -OutFile $installer
+          & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -Target '1.0.0-beta.11'
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Unity CLI install failed with exit code $LASTEXITCODE."
+            exit 1
+          }
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          if (-not (Test-Path -LiteralPath $unity)) {
+            Write-Host "::error::Unity CLI executable not found at $unity after install."
+            exit 1
+          }
+          & $unity --version
+
+      - name: Install the pinned Unity Editor (6000.6.3f1)
+        shell: pwsh
+        run: |
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          & $unity install 6000.6.3f1 --non-interactive
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Unity Editor install failed with exit code $LASTEXITCODE."
+            exit 1
+          }
+
+      - name: Activate the Unity licence for the release gate
+        shell: pwsh
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+        run: |
+          $license = Join-Path $env:RUNNER_TEMP 'Unity_lic.ulf'
+          [System.IO.File]::WriteAllText($license, $env:UNITY_LICENSE)
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          & $unity license activate --file $license --non-interactive
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::Unity licence activation failed with exit code $LASTEXITCODE."
+            exit 1
+          }
+
+      - name: Run Unity EditMode and PlayMode tests (release gate)
+        shell: pwsh
+        run: |
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          $required = @{
+            EditMode = @(
+              'Cubeglass.Unity.Bridge.Tests.dll',
+              'Cubeglass.Unity.Input.Tests.dll',
+              'Cubeglass.Unity.Rendering.Tests.dll')
+            PlayMode = @('Cubeglass.Unity.Rendering.PlayTests.dll')
+          }
+          foreach ($mode in @('EditMode', 'PlayMode')) {
+            $results = Join-Path $env:RUNNER_TEMP ('cg-unity-{0}-results.xml' -f $mode.ToLowerInvariant())
+            & $unity test unity/Cubeglass --mode $mode --non-interactive --output $results
+            $testExit = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
+            if (-not (Test-Path -LiteralPath $results)) {
+              Write-Host "::error::$mode tests produced no NUnit results at $results (exit $testExit); the suite did not run."
+              exit 1
+            }
+            [xml]$report = Get-Content -LiteralPath $results -Raw
+            $run = $report.SelectSingleNode('/test-run')
+            if ($null -eq $run) {
+              Write-Host "::error::$mode results at $results contain no /test-run element."
+              exit 1
+            }
+            $total = [int]$run.total
+            $failed = [int]$run.failed
+            $skipped = [int]$run.skipped
+            $assemblies = @($report.SelectNodes('.//test-suite[@type="Assembly"]') | ForEach-Object { $_.name })
+            $missing = @($required[$mode] | Where-Object { $assemblies -notcontains $_ })
+            if ($testExit -ne 0 -or $total -le 0 -or $failed -gt 0 -or $skipped -gt 0 -or $missing.Count -gt 0) {
+              Write-Host "::error::$mode tests not clean: exit=$testExit total=$total failed=$failed skipped=$skipped missingAssemblies=$($missing -join ',')."
+              exit 1
+            }
+            Write-Host "$mode tests passed: $total test(s)."
+          }
+
       - name: Build the Windows x64 player
-        uses: game-ci/unity-builder@v4
+        uses: game-ci/unity-builder@eb1b9fba120c6e62c9fb7a7a81d6c107ce004c45 # v6.0.0
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
@@ -135,6 +233,9 @@ jobs:
           unityVersion: auto
           targetPlatform: StandaloneWindows64
           buildMethod: Cubeglass.Editor.BuildPlayer.BuildWindows64
+          # Pin the game-ci CLI the action downloads: without this the action
+          # resolves `latest` at run time while the Unity secrets are in scope.
+          cliVersion: v0.1.72
           # The staged plugins are git-ignored, so the tree is clean; a dirty
           # checkout still fails the build.
           allowDirtyBuild: false
@@ -152,7 +253,7 @@ jobs:
           Get-Item -LiteralPath $zip | Select-Object FullName, Length
 
       - name: Upload the player artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Cubeglass-windows-x64
           path: unity/Cubeglass/build/Cubeglass-windows-x64.zip
@@ -163,15 +264,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view v0.1.0 *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-windows-x64.zip --clobber
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "::error::gh release upload failed with exit code $LASTEXITCODE."
-              exit 1
-            }
-            Write-Host 'Attached Cubeglass-windows-x64.zip to the v0.1.0 release.'
+          # A missing release is a normal outcome, not a step failure. Capture
+          # the probe output and exit code explicitly and clear the native exit
+          # state so the runner's appended `exit $LASTEXITCODE` check cannot
+          # fail the first dispatch (I-1); pwsh 7.4+ may also turn a non-zero
+          # native exit into a terminating error, so opt out for the probe.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $probe = gh release view v0.1.0 2>&1
+          $releaseExists = $LASTEXITCODE -eq 0
+          $global:LASTEXITCODE = 0
+          if (-not $releaseExists) {
+            Write-Host ("v0.1.0 does not exist yet (probe output: {0}); the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50)." -f (($probe | Out-String).Trim()))
+            exit 0
           }
-          else {
-            Write-Host 'v0.1.0 does not exist yet; the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50).'
+          $upload = gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-windows-x64.zip --clobber 2>&1
+          $uploadStatus = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($uploadStatus -ne 0) {
+            Write-Host ($upload | Out-String)
+            Write-Host "::error::gh release upload failed with exit code $uploadStatus."
+            exit 1
           }
+          Write-Host 'Attached Cubeglass-windows-x64.zip to the v0.1.0 release.'

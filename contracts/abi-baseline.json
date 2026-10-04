@@ -1,0 +1,10 @@
+{
+  "abiVersion": 2,
+  "files": {
+    "contracts/cg_types.h": "e0d76b949966224211693b414a8d8be916461ca0493a941aa1a297037d0fbaf6",
+    "contracts/cg_unity_bridge.h": "467727ee3306be1467d9b3408d7fffcbbca0f3036c2d0133a0e04cfb11ef089e",
+    "contracts/cpp/ports.hpp": "4e07756dce5528fc2a21f7f67364a084ca6f4666e2b2758373656cf88925f184",
+    "contracts/cpp/result.hpp": "2dce1d4b7ee35a7f4df6a2bc518320975a5ccd7390f0b0c1529fa4394e89dd64"
+  },
+  "fingerprint": "b669233f77520252ab8309313e40ceb28c32ab87bf9061b8066e1b2e645de4df"
+}

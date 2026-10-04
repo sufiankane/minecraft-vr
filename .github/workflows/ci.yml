@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -13,10 +16,11 @@ jobs:
   cpp-windows:
     name: cpp-windows
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Clone vcpkg at the pinned baseline
         run: |
@@ -27,14 +31,14 @@ jobs:
         run: '& "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics'
 
       - name: Cache vcpkg installed tree
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: cpp/build/windows-msvc/vcpkg_installed
           key: vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-${{ hashFiles('cpp/vcpkg.json') }}
           restore-keys: |
             vcpkg-installed-windows-eb2d3a3279fd019cb7733072d86900d0ad2a1aef-
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
       - name: Toolchain versions
         run: |
@@ -59,14 +63,19 @@ jobs:
       - name: clang-format (warnings as errors)
         run: |
           $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
-          $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp)$' })
+          # Every C++ source and header under cpp/. contracts/ is deliberately
+          # excluded: those headers are dossier-verbatim.
+          $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
           if ($files.Count -eq 0) {
             Write-Host "No C++ sources to check"
             exit 0
           }
           clang-format --dry-run --Werror $files
 
-      - name: clang-tidy (module sources)
+      - name: clang-tidy (core-math module sources; other modules deferred)
+        # Scope is deliberately core-math/src only; widening to glasses/src and
+        # bridge/src surfaces 159 warnings-as-errors today. The deferral is
+        # recorded in docs/ci.md ("clang-tidy scope").
         working-directory: cpp
         run: |
           $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
@@ -80,10 +89,11 @@ jobs:
   cpp-linux-asan:
     name: cpp-linux-asan
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build
@@ -131,7 +141,7 @@ jobs:
         run: ctest --preset linux-tsan --output-on-failure
         working-directory: cpp
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 
@@ -163,20 +173,21 @@ jobs:
   dotnet:
     name: dotnet
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: dotnet
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: dotnet/global.json
 
       - name: Toolchain versions
         run: dotnet --version
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 
@@ -270,13 +281,14 @@ jobs:
   python:
     name: python
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 
@@ -310,10 +322,11 @@ jobs:
   depcheck:
     name: depcheck
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 
@@ -322,16 +335,20 @@ jobs:
           python -m pip install -r python/requirements-dev.txt
           python -m pip install -e python
 
-      - name: Enforce dependency rules
+      - name: Enforce dependency rules and layers.json completeness
         run: python -m depcheck --root .
+
+      - name: Enforce the contract-compatibility gate
+        run: python -m depcheck contracts --root .
 
   licences:
     name: licences
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
 

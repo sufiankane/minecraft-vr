@@ -1,11 +1,11 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Run every Cubeglass CI lane locally, in order, fail-fast.
+    Run the Windows-reproducible Cubeglass CI lanes locally, in order, fail-fast.
 
 .DESCRIPTION
-    Reproduces the required CI gates from a repository checkout with a single
-    command:
+    Reproduces the required CI gates that a Windows dev machine can run, from a
+    repository checkout with a single command:
 
       1. python-env   - create python/.venv if missing, install development
                         requirements and the editable package;
@@ -13,13 +13,19 @@
                         ctest (ci preset);
       3. dotnet       - dotnet test Cubeglass.sln --configuration Release;
       4. python       - ruff, strict mypy and pytest from python/;
-      5. depcheck     - dependency-rule and licence gates from the repo root;
+      5. depcheck     - dependency-rule, contract-compatibility and licence
+                        gates from the repo root;
       6. unity        - build and copy the managed CoreMath plugin, copy
                         cg_unity_bridge.dll from the cpp-windows build into the
                         Unity project and run the Unity EditMode and PlayMode
                         tests through the Unity CLI, failing loudly on missing
                         results or assemblies, skipped tests or failed tests
                         (unless -SkipUnity is passed).
+
+    Not reproduced locally (Linux-only or tooling the dev machine lacks):
+    clang-format/clang-tidy, the ASan/UBSan/TSan presets and coverage floors,
+    the nightly benchmark/supply-chain/mutation/soak lanes. Run those through
+    the workflows or their documented commands in docs/ci.md.
 
     Every command is echoed before it runs. The script exits non-zero on the
     first failure and prints a final PASS/FAIL summary per lane. It works from a
@@ -66,6 +72,11 @@ function Write-Command {
 function Invoke-Checked {
     param([string]$Display, [scriptblock]$Action)
     Write-Command $Display
+    # Reset the ambient native exit code first: a scriptblock that runs only
+    # PowerShell commands leaves $LASTEXITCODE null or stale from an earlier
+    # command, and `$null -ne 0` is true in PowerShell, which would throw
+    # falsely. Native commands inside $Action set it themselves (M-6).
+    $global:LASTEXITCODE = 0
     & $Action
     if ($LASTEXITCODE -ne 0) {
         throw "command failed (exit $LASTEXITCODE): $Display"
@@ -202,6 +213,7 @@ try {
         Push-Location $RepoRoot
         try {
             Invoke-Checked 'python -m depcheck --root .' { & $VenvPython -m depcheck --root . }
+            Invoke-Checked 'python -m depcheck contracts --root .' { & $VenvPython -m depcheck contracts --root . }
             Invoke-Checked 'python -m depcheck licences --root .' { & $VenvPython -m depcheck licences --root . }
         }
         finally {

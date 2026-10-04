@@ -99,6 +99,46 @@ def test_repository_root_is_compliant() -> None:
     assert result.stdout.strip() == ""
 
 
+def write_manifest_root(root: Path, allowlist: str) -> None:
+    (root / "cpp").mkdir(parents=True, exist_ok=True)
+    (root / "cpp" / "vcpkg.json").write_text('{"dependencies": ["gtest"]}', encoding="utf-8")
+    (root / "dotnet").mkdir(parents=True, exist_ok=True)
+    (root / "dotnet" / "Directory.Packages.props").write_text("<Project />", encoding="utf-8")
+    (root / "contracts").mkdir(parents=True, exist_ok=True)
+    (root / "contracts" / "licence-allowlist.json").write_text(allowlist, encoding="utf-8")
+
+
+def test_unknown_spdx_licence_id_fails_and_names_the_package(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    write_manifest_root(root, '{"gtest": "BSD"}')
+    code, lines = run_cli(root, capsys)
+    assert code == 1
+    assert lines == [
+        (
+            "contracts/licence-allowlist.json: package \"gtest\" has unknown SPDX licence id "
+            "'BSD'; use a known SPDX identifier"
+        )
+    ]
+
+
+def test_empty_spdx_licence_id_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "root"
+    write_manifest_root(root, '{"gtest": ""}')
+    code, lines = run_cli(root, capsys)
+    assert code == 1
+    assert any("unknown SPDX licence id" in line for line in lines)
+
+
+def test_known_spdx_licence_ids_pass(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = tmp_path / "root"
+    write_manifest_root(root, '{"gtest": "BSD-3-Clause"}')
+    code, lines = run_cli(root, capsys)
+    assert code == 0
+    assert lines == []
+
+
 def test_default_command_still_checks_dependency_rules(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -39,8 +39,18 @@ unity/**/*.csproj
 unity/**/*.slnx
 **/*.egg-info/
 
-# Ctxo local cache (never committed)
-.ctxo/.cache/
+# Generated benchmark/coverage artefacts (documented local runs)
+cpp/benchmark_results.json
+cpp/soak.log
+python/coverage.xml
+
+# Ctxo local index/cache (never committed) and other local agent tooling
+.ctxo/
+.agents/
+.claude/
+.kilo/
+.mcp.json
+CLAUDE.md
 
 # SDD workspace (never committed)
 .superpowers/
@@ -48,3 +58,6 @@ unity/**/*.slnx
 # OS
 .DS_Store
 Thumbs.db
+
+# Ctxo local cache (never committed)
+.ctxo/.cache/
