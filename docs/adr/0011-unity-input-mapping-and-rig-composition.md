@@ -185,9 +185,13 @@ chosen over a `WorldReplaced` callback on the manager as the smaller change.
   to M2+; the S7 HIL checklist records the monocular presentation as known.
 - The calibration scene's `SyntheticPoseDrive` follows the same input
   contract: `InputFrame.TurnSnap` is a degrees-per-second rate integrated with
-  the frame delta, and the discrete snap edge (F / Shift+F) is consumed once
-  per frame through `ISnapInputSource` like `GameplayBridge`, never multiplied
-  by `dt`.
+  the frame delta **and added to the internal yaw exactly as
+  `PlayerController.Step` does** (`yaw += TurnSnap * dt`), so a device-right
+  look (negative `TurnSnap`) turns right and the calibration mouse/gamepad look
+  is not mirrored against the game or against its own `Move.X` steering. The
+  discrete snap edge (F / Shift+F) is consumed once per frame through
+  `ISnapInputSource` like `GameplayBridge`, and its right direction also
+  decreases the internal yaw, never multiplied by `dt`.
 
 ## Consequences
 
@@ -215,7 +219,8 @@ chosen over a `WorldReplaced` callback on the manager as the smaller change.
   baseline; `PlayerRootTests` conversion and heading; `InputMappingTests`
   degrees-per-second turn and the signed snap direction edge; `ComfortTests`
   hotbar eye-height anchor and default-FOV margin; `SyntheticPoseDriveTests`
-  calibration turn-snap integration and one-shot snap edge;
+  calibration turn-snap integration, direction agreement with `Move.X`/snap
+  and the one-shot snap edge;
   `GameSceneCompositionTests` the committed Game scene's window config and HUD
   anchor wiring.
 - PlayMode: gaze ray hits the rendered surface in front; dirty remesh after

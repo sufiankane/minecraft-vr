@@ -21,13 +21,19 @@ namespace Cubeglass.Unity.Input
     /// and <c>W</c> (move y +1) increases internal pitch.
     /// </para>
     /// <para>
-    /// <b>Units.</b> <see cref="InputFrame.TurnSnap"/> is the S4 degrees-per-second
-    /// rate, so it is multiplied by the frame delta exactly like the pitch/move
-    /// rates; without the <c>* dt</c> the steering was ~60–90× too sensitive and
-    /// framerate-dependent. The discrete snap edge is consumed once per frame
-    /// through <see cref="ISnapInputSource"/> (as <see cref="GameplayBridge"/>
-    /// does) and applied as a fixed <see cref="SnapIncrementDegrees"/> step, so
-    /// hold-repeat cannot double-apply it.
+    /// <b>Units and direction.</b> <see cref="InputFrame.TurnSnap"/> is the S4
+    /// degrees-per-second rate, so it is multiplied by the frame delta exactly
+    /// like the pitch/move rates; without the <c>* dt</c> the steering was
+    /// ~60–90× too sensitive and framerate-dependent. The rate is added to the
+    /// internal yaw exactly as <see cref="PlayerController.Step"/> integrates it
+    /// (<c>yaw += TurnSnap * dt</c>), so a device-right look (a negative
+    /// <see cref="InputFrame.TurnSnap"/> per the S7 mapping) turns right and the
+    /// calibration look agrees with the game. The earlier subtraction mirrored
+    /// the continuous look against the game and against its own <c>Move.X</c>
+    /// steering. The discrete snap edge is consumed once per frame through
+    /// <see cref="ISnapInputSource"/> (as <see cref="GameplayBridge"/> does) and
+    /// applied as a fixed <see cref="SnapIncrementDegrees"/> step, so hold-repeat
+    /// cannot double-apply it.
     /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
@@ -124,8 +130,11 @@ namespace Cubeglass.Unity.Input
         /// Integrates one frame: move axes and <see cref="InputFrame.TurnSnap"/>
         /// are degrees-per-second rates scaled by <paramref name="deltaTime"/>,
         /// while <paramref name="snapDirection"/> (-1 left / +1 right) is a
-        /// discrete step. A recentre frame zeroes the accumulated orientation
-        /// and recentres the provider.
+        /// discrete step. The rate is added to the internal yaw (matching
+        /// <see cref="PlayerController.Step"/>) and the right snap decreases it,
+        /// so continuous look, WASD steering and snap turn all agree on
+        /// direction. A recentre frame zeroes the accumulated orientation and
+        /// recentres the provider.
         /// </summary>
         public void Advance(InputFrame frame, int snapDirection, float deltaTime)
         {
@@ -147,7 +156,7 @@ namespace Cubeglass.Unity.Input
             yaw = WrapDegrees(
                 yaw
                     - (frame.Move.X * yawDegreesPerSecond * dt)
-                    - (frame.TurnSnap * dt)
+                    + (frame.TurnSnap * dt)
                     - (snap * snapIncrementDegrees));
             pitch = Mathf.Clamp(
                 pitch + (frame.Move.Y * pitchDegreesPerSecond * dt),

@@ -7,11 +7,12 @@ using Object = UnityEngine.Object;
 namespace Cubeglass.Unity.Input.Tests
 {
     /// <summary>
-    /// Pins the calibration pose drive's integration units and snap routing
-    /// (S7 review fix): <see cref="InputFrame.TurnSnap"/> is a degrees-per-second
-    /// rate scaled by the frame delta, and the discrete snap edge is consumed
-    /// once per frame through <see cref="ISnapInputSource"/> exactly like
-    /// <see cref="GameplayBridge"/>.
+    /// Pins the calibration pose drive's integration units, direction and snap
+    /// routing (S7 review fixes): <see cref="InputFrame.TurnSnap"/> is a
+    /// degrees-per-second rate scaled by the frame delta and added to the
+    /// internal yaw exactly like <c>PlayerController.Step</c>, and the discrete
+    /// snap edge is consumed once per frame through
+    /// <see cref="ISnapInputSource"/> exactly like <see cref="GameplayBridge"/>.
     /// </summary>
     public class SyntheticPoseDriveTests
     {
@@ -42,14 +43,15 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
-        public void TurnSnapRateIsIntegratedWithDeltaTime()
+        public void TurnSnapRateIsIntegratedWithDeltaTimeAndFollowsPlayerController()
         {
             drive.Advance(Frame(turnSnap: 90f), 0, 1f / 60f);
             Assert.AreEqual(
-                -1.5f,
+                1.5f,
                 drive.YawDegrees,
                 Tolerance,
-                "90 deg/s for one 1/60 s frame is 1.5 deg, not 90; a missing * dt is ~60x too sensitive");
+                "a positive TurnSnap raises the internal yaw exactly as PlayerController.Step adds it "
+                    + "(+1.5 deg for 90 deg/s over 1/60 s); the old subtraction mirrored the calibration look");
         }
 
         [Test]
@@ -60,12 +62,28 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
+        public void DeviceRightLookAndMoveSteerTheSameWay()
+        {
+            drive.Advance(Frame(turnSnap: -45f), 0, 1f);
+            float byLook = drive.YawDegrees;
+            Assert.Less(byLook, 0f, "device-right look (negative TurnSnap) turns right (negative internal yaw)");
+
+            drive.Advance(Frame(recenter: true), 0, 0f);
+            drive.Advance(Frame(move: new Vector2f(1f, 0f)), 0, 1f);
+            Assert.AreEqual(
+                byLook,
+                drive.YawDegrees,
+                Tolerance,
+                "the device-right look and D (move x +1) must steer the same way");
+        }
+
+        [Test]
         public void TurnSnapIntegrationIsFramerateIndependent()
         {
             drive.Advance(Frame(turnSnap: 45f), 0, 0.5f);
-            float half = drive.YawDegrees;
+            Assert.AreEqual(22.5f, drive.YawDegrees, Tolerance, "45 deg/s over 0.5 s");
             drive.Advance(Frame(turnSnap: 45f), 0, 0.5f);
-            Assert.AreEqual(half * 2f, drive.YawDegrees, Tolerance, "two half-second frames are one second of turning");
+            Assert.AreEqual(45f, drive.YawDegrees, Tolerance, "two half-second frames are one second of turning");
         }
 
         [Test]
@@ -92,7 +110,7 @@ namespace Cubeglass.Unity.Input.Tests
             Assert.IsTrue(fake.SampleBeforeConsume, "the frame must be sampled before the edge is consumed");
             Assert.AreEqual(1, fake.SampleCalls);
             Assert.AreEqual(1, fake.ConsumeCalls);
-            Assert.AreEqual(-45f, drive.YawDegrees, Tolerance, "right snap decreases internal yaw by the increment");
+            Assert.AreEqual(-45f, drive.YawDegrees, Tolerance, "right snap decreases internal yaw by the increment (GameplayBridge convention)");
 
             drive.AdvanceFromSource(1f / 60f);
             Assert.AreEqual(-45f, drive.YawDegrees, Tolerance, "a held key must not re-apply the edge");

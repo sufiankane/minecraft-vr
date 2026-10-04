@@ -19,13 +19,13 @@
 
 | Suite | Result | Counts |
 | --- | --- | --- |
-| EditMode | Passed | `total=111 passed=111 failed=0 skipped=0` |
+| EditMode | Passed | `total=112 passed=112 failed=0 skipped=0` |
 | PlayMode | Passed | `total=44 passed=44 failed=0 skipped=0` |
 
-EditMode (111) is the S6 suite plus the S7 input/rendering additions:
+EditMode (112) is the S6 suite plus the S7 input/rendering additions:
 Rendering.Tests 55 (rig, overlay, window, PlayerRoot, chunk views, input
 mapping, gaze, comfort, the committed-game-scene window/HUD composition pins
-and the pose-selector fallback contract), Input.Tests 36, Bridge.Tests 10,
+and the pose-selector fallback contract), Input.Tests 37, Bridge.Tests 10,
 CoreMathTests 5, Editor.Tests 4 (the discriminating spawn-column pins added by
 the Task 4d fix rounds), Placeholder 1. PlayMode (44) is the S6 rig/frame-budget
 tests plus the S7 chunk-view, gameplay, persistence and game-scene suites in
@@ -223,7 +223,7 @@ NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
 0): python-env 6.7 s, cpp-windows 16.8 s (ctest 5/5), dotnet 19.3 s (471
 tests: 78 + 121 + 24 + 161 + 87), python 2.3 s (45 tests), depcheck 0.3 s, unity
 SKIP. The Unity lane was exercised separately with the two `unity test`
-commands in section 1 (both exit 0; EditMode 111/111, PlayMode 44/44,
+commands in section 1 (both exit 0; EditMode 112/112, PlayMode 44/44,
 0 skipped).
 
 ## 9. CI verification (merged S7 PRs)
