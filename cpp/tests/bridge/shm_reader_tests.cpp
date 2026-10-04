@@ -129,6 +129,17 @@ class RawRegionView {
         std::memcpy(word, &size, sizeof(size));
     }
 
+    void SetWriterPid(std::uint64_t pid) const noexcept {
+        auto *word = reinterpret_cast<std::uint64_t *>(base_ + offsetof(ShmHeader, writer_pid));
+        std::memcpy(word, &pid, sizeof(pid));
+    }
+
+#if defined(__unix__) || defined(__APPLE__)
+    /// POSIX reports the true shm object size, so resizing the object behind
+    /// the bridge's back exercises the accepted-size window (TD-008/TD-052).
+    bool Resize(std::size_t size) const noexcept { return ftruncate(fd_, static_cast<off_t>(size)) == 0; }
+#endif
+
     [[nodiscard]] std::uint8_t *base() const noexcept { return base_; }
 
   private:
@@ -440,6 +451,140 @@ TEST_F(ShmReaderTest, NullArgumentsAreRejected) {
     EXPECT_EQ(cg_bridge_send_command(handle_, 0), CG_ERR_INVALID_ARG);
 
     EXPECT_EQ(cg_bridge_open(nullptr), CG_ERR_INVALID_ARG);
+}
+
+/// TD-003: the read path re-validates magic/abi_version/header_size after a
+/// successful open; a header torn or replaced behind the reader's back must
+/// not be served. TD-052: a zero `writer_pid` (valid magic but a
+/// protocol-violating publication order) is treated as unpublished.
+TEST_F(ShmReaderTest, ReadRevalidatesHeaderAfterOpen) {
+    OpenBridge();
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns()), CG_OK);
+    const cg_head_sample head = MakeHead(11);
+    ASSERT_EQ(cg_test_writer_publish_head(&head), CG_OK);
+    const cg_hand_frame hands = MakeHands(12);
+    ASSERT_EQ(cg_test_writer_publish_hands(&hands), CG_OK);
+
+    cg_head_sample read_head{};
+    cg_hand_frame read_hands{};
+    ASSERT_EQ(cg_bridge_read_head(handle_, &read_head), CG_OK);
+    ASSERT_EQ(cg_bridge_read_hands(handle_, &read_hands), CG_OK);
+
+    view.SetAbiVersion(kShmAbiVersion + 1);
+    EXPECT_EQ(cg_bridge_read_head(handle_, &read_head), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(cg_bridge_read_hands(handle_, &read_hands), CG_ERR_UNSUPPORTED);
+    view.SetAbiVersion(kShmAbiVersion);
+
+    view.SetHeaderSize(static_cast<std::uint32_t>(kHeaderSize - 16));
+    EXPECT_EQ(cg_bridge_read_head(handle_, &read_head), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(cg_bridge_read_hands(handle_, &read_hands), CG_ERR_UNSUPPORTED);
+    view.SetHeaderSize(static_cast<std::uint32_t>(kHeaderSize));
+
+    view.ZeroMagic();
+    EXPECT_EQ(cg_bridge_read_head(handle_, &read_head), CG_ERR_NOT_READY);
+    EXPECT_EQ(cg_bridge_read_hands(handle_, &read_hands), CG_ERR_NOT_READY);
+
+    view.InitialiseHeader();
+    EXPECT_EQ(cg_bridge_read_head(handle_, &read_head), CG_OK);
+    EXPECT_EQ(cg_bridge_read_hands(handle_, &read_hands), CG_OK);
+}
+
+TEST_F(ShmReaderTest, CommandIsRejectedAgainstATornHeaderAfterOpen) {
+    OpenBridge();
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+
+    ASSERT_EQ(cg_bridge_send_command(handle_, 3), CG_OK);
+
+    view.ZeroMagic();
+    EXPECT_EQ(cg_bridge_send_command(handle_, 3), CG_ERR_NOT_READY);
+
+    view.InitialiseHeader();
+    EXPECT_EQ(cg_bridge_send_command(handle_, 3), CG_OK);
+}
+
+TEST_F(ShmReaderTest, ZeroWriterPidIsTreatedAsUninitialised) {
+    OpenBridge();
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns()), CG_OK);
+    const cg_head_sample head = MakeHead(13);
+    ASSERT_EQ(cg_test_writer_publish_head(&head), CG_OK);
+
+    view.SetWriterPid(0);
+    cg_head_sample read{};
+    EXPECT_EQ(cg_bridge_read_head(handle_, &read), CG_ERR_NOT_READY);
+    EXPECT_EQ(cg_bridge_send_command(handle_, 1), CG_ERR_NOT_READY);
+
+    view.SetWriterPid(4242);
+    ASSERT_EQ(cg_bridge_read_head(handle_, &read), CG_OK);
+    EXPECT_EQ(read.sequence, 13U);
+}
+
+/// TD-052: a non-zero writer pid that is not this process is normal (the
+/// writer is a separate service) and must stay advisory, never a rejection.
+TEST_F(ShmReaderTest, ForeignWriterPidIsAdvisoryAndReadsSucceed) {
+    OpenBridge();
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+
+    ASSERT_EQ(cg_test_writer_set_heartbeat(now_ns()), CG_OK);
+    const cg_head_sample head = MakeHead(14);
+    ASSERT_EQ(cg_test_writer_publish_head(&head), CG_OK);
+    const cg_hand_frame hands = MakeHands(15);
+    ASSERT_EQ(cg_test_writer_publish_hands(&hands), CG_OK);
+
+    view.SetWriterPid(static_cast<std::uint64_t>(987654321));
+
+    cg_head_sample read_head{};
+    cg_hand_frame read_hands{};
+    EXPECT_EQ(cg_bridge_read_head(handle_, &read_head), CG_OK);
+    EXPECT_EQ(read_head.sequence, 14U);
+    EXPECT_EQ(cg_bridge_read_hands(handle_, &read_hands), CG_OK);
+    EXPECT_EQ(read_hands.sequence, 15U);
+    EXPECT_EQ(cg_bridge_send_command(handle_, 2), CG_OK);
+}
+
+#if defined(__unix__) || defined(__APPLE__)
+/// TD-008/TD-052: POSIX reports the true shm object size, so the accepted
+/// window is exact; an undersized or oversized region is refused at open.
+TEST_F(ShmReaderTest, RegionSizeOutsideTheAcceptedWindowIsRejected) {
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+
+    void *handle = nullptr;
+    ASSERT_TRUE(view.Resize(kMinimumRegionSize - 1));
+    EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(handle, nullptr);
+
+    ASSERT_TRUE(view.Resize(kMaximumRegionSize + 4096));
+    EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(handle, nullptr);
+
+    // Back inside the window the same object opens again.
+    ASSERT_TRUE(view.Resize(kMinimumRegionSize));
+    EXPECT_EQ(cg_bridge_open(&handle), CG_OK);
+    ASSERT_NE(handle, nullptr);
+    cg_bridge_close(handle);
+}
+#endif
+
+/// TD-006: the command is written through the view held by the handle. After
+/// the writer closes (and, on POSIX, unlinks the name; on Windows, drops the
+/// last other handle to the named section), a name-based reopen would fail,
+/// yet the held view still accepts the command.
+TEST_F(ShmReaderTest, SendCommandWritesThroughTheHeldViewWithoutANameLookup) {
+    OpenBridge();
+
+    cg_test_writer_close();
+
+    // On Windows the section object stays alive because the bridge handle
+    // holds a mapping; on POSIX the mapping outlives the unlinked name.
+    EXPECT_EQ(cg_bridge_send_command(handle_, 9), CG_OK);
 }
 
 } // namespace
