@@ -467,7 +467,10 @@ namespace Cubeglass.Unity.Rendering
         /// Rebuilds up to the remaining per-frame upload budget of chunks
         /// dirtied by <see cref="World.ChunkChanged"/> (S7 Task 4a). Chunks
         /// whose view is not active are dropped: their next load meshes fresh
-        /// data anyway. Returns the number of views rebuilt.
+        /// data anyway. Returns the number of views rebuilt. If snapshotting or
+        /// meshing throws, the chunk's view is released to the pool and dropped
+        /// from the active maps before the exception propagates (the same
+        /// release-once guarantee <see cref="OnUpload"/> gives).
         /// </summary>
         public int ProcessDirtyRemeshes()
         {
@@ -498,10 +501,28 @@ namespace Cubeglass.Unity.Rendering
                     break;
                 }
 
-                ChunkSnapshot snapshot = chunkData.Snapshot();
-                NeighbourSnapshot neighbours = world.CreateNeighbourSnapshot(chunk);
-                MeshData meshData = mesher.Build(snapshot, neighbours, blocks);
-                pool.Upload(view, meshData);
+                try
+                {
+                    ChunkSnapshot snapshot = chunkData.Snapshot();
+                    NeighbourSnapshot neighbours = world.CreateNeighbourSnapshot(chunk);
+                    MeshData meshData = mesher.Build(snapshot, neighbours, blocks);
+                    pool.Upload(view, meshData);
+                }
+                catch
+                {
+                    // Failure-only path (allocation/engine error): return the
+                    // view so the pool's release-once contract and capacity
+                    // hold, and drop the manager's references to it so the
+                    // views/dirty maps stay consistent. The chunk keeps its
+                    // generated data and re-meshes on its next OnUpload after a
+                    // reload instead of leaking capacity every time.
+                    dirtySet.Remove(chunk);
+                    dirtyQueue.Dequeue();
+                    views.Remove(chunk);
+                    pool.Release(view);
+                    throw;
+                }
+
                 dirtySet.Remove(chunk);
                 dirtyQueue.Dequeue();
                 uploadsThisFrame++;
