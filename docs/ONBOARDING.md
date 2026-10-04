@@ -198,10 +198,14 @@ Expected at the current head: **471 tests, 0 failed** across
 Coverage is collected and the module floors enforced by the `dotnet` CI job, one results directory per test project (`coverage/{coremath,voxel,mesh,gameplay,streaming}`); a missing report fails the job. Local CoreMath example:
 
 ```powershell
-dotnet test dotnet/Cubeglass.sln --configuration Release --collect:"XPlat Code Coverage" --results-directory dotnet/coverage
-$report = (Get-ChildItem -Recurse -Filter coverage.cobertura.xml dotnet/coverage | Select-Object -First 1).FullName
-python\.venv\Scripts\python.exe -m depcheck coverage --report $report --module Cubeglass.CoreMath --floor 95
+dotnet test dotnet/tests/CoreMath.Tests --configuration Release --collect:"XPlat Code Coverage" --results-directory dotnet/coverage/coremath
+python\.venv\Scripts\python.exe -m depcheck coverage --report dotnet/coverage/coremath --module Cubeglass.CoreMath --floor 95
 ```
+
+Pass a results **directory** that holds exactly one Cobertura report:
+`depcheck coverage` resolves it deterministically and fails on zero or several
+candidates, so it can never compare against the wrong run (TD-032). A matched
+module with zero coverable lines fails unless `--allow-empty` is passed.
 
 ### 4.3 Python and the dependency gates
 
