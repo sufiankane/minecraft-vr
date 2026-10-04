@@ -77,12 +77,15 @@ Result<void> VitureHeadPoseSource::Start() {
     }
 
     stop_requested_.store(false, std::memory_order_release);
-    // A new session starts with no pending recentre and no stale correction:
-    // the polling thread has not been launched yet, so the writes are private.
-    recentre_requested_.store(false, std::memory_order_relaxed);
-    recentre_pending_.store(false, std::memory_order_release);
-    yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
-    recentre_until_seq_.store(0, std::memory_order_release);
+    // A new session starts with no pending recentre and no stale correction.
+    // The polling thread has not been launched yet, but a `Recenter` that raced
+    // this Start could already have armed the snapshot, so take the recentre
+    // mutex to keep the snapshot's single-writer discipline.
+    {
+        const std::lock_guard<std::mutex> recentre_lock(recentre_mutex_);
+        recentre_requested_.store(false, std::memory_order_relaxed);
+        recentre_state_.Store({});
+    }
     session_published_ = false;
     running_.store(true, std::memory_order_release);
     try {
@@ -115,7 +118,7 @@ void VitureHeadPoseSource::Stop() noexcept {
         // true (never-reset) SDK frame. Taking the caller mutex serialises
         // with a `Recenter` that raced the stop.
         const std::lock_guard<std::mutex> call_lock(recentre_call_mutex_);
-        if (recentre_requested_.load(std::memory_order_acquire) || recentre_pending_.load(std::memory_order_acquire)) {
+        if (recentre_requested_.load(std::memory_order_acquire) || recentre_state_.Load().pending) {
             WithdrawPendingRecentre();
         }
     }
@@ -164,9 +167,8 @@ Result<void> VitureHeadPoseSource::Recenter() {
     {
         const std::lock_guard<std::mutex> lock(recentre_mutex_);
         ++recentre_generation_;
-        yaw_offset_deg_.store(-YawDegrees(target.pose), std::memory_order_relaxed);
-        recentre_until_seq_.store(target.seq, std::memory_order_release);
-        recentre_pending_.store(true, std::memory_order_release);
+        recentre_state_.Store(
+            {-YawDegrees(target.pose), static_cast<std::int64_t>(target.seq), true, recentre_generation_});
         recentre_requested_.store(true, std::memory_order_release);
     }
     return Ok();
@@ -199,14 +201,15 @@ bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
     // frame; later samples already arrive recentred from the SDK. While a post
     // is pending (armed but not yet resolved against the SDK) the correction
     // applies to every sample, so an outage cannot expose the pre-recentre
-    // heading again.
-    const std::uint32_t until_seq = recentre_until_seq_.load(std::memory_order_acquire);
-    const bool recentred = recentre_pending_.load(std::memory_order_acquire) || newest.seq <= until_seq;
+    // heading again. The offset/until/pending triple is read as one snapshot
+    // (CXX-13), so a reader cannot pair a newer offset with an older until.
+    const RecentreState::Value recentre = recentre_state_.Load();
+    const bool recentred = recentre.pending || newest.seq <= recentre.until_seq;
     const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
     if (recentred || capped_ns > 0) {
         const double dt_s = core_math::ToSeconds(capped_ns);
-        const double yaw_delta_deg = (recentred ? yaw_offset_deg_.load(std::memory_order_relaxed) : 0.0) +
-                                     yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
+        const double yaw_delta_deg =
+            (recentred ? recentre.yaw_offset_deg : 0.0) + yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
         const double pitch_delta_deg = pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
         if (yaw_delta_deg != 0.0 || pitch_delta_deg != 0.0) {
             out.pose.rotation =
@@ -376,9 +379,7 @@ void VitureHeadPoseSource::HandleRecentre(std::uint64_t generation) noexcept {
         // withdrawal only applies when this is still the newest generation.
         const std::lock_guard<std::mutex> lock(recentre_mutex_);
         if (generation == recentre_generation_) {
-            yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
-            recentre_until_seq_.store(0, std::memory_order_release);
-            recentre_pending_.store(false, std::memory_order_release);
+            recentre_state_.Store({0.0, 0, false, generation});
         }
         return;
     }
@@ -392,9 +393,7 @@ void VitureHeadPoseSource::HandleRecentre(std::uint64_t generation) noexcept {
     {
         const std::lock_guard<std::mutex> lock(recentre_mutex_);
         if (generation == recentre_generation_) {
-            yaw_offset_deg_.store(-yaw_deg, std::memory_order_relaxed);
-            recentre_until_seq_.store(last_published_->seq, std::memory_order_release);
-            recentre_pending_.store(false, std::memory_order_release);
+            recentre_state_.Store({-yaw_deg, static_cast<std::int64_t>(last_published_->seq), false, generation});
         }
     }
     // Later quiet synthetics must carry the recentred pose, and the next real
@@ -410,9 +409,7 @@ void VitureHeadPoseSource::HandleRecentre(std::uint64_t generation) noexcept {
 void VitureHeadPoseSource::WithdrawPendingRecentre() noexcept {
     const std::lock_guard<std::mutex> lock(recentre_mutex_);
     recentre_requested_.store(false, std::memory_order_relaxed);
-    recentre_pending_.store(false, std::memory_order_release);
-    yaw_offset_deg_.store(0.0, std::memory_order_relaxed);
-    recentre_until_seq_.store(0, std::memory_order_release);
+    recentre_state_.Store({0.0, 0, false, recentre_generation_});
 }
 
 bool VitureHeadPoseSource::WaitBackoff(Duration duration, std::stop_token stop) noexcept {

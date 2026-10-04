@@ -11,6 +11,7 @@
 #include "cg/glasses/device_gate.hpp"
 #include "cg/glasses/host_clock.hpp"
 #include "cg/glasses/pose_slot.hpp"
+#include "cg/glasses/recentre_state.hpp"
 #include "cg/glasses/viture_api.hpp"
 #include "ports.hpp"
 
@@ -173,7 +174,6 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::mutex recentre_call_mutex_;
     std::mutex recentre_mutex_;
     std::atomic<bool> recentre_requested_{false};
-    std::atomic<bool> recentre_pending_{false};
     std::uint64_t recentre_generation_ = 0; // Guarded by `recentre_mutex_`.
 
     // Device lifetime (create success sets it, before every destroy it is
@@ -199,14 +199,14 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     bool session_published_ = false;
 
     // Reader-visible state. The correction applies to samples up to
-    // `recentre_until_seq_`, or to every sample while `recentre_pending_` is
+    // `RecentreState::Value::until_seq`, or to every sample while `pending` is
     // set (a posted request is armed but not yet resolved against the SDK).
-    // The reader acquires `recentre_until_seq_`/`recentre_pending_` before
-    // reading `yaw_offset_deg_`, and every writer stores the offset first.
+    // All three fields are published as one seqlock snapshot (CXX-13), so a
+    // reader can never combine a newer offset with an older `until_seq` (the
+    // old loose reads let two overlapping recentres glitch one frame).
     std::atomic<double> yaw_rate_deg_per_s_{0.0};
     std::atomic<double> pitch_rate_deg_per_s_{0.0};
-    std::atomic<double> yaw_offset_deg_{0.0};
-    std::atomic<std::uint32_t> recentre_until_seq_{0};
+    RecentreState recentre_state_{};
 
     // Diagnostics-only SDK stamp (see `LastSdkSeconds`). Written by the polling
     // thread before the matching publish; `has_sdk_seconds_` is the release

@@ -244,7 +244,10 @@ correction stays applied to every sample, quiet synthetics included, until the
 request is resolved against the SDK. The arm, the pending flag and the posted
 generation are written in one critical section of the same mutex the polling
 thread claims and resolves under, so a resolution racing a post can never clear
-a newer arm (CXX-02). The polling thread services the request
+a newer arm (CXX-02); the reader-visible offset, `until_seq`, pending flag and
+generation are published as one seqlock snapshot (`RecentreState`, CXX-13), so
+a reader can never pair a newer offset with an older `until_seq` when two
+recentres overlap a read. The polling thread services the request
 between polls only while the device is alive and the current device session has
 published: a request that finds the device dead or freshly recreated but not
 yet publishing stays pending, so a post that races a device loss is applied
@@ -362,8 +365,15 @@ is provisional until then). This section is filled in before
   bound, round-trip normally before `Start` and after `Stop` when wired to a
   live `VitureHeadPoseSource::WithDeviceStopped`, prove that an open display
   seam blocks `Start` until it completes (deterministic interleaving), and
-  stress `Set`/`Get` against `Start`/`Stop` while asserting no lifecycle or
-  poll call overlaps a seam action (CXX-01).
+  run a deterministic per-round stress that parks a `Set`/`Get` seam, holds
+  `Start` at the gate, and asserts no lifecycle or poll call overlaps the seam
+  action (CXX-01).
+- `cpp/tests/glasses/recentre_state_tests.cpp` pins the CXX-13 snapshot: a
+  publish landing between the two halves of a read invalidates the attempt and
+  the production reader returns the whole new snapshot (never the new offset
+  with the old `until_seq`), and a threaded writer/reader pair asserts every
+  accepted read preserves the encoded offset/until/pending/generation
+  relation.
 - `cpp/tests/glasses/thread_safety_tests.cpp` stresses the slot (a saturated
   writer publishing 200k samples against 8 readers) and `VitureHeadPoseSource`
   over `FakeVitureApi` (one producer, four readers, a manual host clock
