@@ -241,7 +241,7 @@ two build routes and skips the other job:
 
 | Route | Runner | Unity licence | Unity suites |
 | --- | --- | --- | --- |
-| `hosted` (default) | `windows-latest` | `UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD` secrets | EditMode + PlayMode before the build |
+| `hosted` (default) | `windows-latest` | `UNITY_LICENSE` alone (offline `.ulf`) **or** `UNITY_SERIAL` alone (serial) | EditMode + PlayMode before the build |
 | `self-hosted` | `[self-hosted, windows]` | the machine's own Unity Hub activation (no secrets) | EditMode + PlayMode before the build |
 
 Both routes attach the player to the `v0.1.0` release when that tag exists; the
@@ -252,10 +252,20 @@ bug fixed in the 2026-10-03 infra review, I-1).
 
 ### Route 1: `hosted` (default)
 
-Builds the Windows x64 player on `windows-latest`. It first requires three
-repository secrets — `UNITY_LICENSE`, `UNITY_EMAIL` and `UNITY_PASSWORD` — and
-fails before any build step with an error naming every missing one. With the
-secrets present it builds the managed plugins
+Builds the Windows x64 player on `windows-latest`. It first requires Unity
+credentials in one of two modes and fails before any build step with an
+actionable error:
+
+- **offline licence** — `UNITY_LICENSE` alone, the contents of a
+  Personal/Student `.ulf` exported from
+  [license.unity3d.com/manual](https://license.unity3d.com/manual).
+  The release gate writes
+  it to `Unity_lic.ulf` and runs `unity license activate --file`.
+- **serial** — `UNITY_SERIAL` alone,
+  a Plus/Pro/Education serial. The release gate runs
+  `unity license activate --serial` and returns the seat at the end of the job.
+
+With credentials present it builds the managed plugins
 (`dotnet build dotnet/Cubeglass.sln --configuration Release` and
 `scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` target from the
 pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
@@ -268,17 +278,19 @@ required jobs are secret-free and `windows-latest` has no editor), so
 where the suites become mandatory in CI: the EditMode and PlayMode suites run
 before the player build and any failure fails the job. On this route the
 release installs the pinned Unity CLI (`1.0.0-beta.11`) and Editor
-(`6000.6.3f1`), activates the licence from `UNITY_LICENSE` and runs the same
+(`6000.6.3f1`), activates the licence from `UNITY_LICENSE` (offline `.ulf`) or
+`UNITY_SERIAL` and runs the same
 `unity test unity/Cubeglass --mode EditMode --non-interactive` and
 `--mode PlayMode --non-interactive` suites ci-local runs locally. The release
 fails when results are missing, a required test assembly is absent, any test
 fails or any test is skipped.
 
-The player build runs `game-ci/unity-builder` **v6.0.0** (SHA-pinned) with
-`cliVersion: v0.1.72` pinned so the action cannot resolve a floating `latest`
-while the Unity secrets are in scope (Unity 6000.6.3f1 from
-`ProjectSettings/ProjectVersion.txt`, `StandaloneWindows64`) and the committed
-build method `Cubeglass.Editor.BuildPlayer.BuildWindows64`, packages
+The player build runs the same pinned Unity CLI
+(`unity run unity/Cubeglass -- -executeMethod
+Cubeglass.Editor.BuildPlayer.BuildWindows64`; editor 6000.6.3f1 from
+`ProjectSettings/ProjectVersion.txt`, target StandaloneWindows64) under the
+licence activated in the step above - no third-party action and no account
+credentials - and packages
 `Cubeglass-windows-x64.zip`, uploads it as the `Cubeglass-windows-x64` artefact
 and attaches the archive to the release when `v0.1.0` exists.
 
@@ -317,16 +329,21 @@ it between runs.
 
 ### Licence options
 
-Unattended Unity activation (not needed by the self-hosted route, which uses
-the machine's Hub activation) accepts only the following;
-`unity license activate --personal` does not work unattended:
+The hosted route needs one of two credential modes; the self-hosted route
+needs neither (it uses the machine's Hub activation):
 
-| Option | Needs | Available here |
-| --- | --- | --- |
-| Editor serial (`unity license activate --serial`) | a Pro/Plus/Enterprise serial | no: the account is Unity Personal |
-| Floating licence server (`unity license activate --floating`) | a reachable Unity licence server | no |
-| Offline licence file (`unity license activate --file`) | an exported `.ulf` | no: deprecated for Hub-activated accounts |
-| Self-hosted runner with Hub activation | the licensed Windows machine | **yes** — the `self-hosted` route |
+| Mode | Secrets | Command | Needs |
+| --- | --- | --- | --- |
+| Offline licence file | `UNITY_LICENSE` only | `unity license activate --file` | a Personal/Student `.ulf` from license.unity3d.com/manual |
+| Serial | `UNITY_SERIAL` | `unity license activate --serial` | a Plus/Pro/Education serial |
+| Floating licence server | — | `unity license activate --floating` | a reachable Unity licence server; not wired into the workflow |
+| Self-hosted runner with Hub activation | none | — | the licensed Windows machine — the `self-hosted` route |
+
+Owner note: Unity Student/Personal licences use the offline `.ulf` exported
+from [license.unity3d.com/manual](https://license.unity3d.com/manual) and the
+`unity license activate --file` CLI path. The CLI explicitly rejects
+`unity license activate --personal` when it runs with service-account tokens,
+so the serial mode is for Plus/Pro/Education serials only.
 
 Until the HIL playtest exists, the release notes in
 [`releases/v0.1.0.md`](releases/v0.1.0.md) describe a release candidate and the
