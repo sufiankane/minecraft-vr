@@ -86,16 +86,25 @@ normally would invert the red semantics. A green negative run means
 `clang-format`, `pytest` and `depcheck` each still rejected their fixture. These
 are the `Required tests` self-tests of S0 in dossier section 6.
 
-### Deferral: contract-compatibility gate
+### Contract-compatibility gate (added 2026-10-03)
 
 Dossier section 9 item 7 defines a contract-compatibility check: contract files
-must be unchanged unless the PR carries an ADR and a version bump. This gate is
-**not** implemented in S0 because no contract file exists yet under `contracts/`
-(the directory currently holds only `layers.json`, `licence-allowlist.json` and
-a `.gitkeep`). The gate is added when the first contract file lands in S1, which
-is the stage that introduces the shared types and golden fixtures. Until then,
-the rule is upheld by review (PR checklist item "No contract changes, or ADR
-linked and version bumped").
+must be unchanged unless the PR carries an ADR and a version bump. The original
+text of this ADR deferred the gate to S1, when the first contract file was
+expected to land. That trigger fired in S1 (`contracts/cg_types.h`), but the
+follow-up did not happen, and S4–S7 changed contracts repeatedly (ABI 1→2, new
+headers) with only prose in the ADRs; CI would have stayed green through a
+contract edit with no ADR. The gate was therefore added on **2026-10-03**
+(infra review part A), not in S1.
+
+It is implemented as `python -m depcheck contracts` in the required `depcheck`
+job. The check computes a normalised fingerprint (comments and whitespace
+stripped) over `contracts/cg_types.h`, `contracts/cg_unity_bridge.h`,
+`contracts/cpp/ports.hpp` and `contracts/cpp/result.hpp`, compares it with the
+committed `contracts/abi-baseline.json`, and fails when the fingerprint changed
+without a `CG_ABI_VERSION` bump. `--update` regenerates the baseline but refuses
+to write while the version is unchanged, so the bump cannot be skipped; the ADR
+requirement itself stays a review responsibility recorded in the PR checklist.
 
 ### Consequences
 
@@ -103,19 +112,21 @@ linked and version bumped").
   by the same commands a human runs locally.
 - Good: ports are proven by one contract suite against real, fake and replay
   implementations.
-- Bad: the contract-compatibility gate has a one-stage gap (S0) and relies on
-  review until S1; the deferral is explicit here so it is not forgotten.
-- Follow-up: add the section 9.7 contract-compatibility gate in S1 when the
-  first contract file lands.
+- Bad: the contract-compatibility gate arrived late — S1 through S7 were
+  machine-checked only for review; the gap is recorded here rather than implied
+  to have been closed in S1.
+- Follow-up: none for section 9.7; the gate exists. Future contract changes must
+  bump `CG_ABI_VERSION` and regenerate the baseline in the same PR.
 
 ## Confirmation
 
 The pyramid levels and their triggers are enforced by the required jobs in
 `.github/workflows/ci.yml` and the nightly and per-release jobs in
 `.github/workflows/nightly.yml` (performance and soak). Coverage floors are
-enforced by `python -m depcheck coverage`. Negative gates are proven by
-`.github/workflows/negative-gates.yml`. The deferral has a named trigger: the
-first contract file in S1.
+enforced by `python -m depcheck coverage`. The contract-compatibility gate is
+enforced by `python -m depcheck contracts` against
+`contracts/abi-baseline.json` (added 2026-10-03). Negative gates are proven by
+`.github/workflows/negative-gates.yml`.
 
 ## Links
 
