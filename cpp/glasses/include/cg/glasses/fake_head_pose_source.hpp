@@ -28,6 +28,11 @@ struct FakeScript {
     std::uint64_t count = 0;
     /// Deterministic RNG seed for `Jitter`.
     std::uint32_t seed = 0;
+    /// Fixed roll offset in degrees, composed onto every sample as the final
+    /// `yaw * pitch * roll` rotation component. Roll is not extrapolated by
+    /// `TryGetLatest`; a prediction composes the yaw/pitch delta onto the
+    /// recorded rotation so this offset survives the prediction (TD-001).
+    double roll_deg = 0.0;
 
     [[nodiscard]] static FakeScript Static() noexcept;
     [[nodiscard]] static FakeScript YawSweep(double degrees_per_second) noexcept;
@@ -59,9 +64,11 @@ struct FakeHeadPoseSourceConfig {
 /// and it is `NotReady` before the first sample (there is no pose to make the
 /// origin). `TryGetLatest` extrapolates yaw and pitch by the last inter-sample
 /// rate for `predict` nanoseconds, capped at 100 ms, and leaves the position
-/// unchanged. A `predict` of zero returns the newest sample verbatim. Wait-free
-/// reads; one writer (the test thread driving `AdvanceSamples`) and many
-/// readers.
+/// unchanged. The extrapolated delta is composed onto the recorded rotation
+/// (matching the replay and VITURE adapters), so a scripted roll survives the
+/// prediction (TD-001). A `predict` of zero returns the newest sample verbatim.
+/// Wait-free reads; one writer (the test thread driving `AdvanceSamples`) and
+/// many readers.
 class FakeHeadPoseSource final : public IHeadPoseSource {
   public:
     explicit FakeHeadPoseSource(FakeHeadPoseSourceConfig config);
