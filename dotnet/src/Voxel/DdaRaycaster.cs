@@ -58,8 +58,9 @@ namespace Cubeglass.Voxel
     /// <b>Termination.</b> The traversal advances at least one cell per
     /// iteration and is bounded by a step cap derived from the distance and the
     /// normalised direction
-    /// (<c>ceil(maxDistance * (|dx| + |dy| + |dz|)) + 4</c>); reaching the cap
-    /// returns null. A step that would overflow a cell coordinate also returns
+    /// (<c>floor(maxDistance * (|dx| + |dy| + |dz|)) + 4</c>, truncated to a
+    /// 64-bit integer); reaching the cap returns null. A step that would
+    /// overflow a cell coordinate also returns
     /// null, so every accepted input terminates without coordinate wrap-around.
     /// </para>
     /// <para>

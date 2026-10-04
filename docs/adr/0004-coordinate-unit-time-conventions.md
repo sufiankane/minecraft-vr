@@ -196,8 +196,11 @@ Neither dependency enters a shipped artefact; both are test-only.
   (`cpp/tests/core-math/golden_test.cpp`, Task 5) and the C# runner
   (`dotnet/tests/CoreMath.Tests/GoldenFixtureTests.cs`, Task 8); both run all 28
   cases, `clock_map` exactly and the rest within `1e-6`.
-- `contracts/cg_types.h` reproduces dossier section 5.1 with `CG_ABI_VERSION 1`;
-  a single `git grep -c CG_ABI_VERSION contracts/cg_types.h` must print 1.
+- `contracts/cg_types.h` reproduced dossier section 5.1 with `CG_ABI_VERSION 1`
+  at S1; it rose to **2** in ADR-0010 when the section 5.6 hand types joined the
+  shared ABI. A single `git grep -c CG_ABI_VERSION contracts/cg_types.h` must
+  still print 1 (one macro definition), and `python -m depcheck contracts`
+  enforces the fingerprint/version coupling from 2026-10-04 onwards.
 - `ClockMapper` jitter, drift and median tests in Tasks 4 and 7 pin the
   estimator behaviour against the 1 ms budget.
 - The licence checker (`python -m depcheck licences`) enforces the allowlist
