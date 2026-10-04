@@ -69,3 +69,7 @@ Thumbs.db
 
 # Ctxo local cache (never committed)
 .ctxo/.cache/
+
+# Coverage artefacts (python/coverage.xml is listed above)
+python/.coverage
+**/.coverage
