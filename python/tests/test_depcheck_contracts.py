@@ -380,6 +380,13 @@ def test_strip_comments_handles_csharp_literals() -> None:
     assert strip_comments(raw) == raw
 
 
+def test_strip_comments_translates_digraphs_in_code_only() -> None:
+    assert strip_comments("%:include <x>") == "#include <x>"
+    assert strip_comments("a %:%: b") == "a ## b"
+    assert strip_comments('s = "%:include <x>";') == 's = "%:include <x>";'
+    assert strip_comments("// %:include <x>\ncode();") == "\ncode();"
+
+
 def test_mask_string_literals_blanks_literal_contents() -> None:
     masked = mask_string_literals('var path = "System.IO.File"; Call();')
     assert "System.IO.File" not in masked

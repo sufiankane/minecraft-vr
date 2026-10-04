@@ -20,12 +20,13 @@ this module are the independent record a baseline-only edit cannot forge:
 
 ``check_contracts`` recomputes the live fingerprints and fails when any of them
 differs from :data:`KNOWN_FINGERPRINTS`, before it even looks at the baseline.
-A changed surface therefore requires the source version bump, the
-``KNOWN_ABI_VERSIONS`` update *and* the ``KNOWN_FINGERPRINTS`` update — three
-reviewed code edits — and only then does ``--update`` regenerate the baseline.
-Hand-editing ``contracts/abi-baseline.json`` (any field, consistently or not)
-cannot admit drift: the baseline is bookkeeping, and any disagreement with the
-live surface fails.
+Intended drift therefore requires a review-visible edit of the code constant
+(plus a regenerated baseline); no baseline-only edit can admit it. The
+version-bump discipline is additionally checked by the source-vs-
+:data:`KNOWN_ABI_VERSIONS` anchor, but because both constants live in this file,
+an edit of ``KNOWN_FINGERPRINTS`` that leaves the version and the anchor at
+their old values would pass the gate: the bump tied to a fingerprint change
+remains a review-enforced convention, not a machine-enforced one.
 
 ``--update`` refuses while the live fingerprint differs from the code constant,
 printing exactly which constant to edit; it may otherwise refresh the baseline
@@ -289,6 +290,16 @@ def _scan(text: str, *, mask_literals: bool) -> str:
         if raw_end is not None:
             _copy_literal(text, index, raw_end, out, mask=mask_literals)
             index = raw_end
+            continue
+        # C++ phase-1 digraphs, translated in code only: a literal that spells
+        # `%:include` stays literal text and must not become a directive.
+        if character == "%" and text.startswith("%:%:", index):
+            out.append("##")
+            index += 4
+            continue
+        if character == "%" and text.startswith("%:", index):
+            out.append("#")
+            index += 2
             continue
         out.append(character)
         index += 1

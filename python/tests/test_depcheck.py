@@ -284,6 +284,32 @@ def test_comment_marker_inside_a_string_cannot_hide_an_include(
     assert lines == ["cpp/core-math/src/bad.cpp:2 forbidIncludes"]
 
 
+def test_digraph_include_is_caught(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["windows.h"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(tmp_path, "cpp/core-math/src/bad.cpp", "%:include <windows.h>\n")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:1 forbidIncludes"]
+
+
+def test_digraph_does_not_escape_or_create_a_directive_inside_strings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["windows.h"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(
+        tmp_path,
+        "cpp/core-math/src/ok.cpp",
+        'const char *literal = "%:include <windows.h>";\nconst char *raw = R"(\n%:include <windows.h>\n)";\n',
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
 def test_csharp_using_directive_split_by_a_continuation_is_caught(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
