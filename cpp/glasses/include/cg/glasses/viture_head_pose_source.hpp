@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "cg/core_math/clock_mapper.hpp"
+#include "cg/glasses/device_gate.hpp"
 #include "cg/glasses/host_clock.hpp"
 #include "cg/glasses/pose_slot.hpp"
 #include "cg/glasses/viture_api.hpp"
@@ -24,6 +25,10 @@ namespace cg::glasses {
 /// timeline, dossier F-05) through `ClockMapper` together with the injected
 /// `IHostClock`, converts the pose with `core_math::PoseFromSdk` and publishes
 /// `{mapped host time, pose, state, ++seq}` into a wait-free `PoseSlot`.
+/// Each sample is recorded with `AddSample` before it is mapped, so the first
+/// published sample is anchored to its host arrival instant and the SDK's own
+/// epoch never reaches a consumer (CXX-06); the same seeding re-anchors after
+/// a mapped-time regression reset.
 ///
 /// Fault policy:
 /// - a quiet feed (no successful poll) is reported as `Unstable` after 500 ms
@@ -88,10 +93,20 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     [[nodiscard]] bool TryGetLatest(HeadSample &out, Duration predict) const noexcept override;
     Result<void> Recenter() override;
 
+    /// Runs `action` while the source is stopped, holding `lifecycle_mutex_`
+    /// for its duration: no `Start`/`Stop` transition can interleave and no
+    /// poll can be in flight (the polling thread exists only while `Running()`).
+    /// Returns `NotReady` while `Running()`. This is the production gate the
+    /// display control binds (`DeviceGate`), closing the is-running TOCTOU
+    /// against `Start` (CXX-01).
+    [[nodiscard]] Result<void> WithDeviceStopped(const DisplaySeamAction &action);
+
     /// True while the polling thread is alive (between a successful `Start`
-    /// and the join in `Stop`). `VitureDisplayControl` takes this as its
-    /// is-running predicate: display calls are refused while a poll could be
-    /// in flight, so configure the display before `Start` or after `Stop`.
+    /// and the join in `Stop`). This remains the display control's fast
+    /// "refuse now" predicate, but correctness comes from
+    /// `WithDeviceStopped`: a bare predicate check would race `Start` between
+    /// the check and the seam call, so the display control no longer uses
+    /// `Running()` as its guard.
     [[nodiscard]] bool Running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     /// Diagnostics only (HIL recordings), NOT part of `IHeadPoseSource`: the
@@ -103,6 +118,21 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     /// allocation, no exceptions. Quiet `Unstable`/`Lost` synthetics carry the
     /// last real stamp forward rather than clearing it.
     [[nodiscard]] std::optional<double> LastSdkSeconds() const noexcept;
+
+    /// Test-only seam invoked by `Recenter` after the target capture and before
+    /// the arming transaction. It deliberately runs *outside*
+    /// `recentre_mutex_`: a test parks the poster there while a failing
+    /// resolution completes — the exact window CXX-02 closed. On the fixed
+    /// code the arm is wholly inside the mutex afterwards, so the fresh post
+    /// survives; on the old code the arm stores had already happened outside,
+    /// and the failing resolution clobbered them. Arm it only while no
+    /// `Recenter` is in flight and clear it afterwards; production leaves it
+    /// unset and pays one predictable null check.
+    using TestRecentreArmHook = void (*)(void *) noexcept;
+    static void SetTestRecentreArmHook(TestRecentreArmHook hook, void *context) noexcept {
+        test_recentre_arm_hook_ = hook;
+        test_recentre_arm_context_ = context;
+    }
 
   private:
     void PollLoop(std::stop_token stop) noexcept;
@@ -183,6 +213,11 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     // flag that makes it readable.
     std::atomic<double> last_sdk_seconds_{0.0};
     std::atomic<bool> has_sdk_seconds_{false};
+
+    // Test-only arming seam (see `SetTestRecentreArmHook`); null unless armed.
+    // The poster reads it while holding `recentre_mutex_`.
+    inline static TestRecentreArmHook test_recentre_arm_hook_ = nullptr;
+    inline static void *test_recentre_arm_context_ = nullptr;
 };
 
 } // namespace cg::glasses

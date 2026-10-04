@@ -156,9 +156,12 @@ Every vendor call goes through `IVitureApi`
 the polling loop. `PollPose`/`ResetOriginCarina` run on the polling thread, and
 `ResetOriginCarina` requires a live device (`NotReady` otherwise). Display
 calls (`SetDisplayMode`/`GetRefreshHz`) only run while the pose source is
-stopped: `VitureDisplayControl` takes an is-running predicate
-(`VitureHeadPoseSource::Running` in production) and reports `NotReady` while it
-is true, so display calls are never concurrent with `PollPose`. `RequestStop`
+stopped: `VitureDisplayControl` runs every display action through a `DeviceGate`
+(`VitureHeadPoseSource::WithDeviceStopped` in production), which reports
+`NotReady` while the source runs and otherwise holds the source's lifecycle
+mutex for the action, so display calls are never concurrent with `PollPose` or
+a `Start`/`Stop` transition (the is-running predicate alone raced `Start`,
+CXX-01). `RequestStop`
 is the one cross-thread call, is thread-safe and `noexcept`, and must make a
 blocked `PollPose` return promptly with `Timeout`; `StartPose` clears it. Time
 enters the wrapper as an injected `IHostClock` (`SteadyHostClock` in
@@ -238,7 +241,10 @@ this call. At post time it arms an inverse-yaw correction so the newest
 pre-reset sample reads recentred as soon as `Recenter` returns (pitch and roll
 untouched, position unchanged) and the pose stream is never stalled; the
 correction stays applied to every sample, quiet synthetics included, until the
-request is resolved against the SDK. The polling thread services the request
+request is resolved against the SDK. The arm, the pending flag and the posted
+generation are written in one critical section of the same mutex the polling
+thread claims and resolves under, so a resolution racing a post can never clear
+a newer arm (CXX-02). The polling thread services the request
 between polls only while the device is alive and the current device session has
 published: a request that finds the device dead or freshly recreated but not
 yet publishing stays pending, so a post that races a device loss is applied
@@ -352,9 +358,12 @@ is provisional until then). This section is filled in before
     guard. The contract suite includes `RecenterBeforeTheFirstSampleIsNotReady`
     for every factory.
 - `cpp/tests/glasses/display_control_tests.cpp` pins the enforced display rule:
-  `Get`/`Set` are `NotReady` and make no seam call while an injected is-running
-  predicate is true, and round-trip normally before `Start` and after `Stop`,
-  including wired to a live `VitureHeadPoseSource::Running`.
+  `Get`/`Set` are `NotReady` and make no seam call while a refusing gate is
+  bound, round-trip normally before `Start` and after `Stop` when wired to a
+  live `VitureHeadPoseSource::WithDeviceStopped`, prove that an open display
+  seam blocks `Start` until it completes (deterministic interleaving), and
+  stress `Set`/`Get` against `Start`/`Stop` while asserting no lifecycle or
+  poll call overlaps a seam action (CXX-01).
 - `cpp/tests/glasses/thread_safety_tests.cpp` stresses the slot (a saturated
   writer publishing 200k samples against 8 readers) and `VitureHeadPoseSource`
   over `FakeVitureApi` (one producer, four readers, a manual host clock

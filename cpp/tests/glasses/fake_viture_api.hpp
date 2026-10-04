@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -117,9 +118,29 @@ class FakeVitureApi final : public IVitureApi {
     float last_reset_pose[7] = {};
     std::atomic<bool> has_reset_pose{false};
 
+    // --- deterministic interleaving seams (CXX-01/CXX-02 tests) -----------
+    /// Invoked at the entry of every lifecycle, poll and recentre call
+    /// (`CreateDevice`, `DestroyDevice`, `StartPose`, `PollPose`,
+    /// `ResetOriginCarina`). Tests use it to detect a device call that ran
+    /// while a display seam action was in flight; production leaves it empty.
+    std::function<void()> on_device_call;
+
+    /// Invoked inside `ResetOriginCarina` after the pose payload is published
+    /// and before the scripted result is chosen, with the 1-based call number.
+    /// Tests park a call here to hold a failing resolution open (CXX-02).
+    std::function<void(std::uint64_t)> on_reset_origin;
+
+    /// Invoked inside `SetDisplayMode` after the arguments are recorded and
+    /// before the scripted result is chosen, with the 1-based call number.
+    /// Tests park a call here to hold the display seam open (CXX-01).
+    std::function<void(std::uint64_t)> on_set_display_mode;
+
     // --- IVitureApi -------------------------------------------------------
     Result<void> CreateDevice() override {
         create_calls.fetch_add(1, std::memory_order_relaxed);
+        if (on_device_call) {
+            on_device_call();
+        }
         const Result<void> result = NextResult(create_script, create_result);
         if (result.ok()) {
             device_alive.store(true, std::memory_order_relaxed);
@@ -134,10 +155,16 @@ class FakeVitureApi final : public IVitureApi {
         // made `WaitFor(destroy_calls >= 1)` + a flag read racy).
         device_alive.store(false, std::memory_order_release);
         destroy_calls.fetch_add(1, std::memory_order_release);
+        if (on_device_call) {
+            on_device_call();
+        }
     }
 
     Result<void> StartPose() override {
         start_calls.fetch_add(1, std::memory_order_relaxed);
+        if (on_device_call) {
+            on_device_call();
+        }
         if (!device_alive.load(std::memory_order_relaxed)) {
             return Err<void>(Status{StatusCode::NotReady, "fake: start without a device"});
         }
@@ -147,6 +174,9 @@ class FakeVitureApi final : public IVitureApi {
 
     Result<cg_head_sample> PollPose() override {
         poll_calls.fetch_add(1, std::memory_order_relaxed);
+        if (on_device_call) {
+            on_device_call();
+        }
         if (IsStopped()) {
             return Interrupted();
         }
@@ -173,7 +203,10 @@ class FakeVitureApi final : public IVitureApi {
     }
 
     Result<void> ResetOriginCarina(const float pose[7]) override {
-        reset_origin_calls.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t call = reset_origin_calls.fetch_add(1, std::memory_order_relaxed) + 1U;
+        if (on_device_call) {
+            on_device_call();
+        }
         if (!device_alive.load(std::memory_order_relaxed)) {
             return Err<void>(Status{StatusCode::NotReady, "fake: recentre without a device"});
         }
@@ -185,6 +218,9 @@ class FakeVitureApi final : public IVitureApi {
         }
         // Publish the payload before the flag; readers acquire the flag first.
         has_reset_pose.store(true, std::memory_order_release);
+        if (on_reset_origin) {
+            on_reset_origin(call);
+        }
         const Result<void> result = NextResult(reset_origin_script, reset_origin_result);
         if (result.ok() && use_script_ && script_source_ != nullptr) {
             // The scripted feed is recentred like a real device: the origin
@@ -197,9 +233,12 @@ class FakeVitureApi final : public IVitureApi {
     }
 
     Result<void> SetDisplayMode(std::uint32_t refresh_hz, bool sbs) override {
-        set_display_mode_calls.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t call = set_display_mode_calls.fetch_add(1, std::memory_order_relaxed) + 1U;
         last_refresh_hz = refresh_hz;
         last_sbs = sbs;
+        if (on_set_display_mode) {
+            on_set_display_mode(call);
+        }
         return NextResult(set_display_mode_script, set_display_mode_result);
     }
 
