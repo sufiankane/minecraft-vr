@@ -153,6 +153,10 @@ the Unity suites become mandatory in CI.
 - Bad: one of the two hosted secrets must exist and be rotated in repository
   settings; a serial is a seat, so the job must return it (the final step
   above does).
+- Bad: a fresh runner needs the CLI's managed licensing client installed
+  (`unity plugin install licensingClient`) before any activation; the first
+  hosted dispatch failed with "Can't reach the Unity licensing client" until
+  that step was added (run 37190780153).
 - Bad: the self-hosted route depends on one machine's Hub activation, PATH and
   per-user licence; a runner started under another account cannot see the
   licence and fails the build guard.
