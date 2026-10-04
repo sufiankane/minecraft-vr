@@ -227,10 +227,15 @@ TEST(VitureDisplayControl, AnOpenDisplaySeamBlocksStartUntilItCompletes) {
     EXPECT_EQ(api.set_display_mode_calls.load(), 1U);
 }
 
-/// CXX-01 threaded stress: `Start`/`Stop` racing `Set`/`Get` must never let a
-/// lifecycle or poll call observe a display seam action in flight. The fake's
-/// `on_device_call` hook flags any overlap; the gate wrapper publishes the
-/// in-flight window. Runs under the TSan lane too.
+/// CXX-01 threaded stress (deterministic): each round parks a display seam
+/// action inside the gate (`Set` on even rounds, `Get` on odd rounds) and,
+/// while it is open, drives `Start` from a second thread. The gate must hold
+/// `Start` off `CreateDevice` until the seam completes; the fake's
+/// `on_device_call` hook additionally flags any lifecycle/poll call observed
+/// while a seam action is in flight. Progress is guaranteed by construction
+/// (the seam is entered before `Start` is launched, and both are released and
+/// joined every round), so the coverage assertions cannot flake the way the
+/// previous unsynchronized loop did.
 TEST(VitureDisplayControl, StartStopRacingDisplayCallsNeverOverlapASeamCall) {
     FakeVitureApi api;
     ManualHostClock clock;
@@ -254,35 +259,80 @@ TEST(VitureDisplayControl, StartStopRacingDisplayCallsNeverOverlapASeamCall) {
         }
     };
 
-    constexpr int kIterations = 100;
-    std::atomic<bool> go{false};
-    std::thread setter([&] {
-        while (!go.load(std::memory_order_acquire)) {
+    std::mutex seam_mutex;
+    std::condition_variable seam_cv;
+    bool seam_entered = false;
+    bool seam_release = false;
+    const auto park_seam = [&](std::uint64_t) {
+        std::unique_lock<std::mutex> lock(seam_mutex);
+        seam_entered = true;
+        seam_cv.notify_all();
+        seam_cv.wait(lock, [&] { return seam_release; });
+    };
+    api.on_set_display_mode = park_seam;
+    api.on_get_refresh_hz = park_seam;
+
+    constexpr int kRounds = 32;
+    std::uint64_t expected_create_calls = 0;
+    std::uint64_t expected_display_calls = 0;
+    for (int round = 0; round < kRounds; ++round) {
+        const bool use_set = (round % 2) == 0;
+        {
+            const std::lock_guard<std::mutex> lock(seam_mutex);
+            seam_entered = false;
+            seam_release = false;
         }
-        for (int i = 0; i < kIterations; ++i) {
-            (void)control.Set(DisplayMode{static_cast<std::uint32_t>(60 + (i % 4)), (i % 2) != 0});
-            (void)control.Get();
-        }
-    });
-    std::thread lifecycle([&] {
-        while (!go.load(std::memory_order_acquire)) {
-        }
-        for (int i = 0; i < kIterations; ++i) {
-            if (source.Start().ok()) {
-                (void)WaitFor([&] { return api.poll_calls.load() >= 1U; }, std::chrono::milliseconds(50));
+
+        std::thread caller([&] {
+            if (use_set) {
+                (void)control.Set(DisplayMode{120, true});
+            } else {
+                (void)control.Get();
             }
-            source.Stop();
+        });
+        bool entered = false;
+        {
+            std::unique_lock<std::mutex> lock(seam_mutex);
+            entered = seam_cv.wait_for(lock, std::chrono::seconds(2), [&] { return seam_entered; });
         }
-    });
-    go.store(true, std::memory_order_release);
-    setter.join();
-    lifecycle.join();
-    source.Stop();
+        EXPECT_TRUE(entered) << "round " << round << ": the display seam was never entered";
+
+        // With the seam action open, `Start` must be held at the lifecycle
+        // gate: it may not reach `CreateDevice`. The thread signals it is about
+        // to call `Start`, then the bounded wait only has to observe the
+        // blocked (non-)progress.
+        std::atomic<bool> start_attempted{false};
+        std::thread starter([&] {
+            start_attempted.store(true, std::memory_order_release);
+            (void)source.Start();
+        });
+        EXPECT_TRUE(
+            WaitFor([&] { return start_attempted.load(std::memory_order_acquire); }, std::chrono::milliseconds(500)));
+        EXPECT_FALSE(
+            WaitFor([&] { return api.create_calls.load() > expected_create_calls; }, std::chrono::milliseconds(5)))
+            << "round " << round << ": Start reached CreateDevice while the seam was open";
+
+        {
+            const std::lock_guard<std::mutex> lock(seam_mutex);
+            seam_release = true;
+        }
+        seam_cv.notify_all();
+        caller.join();
+        starter.join();
+        source.Stop();
+
+        // Both sides made progress, deterministically: one display seam call
+        // and one create per round.
+        expected_display_calls += 1U;
+        expected_create_calls += 1U;
+        EXPECT_EQ(api.set_display_mode_calls.load() + api.get_refresh_hz_calls.load(), expected_display_calls)
+            << "round " << round << ": the seam call did not complete";
+        EXPECT_EQ(api.create_calls.load(), expected_create_calls)
+            << "round " << round << ": Start did not complete after the seam closed";
+    }
 
     EXPECT_FALSE(overlap.load(std::memory_order_seq_cst))
         << "a lifecycle or poll call ran while a display seam action was in flight";
-    EXPECT_GT(api.set_display_mode_calls.load() + api.get_refresh_hz_calls.load(), 0U)
-        << "the stress never reached the display seam";
 }
 
 TEST(FakeDisplayControl, RoundTripsStateAndInjectsFailures) {

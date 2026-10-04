@@ -135,6 +135,11 @@ class FakeVitureApi final : public IVitureApi {
     /// Tests park a call here to hold the display seam open (CXX-01).
     std::function<void(std::uint64_t)> on_set_display_mode;
 
+    /// Invoked inside `GetRefreshHz` after the call counter increments and
+    /// before the scripted result is chosen, with the 1-based call number.
+    /// The `Get` half of the same parking seam (CXX-01).
+    std::function<void(std::uint64_t)> on_get_refresh_hz;
+
     // --- IVitureApi -------------------------------------------------------
     Result<void> CreateDevice() override {
         create_calls.fetch_add(1, std::memory_order_relaxed);
@@ -243,7 +248,10 @@ class FakeVitureApi final : public IVitureApi {
     }
 
     Result<std::uint32_t> GetRefreshHz() override {
-        get_refresh_hz_calls.fetch_add(1, std::memory_order_relaxed);
+        const std::uint64_t call = get_refresh_hz_calls.fetch_add(1, std::memory_order_relaxed) + 1U;
+        if (on_get_refresh_hz) {
+            on_get_refresh_hz(call);
+        }
         return NextResult(refresh_script, refresh_result);
     }
 
