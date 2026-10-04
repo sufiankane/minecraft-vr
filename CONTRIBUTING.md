@@ -3,6 +3,10 @@
 This document is the entry point for anyone — human or agent — making a change.
 The authoritative specification is [`Cubeglass_Engineering_Dossier.md`](Cubeglass_Engineering_Dossier.md);
 where this file and the dossier disagree, the dossier wins.
+New to the repository? Start with [`docs/ONBOARDING.md`](docs/ONBOARDING.md);
+the architecture and contract references are
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
+[`docs/CONTRACTS.md`](docs/CONTRACTS.md).
 
 ## 0. Hard rules
 
@@ -82,7 +86,7 @@ dotnet test Cubeglass.sln --configuration Release
 ### Python
 
 Use the virtual environment in `python/.venv` (created by
-`scripts/bootstrap-dev.ps1`, or manually). From `python/`:
+`scripts/ci-local.ps1` on first run, or manually). From `python/`:
 
 ```powershell
 cd python
@@ -145,4 +149,7 @@ engine types in pure modules.
 
 For CI gates and how to reproduce them, see [`docs/ci.md`](docs/ci.md). For the
 dispatch-only negative gates, see
-[`docs/ci/negative-gates.md`](docs/ci/negative-gates.md).
+[`docs/ci/negative-gates.md`](docs/ci/negative-gates.md). To change a contract,
+follow the contract runbook in [`docs/CONTRACTS.md`](docs/CONTRACTS.md) (the
+`python -m depcheck contracts --root .` gate is documented in
+[`docs/ci.md`](docs/ci.md#contract-compatibility-gate)).

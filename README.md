@@ -7,6 +7,22 @@ tooling, and a Unity client. Every lane is pinned in
 [`docs/toolchains.md`](docs/toolchains.md) and exercised by the same commands
 locally and in CI.
 
+**Status (2026-10-04):** the S0–S7 software is complete (the M1 vertical
+slice). The stage tags (`stage-5-complete`, `stage-6-complete`,
+`stage-7-complete`) and the `v0.1.0` tag are **withheld** until the
+hardware-in-the-loop runs in [`docs/questions/`](docs/questions/) are committed
+and a CI player build succeeds.
+
+## Start here
+
+| Document | What it is |
+| --- | --- |
+| [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Day-one setup, bootstrap, repository map, per-lane commands, running the game, CI/CD, HIL and troubleshooting |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | The implemented architecture: modules, layers, dependency rules, data flow and milestone state |
+| [`docs/CONTRACTS.md`](docs/CONTRACTS.md) | Contract register and change runbook: frozen interfaces, ABI versioning, the fingerprint gate and the read/write matrix per format |
+| [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Consolidated engineering history by stage (S0–S7, review waves, withheld tags) |
+| [`docs/notes/tech-debt.md`](docs/notes/tech-debt.md) | The open programme tech-debt register (TD-NNN) |
+
 ## Bootstrap
 
 On Windows, install or verify the pinned toolchain in one step:
@@ -26,7 +42,7 @@ local C++ build:
 
 ## Local commands
 
-These are the canonical lane commands, kept in sync with
+These are the canonical lane commands, mirroring the shared lanes in
 [`CONTRIBUTING.md`](CONTRIBUTING.md). See that file for the full conventions.
 
 C++ (enter the MSVC x64 developer shell first; it sets `VCPKG_ROOT`):
@@ -57,16 +73,18 @@ python -m ruff check .
 python -m mypy calib depcheck
 ```
 
-Dependency and licence gates, from the repository root:
+Dependency, contract and licence gates, from the repository root:
 
 ```powershell
 python -m depcheck --root .
+python -m depcheck contracts --root .
 python -m depcheck licences --root .
 ```
 
-Unity:
+Unity (stage the managed and native plugins first):
 
 ```powershell
+powershell -File scripts/sync-unity-plugins.ps1
 unity test unity/Cubeglass --mode EditMode --non-interactive
 ```
 

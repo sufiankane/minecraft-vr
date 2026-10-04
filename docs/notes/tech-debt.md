@@ -73,7 +73,6 @@ required CI job contexts still match `docs/notes/s0-gate.md:172`.
 | TD-032 | CI/tooling | Coverage floors pass a zero-line module at 100%, and CI picks the first report if several exist | Low | infra M-2; docs/perf/README; docs/ci.md | No current module takes the path; the docs are honest about it | Trigger: next coverage-check change. Action: fail when floor>0 and lines==0; fail on multiple reports |
 | TD-033 | CI/tooling | The nightly baseline is not committed, so the 10% regression gate compares nothing | Medium | docs/perf/README; fixes-infra-a concern 2; full review owner action 3 | Capture-on-first-run design; an owner must commit the artefact | Trigger: after the first nightly run. Action: commit `docs/perf/nightly-baseline.json` |
 | TD-034 | CI/tooling | The 10% nightly comparison runs on noisy shared runners and can false-fail | Low | docs/perf/README (8 ms p95 CI-budget rationale); fixes-infra-b concern 4 | Hosted runners are noisier than the dev machine; the threshold is dossier-mandated | Trigger: after TD-033 lands. Action: watch the nightly; tune `--threshold` or use a stable runner if noise exceeds the margin |
-| TD-035 | CI/tooling | The self-hosted release path has never run end-to-end (CLI/editor install, cold import, PlayMode timing) | Low | fixes-selfhosted "not verified"; docs/ci.md route 2 | No real self-hosted run; first-run duration and `--non-interactive` placement are unexercised | Trigger: first dispatch on the licensed machine. Action: expect timeout/`-nographics` tuning, then record the duration |
 | TD-036 | CI/tooling | With `gh` absent the release attach is skipped with a warning; the player stays a workflow artefact | Low | docs/ci.md route 2; fixes-selfhosted | The runner may not have `gh`; the attach is optional | Trigger: runner setup review. Action: install `gh` or make the skip decision explicit; verify both branches once |
 | TD-037 | CI/tooling | clang-format/clang-tidy versions are not pinned in CI, and the negative gate uses a distro build | Low | infra M-1; fixes-infra-b "still open" | Hosted runner tools are deliberately unlocked with version prints; format output drifts between versions | Trigger: next format/negative-gate change. Action: pin the tool or record the runner version as intentional in both jobs |
 | TD-038 | CI/tooling | Release artefacts carry no SHA-256 checksums (dossier gate 10) | Medium | infra M-10; fixes-infra-b "still open" | The release has not run yet; packaging predates the gate | Trigger: first v0.1.0 dispatch. Action: emit and upload `Cubeglass-windows-x64.zip.sha256` and reference it in the release notes |
@@ -87,7 +86,7 @@ required CI job contexts still match `docs/notes/s0-gate.md:172`.
 | TD-046 | Process | Two CI-only PRs were admin-merged while hosted checks could not start (#49 self-hosted SDK verify; this docs PR). Branch protection was bypassed once per PR | Medium | This register; release run 37198879954 | No way to obtain the six checks while TD-045 is open; changes were CI/docs-only and the self-hosted run verified the result | Trigger: TD-045 resolved. Action: return to check-gated merges and re-verify any admin-merged commit through the normal CI lane |
 | TD-047 | CI/tooling | The self-hosted runner `cubeglass-local` runs as a session-scoped background process; it stops when this Kilo session ends | Medium | Runner setup 2026-10-04 | Quickest path to a verified build; service install needs elevation and the user's credentials | Owner (optional): `C:\actions-runner\svc.cmd install`, started as the same Windows user, for persistence across logins |
 
-Open counts at this snapshot: **44 rows — High 4, Medium 10, Low 30.**
+Open counts at this snapshot: **46 rows - High 5, Medium 12, Low 29.**
 
 ## Closed
 
@@ -116,6 +115,7 @@ Open counts at this snapshot: **44 rows — High 4, Medium 10, Low 30.**
 | #43 | Process | Programme review record + review nits | `docs/reviews/2026-10-03-full-review.md` added; ADR-0004 wording corrected; the DDA `ceil`→`floor` doc nit closed |
 | #44 | Release | Self-hosted release route for a Hub-licensed machine | Build, Unity test gate, package and attach with no Unity secrets |
 | #45 | Release | Hosted release with the pinned Unity CLI | Serial or offline `.ulf` licence, pinned CLI/editor, test-gated build |
+| n/a | CI/tooling | TD-035 self-hosted release route unverified | Verified end to end in run 37198879954 (2026-10-04): SDK check, plugin staging, EditMode/PlayMode gate, player build, package, upload; artefact `Cubeglass-v0.1.0-win-x64` (~36 MB) |
 
 Fixed minors kept for traceability (not open, not rowed above): C++ M-5, M-6
 (future-heartbeat half; page-granular remainder is TD-008), M-8, M-10
