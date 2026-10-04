@@ -173,6 +173,17 @@ the Unity suites become mandatory in CI.
 - `docs/ci.md` ("Release workflow") mirrors the routes and the two credential
   modes; `docs/releases/v0.1.0.md` links this ADR from the build and run
   section.
+- Verified end to end on the self-hosted route: run 37198879954 (2026-10-04)
+  passed the SDK check, managed/native plugin staging, the EditMode and
+  PlayMode release gate, the player build, packaging, artefact upload and the
+  attach-skip, producing `Cubeglass-v0.1.0-win-x64` (~36 MB). The self-hosted
+  job verifies the pinned SDK (`dotnet --list-sdks` against
+  `dotnet/global.json`) instead of running `actions/setup-dotnet`: the runner
+  user is unelevated and cannot install into `C:\Program Files\dotnet`.
+- The hosted route remains unverified end to end while the account's Actions
+  billing block is open (tech debt register TD-045); the guard, licensing
+  client install and activation logic are shared with the verified self-hosted
+  path except for the credentials themselves.
 - The workflow stays valid under the existing `actionlint` invocation in
   `docs/ci.md`.
 - The v0.1.0 dispatch is the first end-to-end run of both routes and records

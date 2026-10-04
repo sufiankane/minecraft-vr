@@ -247,6 +247,12 @@ The licensing and test-gating decision behind the two routes is recorded in
 | `hosted` (default) | `windows-latest` | `UNITY_LICENSE` alone (offline `.ulf`) **or** `UNITY_SERIAL` alone (serial) | EditMode + PlayMode before the build |
 | `self-hosted` | `[self-hosted, windows]` | the machine's own Unity Hub activation (no secrets) | EditMode + PlayMode before the build |
 
+The self-hosted job verifies the pinned .NET SDK (`dotnet --list-sdks` against
+`dotnet/global.json`) rather than installing one: the runner user is unelevated
+and `actions/setup-dotnet` cannot write to `C:\Program Files\dotnet`. The route
+was first verified end to end in run 37198879954 (2026-10-04), which produced
+the `Cubeglass-v0.1.0-win-x64` artefact.
+
 Both routes attach the player to the `v0.1.0` release when that tag exists; the
 tag itself is owner-gated and not created by CI (R50). A missing release is a
 normal outcome on either route: the probe captures its exit code, clears the
