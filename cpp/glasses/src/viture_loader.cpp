@@ -25,9 +25,11 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
@@ -131,6 +133,60 @@ void CloseLibrary(LibraryHandle handle) noexcept {
 }
 
 #endif
+
+/// Outcome of validating a caller-supplied vendor-DLL path.
+enum class DllPathStatus {
+    kAccepted,
+    /// A relative path that normalises outside the current working directory.
+    kEscapesWorkingDirectory,
+    /// The path cannot be validated (no working directory, not resolvable).
+    kUnresolvable,
+};
+
+/// Validates `path` and resolves a relative path to its absolute form.
+///
+/// A relative path is accepted only when it stays inside the current working
+/// directory, and it is normalised to an absolute path before the loader opens
+/// it. That keeps `LoadLibraryW`/`dlopen` from running their default search
+/// order (cwd, `PATH`, system directories) on a bare name that a same-user
+/// process could plant: `viture_glasses_sdk.dll` is allowed because it names
+/// the working directory, `..\..\evil.dll` is rejected. Absolute paths are the
+/// caller's explicit choice and are used as given; authenticating the vendor
+/// DLL (signature/hash) remains open and is recorded as tech debt.
+[[nodiscard]] DllPathStatus ResolveDllPath(std::string &path) {
+#ifdef _WIN32
+    const std::filesystem::path candidate{Utf8ToWide(path)};
+#else
+    const std::filesystem::path candidate{path};
+#endif
+    if (candidate.is_absolute()) {
+        return DllPathStatus::kAccepted;
+    }
+    std::error_code error;
+    const std::filesystem::path working_directory = std::filesystem::current_path(error);
+    if (error) {
+        return DllPathStatus::kUnresolvable;
+    }
+    const std::filesystem::path resolved = (working_directory / candidate).lexically_normal();
+    if (!resolved.is_absolute()) {
+        return DllPathStatus::kUnresolvable;
+    }
+    for (const std::filesystem::path &part : resolved.lexically_relative(working_directory)) {
+        if (part == "..") {
+            return DllPathStatus::kEscapesWorkingDirectory;
+        }
+    }
+#ifdef _WIN32
+    const std::wstring wide = resolved.wstring();
+    path = WideToUtf8(wide.c_str(), static_cast<int>(wide.size()));
+    if (path.empty()) {
+        return DllPathStatus::kUnresolvable;
+    }
+#else
+    path = resolved.string();
+#endif
+    return DllPathStatus::kAccepted;
+}
 
 /// Maximum number of distinct messages interned over the process lifetime.
 constexpr std::size_t kMaxInternedMessages = 64;
@@ -325,7 +381,22 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
         return Err<std::unique_ptr<IVitureApi>>(Status{StatusCode::InvalidArgument, "viture_loader: empty DLL path"});
     }
 
-    LibraryHandle handle = OpenLibrary(dll_path);
+    std::string resolved_path = dll_path;
+    switch (ResolveDllPath(resolved_path)) {
+    case DllPathStatus::kAccepted:
+        break;
+    case DllPathStatus::kEscapesWorkingDirectory:
+        return Err<std::unique_ptr<IVitureApi>>(Status{
+            StatusCode::InvalidArgument,
+            "viture_loader: relative DLL path escapes the working directory; pass an absolute path or keep the library "
+            "inside the working directory"});
+    case DllPathStatus::kUnresolvable:
+        return Err<std::unique_ptr<IVitureApi>>(
+            Status{StatusCode::InvalidArgument,
+                   "viture_loader: cannot resolve the DLL path against the working directory; pass an absolute path"});
+    }
+
+    LibraryHandle handle = OpenLibrary(resolved_path);
     if (handle == nullptr) {
         return Err<std::unique_ptr<IVitureApi>>(
             Status{StatusCode::Unsupported, InternMessage(dll_path + ": " + LastLibraryError())});
