@@ -187,11 +187,17 @@ the fake source at `--rate` (default 500 Hz) for `--minutes` (default 30),
 producing samples at absolute wall deadlines, while one consumer thread reads
 `TryGetLatest(predict=0)` continuously. Every 60 s it prints the elapsed time,
 the published/read/fresh/missed counts, the current RSS
-(`GetProcessMemoryInfo` working set on Windows, `getrusage` on POSIX) and the
+(`GetProcessMemoryInfo` working set on Windows, `/proc/self/statm` resident
+pages on Linux — the live RSS, not `getrusage`'s peak, so growth that stays
+under an earlier transient peak is still visible; macOS falls back to
+`ru_maxrss`) and the
 cumulative read-to-read gap p95 (the gap between consecutive successful reads,
 a fixed log2-nanosecond histogram, allocation-free); at exit it prints the RSS
 delta after the first-minute baseline and exits non-zero when the growth
-exceeds 1 MiB. Ctrl+C stops the run cleanly through a `SIGINT`/`SIGTERM` flag.
+exceeds 1 MiB. A failed RSS query is **not** treated as zero (CXX-04): without
+both a baseline and a final reading the gate fails with a `FAIL: ... RSS
+reading unavailable` line. Ctrl+C stops the run cleanly through a
+`SIGINT`/`SIGTERM` flag.
 
 Local smoke, 3 minutes, Release (`--minutes 3`; the full 30-minute run is
 documented below and re-run nightly):
@@ -307,9 +313,13 @@ half of the exit gate:
   probe's 1 ms poll against a 90 Hz feed the captured stamp matches the sample
   in practice, and the loop keeps its own `host_time_ns` column for the offset
   analysis.
-- The soak's POSIX RSS is the `getrusage` peak (`ru_maxrss`, KiB on Linux and
-  bytes on macOS) while Windows reports the live working set; the leak gate
-  compares like-to-like on each platform.
+- The soak's Linux RSS is the live resident set from `/proc/self/statm` (the
+  gate therefore sees sub-peak growth); Windows reports the live working set
+  and macOS the `ru_maxrss` peak. A failed query fails the gate instead of
+  reading as zero, and the accounting is unit-tested in
+  `cpp/tests/tools/rss_gate_tests.cpp` (`EvaluateRssGate` in
+  `cpp/tools/soak/rss_gate.hpp`) including missing readings and hostile large
+  values (CXX-04).
 - The soak consumer yields every 1024 reads; the read count is a liveness
   record, not a throughput gate.
 - `timeBeginPeriod(1)` is process-global on Windows and restored by RAII at
