@@ -5,14 +5,22 @@ the declared inward-only dependency rules for C++ (``#include`` directives) and
 C# (``using`` directives and ``<ProjectReference>`` entries).
 
 Only the standard library is used, and all parsing is line-based and
-deterministic.
+deterministic. Comments are stripped with the same normaliser the contract gate
+uses before directives are matched, so a comment between ``#include`` and the
+header (``#include /* gap */ <windows.h>``) cannot hide an include, and a
+commented-out include or using is never reported. Every ``#include`` /
+``#include_next`` / ``#import`` directive that does not name a header literal is
+reported as ``macroInclude``: the header is not resolvable, so the module's
+include rules cannot be enforced on it and the gate fails closed.
 
-The manifest itself is checked for completeness: every ``cpp/<module>``
-directory that contains a ``CMakeLists.txt`` (excluding ``tests``, ``tools`` and
-``build*``) and every ``dotnet/src/<Dir>/*.csproj`` project must have an entry
-in ``layers.json``, and every configured entry must point at a module that
-exists. A forward-looking entry for a module that has not landed yet is listed
-under the top-level ``deferred`` object (``{"deferred": {"cpp": [...],
+The manifest itself is checked for completeness: every directory under ``cpp``
+that contains a ``CMakeLists.txt`` (recursively, excluding any path component
+named ``tests`` or ``tools`` and any ``build*`` directory) and every
+``*.csproj`` under ``dotnet/src`` (recursively, excluding ``obj``/``bin``) must
+have an entry in ``layers.json``, and every configured entry must point at a
+module that exists. Nested modules keep their repository-relative path as the
+module name. A forward-looking entry for a module that has not landed yet is
+listed under the top-level ``deferred`` object (``{"deferred": {"cpp": [...],
 "dotnet": [...]}}``), which also keeps the tree green before the module exists.
 
 A .NET project may declare ``allowNamespaces`` alongside
@@ -31,11 +39,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from depcheck.contracts import strip_comments
+
 RULE_FORBID_INCLUDES = "forbidIncludes"
 RULE_FORBID_NAMESPACES = "forbidNamespaces"
 RULE_ALLOWED_PROJECT_REFERENCES = "allowedProjectReferences"
 RULE_LAYERS_ENTRY_MISSING = "layersEntryMissing"
 RULE_LAYERS_ENTRY_STALE = "layersEntryStale"
+RULE_MACRO_INCLUDE = "macroInclude"
 
 _CPP_SUFFIXES: frozenset[str] = frozenset({".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h"})
 
@@ -43,7 +54,8 @@ _IGNORED_DIRECTORIES: frozenset[str] = frozenset({"obj", "bin"})
 
 _CPP_NON_MODULE_DIRECTORIES: frozenset[str] = frozenset({"tests", "tools"})
 
-_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]')
+_INCLUDE_DIRECTIVE_RE = re.compile(r"^\s*#\s*(?:include_next|include|import)\b(.*)$")
+_HEADER_LITERAL_RE = re.compile(r'^\s*[<"]([^>"]+)[>"]')
 _USING_RE = re.compile(
     r"^\s*(?:global\s+)?using\s+(?:static\s+)?(?:[A-Za-z_]\w*\s*=\s*)?"
     r"(?:global\s*::\s*)?([A-Za-z_][\w.]*)\s*;"
@@ -131,7 +143,9 @@ def load_rules(root: Path) -> _Rules:
 
 
 def _read_lines(path: Path) -> list[str]:
-    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    """Return the file's lines with comments removed, line numbers preserved."""
+
+    return strip_comments(path.read_text(encoding="utf-8", errors="replace")).splitlines()
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -147,10 +161,14 @@ def _check_cpp_file(root: Path, path: Path, forbid_includes: tuple[str, ...]) ->
     relative = _relative(root, path)
     lowered = tuple(token.lower() for token in forbid_includes)
     for line_number, line in enumerate(_read_lines(path), start=1):
-        match = _INCLUDE_RE.match(line)
-        if match is None:
+        directive = _INCLUDE_DIRECTIVE_RE.match(line)
+        if directive is None:
             continue
-        target = match.group(1).lower()
+        header = _HEADER_LITERAL_RE.match(directive.group(1))
+        if header is None:
+            violations.append(Violation(relative, line_number, RULE_MACRO_INCLUDE))
+            continue
+        target = header.group(1).lower()
         if any(token in target for token in lowered):
             violations.append(Violation(relative, line_number, RULE_FORBID_INCLUDES))
     return violations
@@ -224,17 +242,30 @@ def _check_dotnet(root: Path, rules: dict[str, _DotnetModule]) -> list[Violation
 
 
 def _actual_cpp_modules(root: Path) -> set[str]:
+    """Return the repository-relative directories that act as C++ modules.
+
+    Discovery is recursive: any directory holding a ``CMakeLists.txt`` counts,
+    at any depth, unless a path component is ``tests``/``tools`` or begins with
+    ``build``. Nested modules keep their relative path (``group/module``).
+    """
+
     base = root / "cpp"
     if not base.is_dir():
         return set()
-    return {
-        entry.name
-        for entry in base.iterdir()
-        if entry.is_dir()
-        and entry.name not in _CPP_NON_MODULE_DIRECTORIES
-        and not entry.name.startswith("build")
-        and (entry / "CMakeLists.txt").is_file()
-    }
+    modules: set[str] = set()
+    for cmake in base.rglob("CMakeLists.txt"):
+        if not cmake.is_file():
+            continue
+        relative = cmake.parent.relative_to(base)
+        parts = relative.parts
+        if not parts:
+            continue
+        if any(part in _CPP_NON_MODULE_DIRECTORIES for part in parts):
+            continue
+        if any(part.startswith("build") for part in parts):
+            continue
+        modules.add(relative.as_posix())
+    return modules
 
 
 def _actual_dotnet_projects(root: Path) -> dict[str, Path]:
@@ -242,11 +273,10 @@ def _actual_dotnet_projects(root: Path) -> dict[str, Path]:
     projects: dict[str, Path] = {}
     if not base.is_dir():
         return projects
-    for directory in sorted(base.iterdir()):
-        if not directory.is_dir():
+    for csproj in sorted(base.rglob("*.csproj")):
+        if not csproj.is_file() or _is_ignored(csproj, base):
             continue
-        for csproj in sorted(directory.glob("*.csproj")):
-            projects[csproj.stem] = csproj
+        projects[csproj.stem] = csproj
     return projects
 
 
@@ -268,8 +298,9 @@ def _check_manifest_completeness(root: Path, rules: _Rules) -> list[Violation]:
 
     actual_dotnet = _actual_dotnet_projects(root)
     configured_dotnet = set(rules.dotnet)
+    dotnet_src = root / "dotnet" / "src"
     for project in sorted(set(actual_dotnet) - configured_dotnet - rules.deferred_dotnet):
-        directory = actual_dotnet[project].parent.name
+        directory = actual_dotnet[project].parent.relative_to(dotnet_src).as_posix()
         violations.append(Violation(f"dotnet/src/{directory}", 0, RULE_LAYERS_ENTRY_MISSING))
     for project in sorted(configured_dotnet - set(actual_dotnet) - rules.deferred_dotnet):
         directory = project.rsplit(".", 1)[-1]

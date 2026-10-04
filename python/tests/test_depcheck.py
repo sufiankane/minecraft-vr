@@ -114,6 +114,18 @@ def _add_cpp_module(root: Path, name: str) -> None:
     )
 
 
+def _write_cpp_source(root: Path, relative: str, text: str) -> None:
+    path = root / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_cmake(root: Path, relative: str) -> None:
+    path = root / "cpp" / relative / "CMakeLists.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("cmake_minimum_required(VERSION 3.20)\n", encoding="utf-8")
+
+
 def _add_dotnet_project(root: Path, project: str) -> None:
     directory = root / "dotnet" / "src" / project.rsplit(".", 1)[-1]
     directory.mkdir(parents=True, exist_ok=True)
@@ -186,6 +198,123 @@ def test_cpp_tests_and_tools_directories_are_not_modules(
     code, lines = run_cli(tmp_path, capsys)
     assert code == 0
     assert lines == []
+
+
+def test_comment_between_include_and_header_is_still_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["windows.h"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(tmp_path, "cpp/core-math/src/bad.cpp", "#include /* deliberate gap */ <windows.h>\n")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:1 forbidIncludes"]
+
+
+def test_include_next_is_caught(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["thread"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(tmp_path, "cpp/core-math/src/bad.cpp", "#include_next <thread>\n")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:1 forbidIncludes"]
+
+
+def test_macro_include_is_flagged(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": []}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(tmp_path, "cpp/core-math/src/bad.cpp", "#include GENERATED_HEADER\n")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:1 macroInclude"]
+
+
+def test_import_directive_is_flagged_when_not_a_header_literal(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": []}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(tmp_path, "cpp/core-math/src/bad.cpp", "#import LEGACY_HEADER\n")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/core-math/src/bad.cpp:1 macroInclude"]
+
+
+def test_commented_out_includes_are_not_flagged(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"cpp": {"core-math": {"forbidIncludes": ["windows.h"]}}}')
+    _write_cmake(tmp_path, "core-math")
+    _write_cpp_source(
+        tmp_path,
+        "cpp/core-math/src/ok.cpp",
+        "// #include <windows.h>\n/* #include <windows.h> */\n#include /* not a comment */ <cstdint>\n",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_nested_cpp_module_without_layers_entry_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {}}')
+    _write_cmake(tmp_path, "group/module")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["cpp/group/module:0 layersEntryMissing"]
+
+
+def test_nested_cpp_module_with_layers_entry_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"cpp": {"group/module": {"forbidIncludes": []}}}')
+    _write_cmake(tmp_path, "group/module")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_comment_inside_using_is_still_caught(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"]}}}')
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text("using /* deliberate gap */ System.IO;\n", encoding="utf-8")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:1 forbidNamespaces"]
+
+
+def test_commented_out_using_is_not_flagged(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_layers(tmp_path, '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"]}}}')
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Ok.cs").write_text("// using System.IO;\n/* using System.IO; */\n", encoding="utf-8")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_nested_dotnet_project_without_layers_entry_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(tmp_path, '{"dotnet": {}}')
+    project = tmp_path / "dotnet" / "src" / "Group" / "Infer"
+    project.mkdir(parents=True)
+    (project / "Cubeglass.Infer.csproj").write_text("<Project />", encoding="utf-8")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Group/Infer:0 layersEntryMissing"]
 
 
 def test_global_qualified_usings_are_reported_with_line(capsys: pytest.CaptureFixture[str]) -> None:
