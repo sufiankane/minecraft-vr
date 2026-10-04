@@ -6,14 +6,19 @@ namespace Cubeglass.Voxel
     /// <summary>
     /// Read-only view of the block definition table (dossier section 5.9).
     /// </summary>
+    /// <remarks>
+    /// The section 5.9 member shape is unchanged, but <see cref="Get"/> is
+    /// total by contract: every 16-bit id resolves. An id with no definition
+    /// returns the documented fallback (air-equivalent, atlas tile 0) instead
+    /// of throwing, so a corrupted save can never stop a frame on lookup.
+    /// </remarks>
     public interface IBlockRegistry
     {
         /// <summary>
-        /// Returns the definition of <paramref name="id"/>.
+        /// Returns the definition of <paramref name="id"/>, or the documented
+        /// fallback definition when that id has no definition. Never throws
+        /// for an id.
         /// </summary>
-        /// <exception cref="KeyNotFoundException">
-        /// No definition with that id exists.
-        /// </exception>
         BlockDefinition Get(BlockId id);
 
         /// <summary>

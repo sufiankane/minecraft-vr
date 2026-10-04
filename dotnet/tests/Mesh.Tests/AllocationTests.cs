@@ -34,6 +34,17 @@ namespace Cubeglass.Mesh.Tests
         private static readonly GreedyMesher Greedy = new GreedyMesher();
         private static readonly CulledMesher Reference = new CulledMesher();
 
+        // The throw path must still return every rent. An unknown block id no
+        // longer throws (the registry lookup is total), so this registry pins
+        // an out-of-range atlas tile: the atlas mapping throws after the
+        // buffers were rented, exactly like the old unknown-id path did.
+        private static readonly IBlockRegistry OverflowAtlasRegistry = BlockRegistry.Parse(OverflowBlocksJson);
+
+        private const string OverflowBlocksJson = @"[
+  { ""Id"": 0, ""Name"": ""Air"",      ""Solid"": false, ""Opaque"": false, ""Hardness"": 0.0, ""AtlasIndexTop"": 0,    ""AtlasIndexFront"": 0,    ""AtlasIndexSide"": 0 },
+  { ""Id"": 1, ""Name"": ""Overflow"", ""Solid"": true,  ""Opaque"": true,  ""Hardness"": 1.0, ""AtlasIndexTop"": 9999, ""AtlasIndexFront"": 9999, ""AtlasIndexSide"": 9999 }
+]";
+
         [Test]
         public void GreedyTerrainBuildAndReleaseAllocateNothingAfterWarmup()
         {
@@ -59,7 +70,7 @@ namespace Cubeglass.Mesh.Tests
         [Test]
         public void ThrowingBuildReturnsRentedBuffersToThePool()
         {
-            ChunkSnapshot unknownBlock = TestChunks.Snapshot(Origin, (new Int3(0, 0, 0), new BlockId(99)));
+            ChunkSnapshot overflow = TestChunks.Snapshot(Origin, (new Int3(0, 0, 0), TestChunks.Stone));
             ChunkSnapshot solid = TestChunks.FilledSnapshot(Origin, TestChunks.Stone);
             MeshBufferPool pool = MeshBufferPool.Shared;
 
@@ -67,24 +78,24 @@ namespace Cubeglass.Mesh.Tests
             // outstanding buffer, and warming up after the throw would
             // silently refill the leaked bucket before it could be observed.
             Run(Greedy, solid, WarmupIterations);
-            AssertThrowReturnsEveryRent(Greedy, unknownBlock, pool, "greedy");
+            AssertThrowReturnsEveryRent(Greedy, overflow, pool, "greedy");
             AssertSingleCycleAllocatesNothing(Greedy, solid, "greedy");
 
             Run(Reference, solid, WarmupIterations);
-            AssertThrowReturnsEveryRent(Reference, unknownBlock, pool, "culled");
+            AssertThrowReturnsEveryRent(Reference, overflow, pool, "culled");
             AssertSingleCycleAllocatesNothing(Reference, solid, "culled");
         }
 
         private static void AssertThrowReturnsEveryRent(
             IChunkMesher mesher,
-            ChunkSnapshot unknownBlock,
+            ChunkSnapshot overflowBlock,
             MeshBufferPool pool,
             string label)
         {
             long outstandingBefore = pool.OutstandingBuffers;
 
-            Assert.Throws<KeyNotFoundException>(
-                () => mesher.Build(unknownBlock, NeighbourSnapshot.Empty, TestChunks.Registry));
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => mesher.Build(overflowBlock, NeighbourSnapshot.Empty, OverflowAtlasRegistry));
 
             long leaked = pool.OutstandingBuffers - outstandingBefore;
             Assert.That(

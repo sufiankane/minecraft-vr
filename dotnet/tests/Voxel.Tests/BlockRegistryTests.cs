@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using NUnit.Framework;
 
 namespace Cubeglass.Voxel.Tests
@@ -143,11 +142,23 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
-        public void GetThrowsForAnUnknownBlockId()
+        public void GetReturnsTheDocumentedFallbackForAnUnknownBlockId()
         {
-            BlockRegistry registry = BlockRegistry.Parse("[" + AirBlock + "]");
+            BlockRegistry registry = BlockRegistry.Parse("[" + AirBlock + "," + StoneBlock + "]");
 
-            Assert.Throws<KeyNotFoundException>(() => registry.Get(new BlockId(9)));
+            BlockDefinition fallback = registry.Get(new BlockId(9));
+
+            Assert.That(fallback.Solid, Is.False);
+            Assert.That(fallback.Opaque, Is.False);
+            Assert.That(fallback.Hardness, Is.EqualTo(0f));
+            Assert.That(fallback.AtlasIndexTop, Is.Zero);
+            Assert.That(fallback.AtlasIndexFront, Is.Zero);
+            Assert.That(fallback.AtlasIndexSide, Is.Zero);
+            Assert.That(registry.Get(new BlockId(65534)), Is.EqualTo(fallback));
+            Assert.That(
+                registry.Get(new BlockId(65535)),
+                Is.EqualTo(fallback),
+                "the reserved sentinel also resolves to the fallback");
         }
 
         private static BlockDefinition? FindByName(BlockRegistry registry, string name)
