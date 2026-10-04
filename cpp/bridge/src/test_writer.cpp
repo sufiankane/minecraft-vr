@@ -9,6 +9,7 @@
 #include "cg/bridge/shm_layout.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -50,6 +51,10 @@ struct WriterHandle {
     int fd{-1};
 #endif
     std::uint8_t *base{nullptr};
+    /// True only for a region `cg_test_writer_create` opened itself: `close`
+    /// unlinks the POSIX name for an owned region and leaves a region that was
+    /// merely opened (`cg_test_writer_open`) in place (CXX-09).
+    bool owns_region{false};
 };
 
 /// Single test writer per process; the production service is single-writer too.
@@ -102,6 +107,14 @@ void initialize_region(std::uint8_t *base) noexcept {
     std::atomic_ref<std::uint64_t>(header->writer_pid).store(current_pid(), std::memory_order_relaxed);
     std::atomic_ref<std::uint32_t>(header->abi_version).store(kShmAbiVersion, std::memory_order_relaxed);
     std::atomic_ref<std::uint32_t>(header->header_size).store(kHeaderSize, std::memory_order_relaxed);
+    // A freshly created region starts with a fresh heartbeat instead of a zero
+    // one that reads as indefinitely stale (CXX-09): the reader's staleness
+    // rule then reflects "the writer exists but has not published yet", which
+    // is what the NOT_READY-before-first-publish tests assert.
+    const auto now =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch());
+    std::atomic_ref<std::int64_t>(header->heartbeat_ns)
+        .store(static_cast<std::int64_t>(now.count()), std::memory_order_relaxed);
     std::atomic_ref<std::uint64_t>(header->magic).store(kShmMagic, std::memory_order_release);
 }
 
@@ -160,6 +173,7 @@ cg_status cg_test_writer_create(void) {
 #else
     return CG_ERR_UNSUPPORTED;
 #endif
+    writer->owns_region = true;
     cg::bridge::initialize_region(writer->base);
     cg::bridge::g_writer = writer;
     return CG_OK;
@@ -195,7 +209,13 @@ cg_status cg_test_writer_open(void) {
         return errno == ENOENT ? CG_ERR_NOT_READY : CG_ERR_INTERNAL;
     }
     struct stat info{};
-    if (fstat(fd, &info) != 0 || static_cast<std::size_t>(info.st_size) < cg::bridge::kTestRegionSize) {
+    if (fstat(fd, &info) != 0) {
+        // A failed fstat is an internal error, not an unsupported layout; the
+        // size mismatch below is the actual Unsupported case (CXX-09).
+        close(fd);
+        return CG_ERR_INTERNAL;
+    }
+    if (static_cast<std::size_t>(info.st_size) < cg::bridge::kTestRegionSize) {
         close(fd);
         return CG_ERR_UNSUPPORTED;
     }
@@ -249,7 +269,12 @@ void cg_test_writer_close(void) {
     }
     if (writer->fd >= 0) {
         close(writer->fd);
-        shm_unlink(cg::bridge::kPosixStateName);
+        // Unlink only a region this handle created: a region merely opened by
+        // `cg_test_writer_open` (possibly a foreign object or a future service)
+        // must survive the close (CXX-09).
+        if (writer->owns_region) {
+            shm_unlink(cg::bridge::kPosixStateName);
+        }
     }
 #endif
     delete writer;
