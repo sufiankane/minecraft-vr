@@ -239,10 +239,10 @@ truth for what is enforced where.
 does not run on pull requests or pushes. The `build_target` input chooses one of
 two build routes and skips the other job:
 
-| Route | Runner | Unity licence |
-| --- | --- | --- |
-| `hosted` (default) | `windows-latest` | `UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD` secrets |
-| `self-hosted` | `[self-hosted, windows]` | the machine's own Unity Hub activation (no secrets) |
+| Route | Runner | Unity licence | Unity suites |
+| --- | --- | --- | --- |
+| `hosted` (default) | `windows-latest` | `UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD` secrets | EditMode + PlayMode before the build |
+| `self-hosted` | `[self-hosted, windows]` | the machine's own Unity Hub activation (no secrets) | EditMode + PlayMode before the build |
 
 Both routes attach the player to the `v0.1.0` release when that tag exists; the
 tag itself is owner-gated and not created by CI (R50). A missing release is a
@@ -262,12 +262,13 @@ pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
 `unity/Cubeglass/Assets/Plugins/win-x64/`. The staged DLLs are git-ignored, so
 `allowDirtyBuild: false` still holds.
 
-Tagged releases are test-gated. Per-PR CI does not run Unity (the required jobs
-are secret-free and `windows-latest` has no editor), so `scripts/ci-local.ps1`
-is the only per-commit Unity lane and the release is where the suites become
-mandatory in CI: before the player build the release installs the pinned Unity
-CLI (`1.0.0-beta.11`) and Editor (`6000.6.3f1`), activates the licence from
-`UNITY_LICENSE` and runs the same
+Tagged releases are test-gated on both routes. Per-PR CI does not run Unity (the
+required jobs are secret-free and `windows-latest` has no editor), so
+`scripts/ci-local.ps1` is the only per-commit Unity lane and the release is
+where the suites become mandatory in CI: the EditMode and PlayMode suites run
+before the player build and any failure fails the job. On this route the
+release installs the pinned Unity CLI (`1.0.0-beta.11`) and Editor
+(`6000.6.3f1`), activates the licence from `UNITY_LICENSE` and runs the same
 `unity test unity/Cubeglass --mode EditMode --non-interactive` and
 `--mode PlayMode --non-interactive` suites ci-local runs locally. The release
 fails when results are missing, a required test assembly is absent, any test
@@ -286,10 +287,13 @@ and attaches the archive to the release when `v0.1.0` exists.
 Builds on a self-hosted Windows runner (`runs-on: [self-hosted, windows]`) — the
 machine whose Unity editor is already activated through the Unity Hub. It needs
 no Unity secrets: the machine's own Hub activation (Unity Personal here) is the
-licence, and the job runs
-`unity run unity/Cubeglass -- -executeMethod Cubeglass.Editor.BuildPlayer.BuildWindows64`
-directly, with no editor install and no activation step. The build is guarded:
-a non-zero `unity run` exit code or a missing
+licence. The job runs the same EditMode and PlayMode suites with the machine's
+editor (`unity test unity/Cubeglass --mode EditMode --non-interactive` and
+`--mode PlayMode --non-interactive`) after the plugins are staged, then
+`unity run unity/Cubeglass --non-interactive -- -executeMethod
+Cubeglass.Editor.BuildPlayer.BuildWindows64` directly, with no editor install
+and no activation step. The build is guarded: a non-zero `unity run` exit code
+or a missing
 `unity/Cubeglass/build/StandaloneWindows64/Cubeglass/Cubeglass.exe` fails the
 job with a message naming the Hub-activation requirement. The player is
 packaged as `Cubeglass-v0.1.0-win-x64.zip` and uploaded as the
@@ -304,10 +308,12 @@ it. That user's PATH needs the Unity CLI (`unity`), the GitHub runner agent and
 Visual Studio Build Tools with the C++ x64 toolset (CMake and Ninja come from
 its developer shell); `gh` is needed only for the release attach, and the job
 skips the attach with a warning when it is absent. The job reuses a vcpkg
-checkout at the pinned baseline when one is present (`%USERPROFILE%\vcpkg`) and
-otherwise clones and bootstraps one under the runner temp dir, keeping the
-dependency tree outside the workspace so the checkout clean cannot wipe it
-between runs.
+checkout from `VCPKG_ROOT` or `%USERPROFILE%\vcpkg` when either is present,
+checks its HEAD against `cpp/vcpkg.json`'s `builtin-baseline` (a mismatch warns
+and still proceeds) and bootstraps `vcpkg.exe` when it is missing; otherwise it
+clones the pinned baseline under the runner temp dir and bootstraps. The
+installed tree stays outside the workspace, so the checkout clean cannot wipe
+it between runs.
 
 ### Licence options
 
