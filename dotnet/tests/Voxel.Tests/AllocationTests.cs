@@ -73,6 +73,34 @@ namespace Cubeglass.Voxel.Tests
                 $"World.Get/Apply allocated {allocated} bytes over {MeasuredIterations} iterations");
         }
 
+        [Test]
+        public void FillAffectedChunksAllocatesNothing()
+        {
+            var buffer = new ChunkCoord[8];
+            Int3[] cells =
+            {
+                new Int3(0, 0, 0),
+                new Int3(0, 8, 8),
+                new Int3(8, 8, 8),
+                new Int3(15, 15, 15),
+                new Int3(int.MaxValue, 0, 0),
+                new Int3(int.MinValue, 0, 0),
+            };
+
+            int warmupSink = FillAll(cells, buffer, WarmupIterations);
+
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            int measuredSink = FillAll(cells, buffer, MeasuredIterations);
+            long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+            Assert.That(warmupSink, Is.GreaterThan(0), "the warm-up must fill chunks");
+            Assert.That(measuredSink, Is.GreaterThan(warmupSink), "the measured loop must run the fills");
+            Assert.That(
+                allocated,
+                Is.EqualTo(0L),
+                $"ChunkEditPropagation.FillAffectedChunks allocated {allocated} bytes over {MeasuredIterations} iterations");
+        }
+
         private static World LoadedGeneratedChunk()
         {
             var world = new World();
@@ -104,6 +132,17 @@ namespace Cubeglass.Voxel.Tests
                     RayHit value = hit.GetValueOrDefault();
                     sink += value.Distance + value.Cell.X + value.Normal.Y + value.Block.Value;
                 }
+            }
+
+            return sink;
+        }
+
+        private static int FillAll(Int3[] cells, ChunkCoord[] buffer, int iterations)
+        {
+            int sink = 0;
+            for (int i = 0; i < iterations; i++)
+            {
+                sink += ChunkEditPropagation.FillAffectedChunks(cells[i % cells.Length], buffer);
             }
 
             return sink;
