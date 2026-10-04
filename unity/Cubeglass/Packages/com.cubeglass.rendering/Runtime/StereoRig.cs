@@ -131,12 +131,24 @@ namespace Cubeglass.Unity.Rendering
 
             EnsureCameras();
 
-            // Clamp at the point of use too: Unity deserialization writes the
+            // Guard at the point of use too: Unity deserialization writes the
             // serialized fields directly, bypassing the clamping setters, so a
-            // scene asset can still carry out-of-range values.
-            float ipd = Mathf.Clamp(config.IpdMeters, StereoRigConfig.MinIpdMeters, StereoRigConfig.MaxIpdMeters);
-            float horizontalFov = Mathf.Clamp(
-                config.FovDegrees, StereoRigConfig.MinFovDegrees, StereoRigConfig.MaxFovDegrees);
+            // scene asset can still carry out-of-range values. Non-finite
+            // inputs are rejected before any comparison (I-3): a NaN never
+            // satisfies < or >, and a non-finite camera parameter poisons the
+            // projection matrix of both eyes.
+            float ipd = float.IsFinite(config.IpdMeters)
+                ? Mathf.Clamp(config.IpdMeters, StereoRigConfig.MinIpdMeters, StereoRigConfig.MaxIpdMeters)
+                : StereoRigConfig.DefaultIpdMeters;
+            float horizontalFov = float.IsFinite(config.FovDegrees)
+                ? Mathf.Clamp(config.FovDegrees, StereoRigConfig.MinFovDegrees, StereoRigConfig.MaxFovDegrees)
+                : StereoRigConfig.DefaultFovDegrees;
+            float nearClip = float.IsFinite(config.Near) && config.Near > 0f
+                ? config.Near
+                : StereoRigConfig.DefaultNear;
+            float farClip = float.IsFinite(config.Far) && config.Far > nearClip
+                ? config.Far
+                : Mathf.Max(StereoRigConfig.DefaultFar, nearClip * 2f);
             float aspect = PerEyeViewportAspect(screenWidth, screenHeight);
             if (aspect <= 0f)
             {
@@ -154,10 +166,10 @@ namespace Cubeglass.Unity.Rendering
             leftCamera.fieldOfView = verticalFov;
             rightCamera.fieldOfView = verticalFov;
 
-            leftCamera.nearClipPlane = config.Near;
-            rightCamera.nearClipPlane = config.Near;
-            leftCamera.farClipPlane = config.Far;
-            rightCamera.farClipPlane = config.Far;
+            leftCamera.nearClipPlane = nearClip;
+            rightCamera.nearClipPlane = nearClip;
+            leftCamera.farClipPlane = farClip;
+            rightCamera.farClipPlane = farClip;
 
             leftCamera.depth = 0f;
             rightCamera.depth = 0f;

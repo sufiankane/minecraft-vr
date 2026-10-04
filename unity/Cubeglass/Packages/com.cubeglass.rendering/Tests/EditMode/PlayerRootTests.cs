@@ -1,6 +1,8 @@
+using System.Text.RegularExpressions;
 using Cubeglass.CoreMath;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace Cubeglass.Unity.Rendering.Tests
 {
@@ -100,6 +102,55 @@ namespace Cubeglass.Unity.Rendering.Tests
                 "the body pose tick does not touch the head-relative rotation");
             Assert.AreEqual(4f, rootObject.transform.position.x, Tolerance);
             Assert.AreEqual(2f, rootObject.transform.position.z, Tolerance, "the body translation is mirrored");
+        }
+
+        [Test]
+        public void NonFiniteFirstPoseFallsBackToIdentityInsteadOfPoisoningTheTransform()
+        {
+            root.SetPlayerPose(new Vec3(double.NaN, 0.0, double.PositiveInfinity), float.NaN);
+
+            Assert.IsTrue(IsFinite(rootObject.transform.position), "the first rejected pose falls back to identity");
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, rootObject.transform.localRotation),
+                Tolerance,
+                "identity yaw");
+            Assert.IsTrue(root.HasPose, "the rejection still counts as an applied pose");
+            Assert.IsTrue(double.IsFinite(root.PositionInternal.X), "stored position finite");
+            Assert.IsTrue(double.IsFinite(root.PositionInternal.Y), "stored position finite");
+            Assert.IsTrue(double.IsFinite(root.PositionInternal.Z), "stored position finite");
+            Assert.IsTrue(float.IsFinite(root.YawRadians), "stored yaw finite");
+        }
+
+        [Test]
+        public void NonFiniteLaterPoseKeepsTheLastKnownPoseAndWarnsOnce()
+        {
+            root.SetPlayerPose(new Vec3(1.0, 2.0, 3.0), Mathf.PI * 0.5f);
+
+            LogAssert.Expect(LogType.Warning, new Regex("rejected a non-finite player pose"));
+            root.SetPlayerPose(new Vec3(double.NaN, 2.0, 3.0), Mathf.PI * 0.5f);
+            root.SetPlayerPose(new Vec3(1.0, 2.0, 3.0), float.NegativeInfinity);
+
+            Assert.AreEqual(1.0, root.PositionInternal.X, 1e-12, "last-known position is kept");
+            Assert.AreEqual(2f, rootObject.transform.position.y, Tolerance, "last-known transform is kept");
+            Assert.AreEqual(-3f, rootObject.transform.position.z, Tolerance);
+            Assert.Less(
+                Quaternion.Angle(Quaternion.Euler(0f, -90f, 0f), rootObject.transform.localRotation),
+                Tolerance,
+                "last-known yaw is kept");
+
+            // A finite double can still overflow the double-to-float conversion.
+            root.SetPlayerPose(new Vec3(1e300, 2.0, 3.0), 0f);
+            Assert.AreEqual(1.0, root.PositionInternal.X, 1e-12, "float-overflowing position is rejected as well");
+
+            // A finite pose resumes normal application.
+            root.SetPlayerPose(new Vec3(4.0, 5.0, 6.0), 0f);
+            Assert.AreEqual(4.0, root.PositionInternal.X, 1e-12, "finite poses apply normally afterwards");
+            Assert.AreEqual(4f, rootObject.transform.position.x, Tolerance);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return float.IsFinite(value.x) && float.IsFinite(value.y) && float.IsFinite(value.z);
         }
     }
 }
