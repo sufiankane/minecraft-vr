@@ -27,7 +27,15 @@ target_compile_definitions(
 
 add_test(NAME core_math COMMAND cg_core_math_tests)
 
+# Pin the RapidCheck property seed (CXX-15): TestParams::seed defaults to 0,
+# which RapidCheck reads as "generate a random seed", so property coverage and
+# shrink paths would vary run to run. A fixed seed keeps the lane deterministic
+# and failures reproducible; a nightly lane may override RC_PARAMS to vary it.
+set_tests_properties(core_math PROPERTIES ENVIRONMENT "RC_PARAMS=seed=20261004")
+
 add_subdirectory(glasses)
 add_test(NAME glasses COMMAND cg_glasses_tests)
 
 add_subdirectory(bridge)
+
+add_subdirectory(tools)

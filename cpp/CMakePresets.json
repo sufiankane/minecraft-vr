@@ -19,6 +19,16 @@
       }
     },
     {
+      "name": "windows-release",
+      "displayName": "Windows MSVC x64 Release (Ninja)",
+      "description": "Release (NDEBUG) mirror of windows-msvc so ctest exercises the release code paths, including NDEBUG-only behaviour (CXX-03). CTest is registered by the top-level CMakeLists (`enable_testing`), so tests are enabled here as in every lane.",
+      "inherits": "windows-msvc",
+      "binaryDir": "${sourceDir}/build/windows-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
       "name": "linux-ci",
       "displayName": "Linux CI (Ninja)",
       "generator": "Ninja",
@@ -88,6 +98,10 @@
       "configurePreset": "windows-msvc"
     },
     {
+      "name": "windows-release",
+      "configurePreset": "windows-release"
+    },
+    {
       "name": "linux-ci",
       "configurePreset": "linux-ci"
     },
@@ -112,6 +126,13 @@
     {
       "name": "ci",
       "configurePreset": "windows-msvc",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-release",
+      "configurePreset": "windows-release",
       "output": {
         "outputOnFailure": true
       }
