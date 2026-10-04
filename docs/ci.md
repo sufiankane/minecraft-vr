@@ -325,13 +325,17 @@ coverage report. See [`docs/perf/README.md`](perf/README.md) for details.
 - `mutation`: `dotnet stryker` against `Cubeglass.Voxel` with the break
   threshold at 70.
 - `mutation-gameplay`: `dotnet stryker --project
-  src/Gameplay/Cubeglass.Gameplay.csproj --break-at 70
+  src/Gameplay/Cubeglass.Gameplay.csproj --test-project
+  tests/Gameplay.Tests/Cubeglass.Gameplay.Tests.csproj --break-at 70
   --threshold-high 90` (TD-031), with the JSON report uploaded even on failure.
-  The project and thresholds are inline so `dotnet/stryker-config.json` stays
-  owned by the .NET workstream. The first hosted run establishes the Gameplay
-  mutation score; until it is recorded the lane may fail on the break threshold
-  even though it is wired correctly (the thresholds stay at the agreed 70 until
-  a clean run is seen).
+  The project, test project and thresholds are inline so
+  `dotnet/stryker-config.json` stays owned by the .NET workstream. The
+  test-project scope matters: auto-discovery also picked up
+  `Streaming.Tests`, whose shared-memory fixtures conflict across Stryker's
+  concurrent test hosts (observed locally, TD-031). The first hosted run
+  establishes the Gameplay mutation score; until it is recorded the lane may
+  fail on the break threshold even though it is wired correctly (the thresholds
+  stay at the agreed 70 until a clean run is seen).
 - `soak`: the 30-minute `glasses_soak` run.
 
 The performance methodology and artefact locations are documented in

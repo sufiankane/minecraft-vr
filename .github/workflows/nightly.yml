@@ -297,12 +297,16 @@ jobs:
       - name: Run Stryker mutation testing (Gameplay)
         # TD-031: extend mutation coverage from Voxel to Cubeglass.Gameplay.
         # Project and thresholds are inline so dotnet/stryker-config.json stays
-        # owned by the .NET workstream. The lane breaks below 70; the first
-        # hosted run is expected to establish the actual score (see
-        # docs/ci.md) and may need threshold tuning once it is recorded.
+        # owned by the .NET workstream. `--test-project` scopes verification to
+        # the Gameplay suite: auto-discovery also picked up Streaming.Tests
+        # (which uses shared-memory fixtures) and ten concurrent runners
+        # conflicted on this machine, failing every VsTest session. The lane
+        # breaks below 70; the first hosted run establishes the score (see
+        # docs/ci.md).
         run: >-
           dotnet stryker
           --project src/Gameplay/Cubeglass.Gameplay.csproj
+          --test-project tests/Gameplay.Tests/Cubeglass.Gameplay.Tests.csproj
           --break-at 70
           --threshold-high 90
           --reporter progress
