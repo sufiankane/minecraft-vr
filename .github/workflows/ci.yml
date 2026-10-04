@@ -59,14 +59,19 @@ jobs:
       - name: clang-format (warnings as errors)
         run: |
           $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
-          $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp)$' })
+          # Every C++ source and header under cpp/. contracts/ is deliberately
+          # excluded: those headers are dossier-verbatim.
+          $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
           if ($files.Count -eq 0) {
             Write-Host "No C++ sources to check"
             exit 0
           }
           clang-format --dry-run --Werror $files
 
-      - name: clang-tidy (module sources)
+      - name: clang-tidy (core-math module sources; other modules deferred)
+        # Scope is deliberately core-math/src only; widening to glasses/src and
+        # bridge/src surfaces 159 warnings-as-errors today. The deferral is
+        # recorded in docs/ci.md ("clang-tidy scope").
         working-directory: cpp
         run: |
           $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
@@ -322,8 +327,11 @@ jobs:
           python -m pip install -r python/requirements-dev.txt
           python -m pip install -e python
 
-      - name: Enforce dependency rules
+      - name: Enforce dependency rules and layers.json completeness
         run: python -m depcheck --root .
+
+      - name: Enforce the contract-compatibility gate
+        run: python -m depcheck contracts --root .
 
   licences:
     name: licences

@@ -202,6 +202,7 @@ try {
         Push-Location $RepoRoot
         try {
             Invoke-Checked 'python -m depcheck --root .' { & $VenvPython -m depcheck --root . }
+            Invoke-Checked 'python -m depcheck contracts --root .' { & $VenvPython -m depcheck contracts --root . }
             Invoke-Checked 'python -m depcheck licences --root .' { & $VenvPython -m depcheck licences --root . }
         }
         finally {

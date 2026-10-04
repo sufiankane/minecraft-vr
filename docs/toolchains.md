@@ -28,6 +28,16 @@ Baseline recorded on 2026-10-01 (Windows x64).
 | GitHub CLI | 2.102.0 | `gh --version` | `winget install --id GitHub.cli --exact --accept-source-agreements --accept-package-agreements` |
 | Node | 24.19.0 | `node --version` | already installed (Node.js 24 LTS) |
 
+## Format and lint scope
+
+`clang-format` covers every `cpp/**/*.{cpp,hpp,h,hh,cc,cxx}` file in the
+required `cpp-windows` job; `contracts/**` is excluded because those headers are
+dossier-verbatim and frozen by the contract gate instead.
+`clang-tidy` currently runs over `cpp/core-math/src/*.cpp` only;
+`cpp/glasses/src`, `cpp/bridge/src`, `cpp/tests` and `cpp/tools` are deferred
+(widening to the adapters surfaces 159 warnings-as-errors today). The exact
+scope and the deferral evidence are recorded in [`docs/ci.md`](ci.md).
+
 ## Bootstrap
 
 ```powershell
