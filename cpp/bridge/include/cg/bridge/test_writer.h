@@ -22,16 +22,19 @@
 extern "C" {
 #endif
 
-/* Creates the region (or reuses and reinitializes a stale one) and zeroes the
- * header and both slots. One writer per process. */
+/* Creates the region (or reuses and reinitializes a stale one), zeroes the
+ * header and both slots, and stamps the heartbeat with the current time so a
+ * freshly created region does not read as indefinitely stale. One writer per
+ * process. */
 cg_status cg_test_writer_create(void);
 
 /* Opens an existing region without creating one; CG_ERR_NOT_READY when
  * absent. Does not reinitialize it. */
 cg_status cg_test_writer_open(void);
 
-/* Unmaps and releases (POSIX: also unlinks) the region. Null-safe and safe to
- * call when no writer is open. */
+/* Unmaps and releases the region. Null-safe and safe to call when no writer is
+ * open. POSIX also unlinks, but only a region this handle created: a region
+ * merely opened with `cg_test_writer_open` is left in place. */
 void cg_test_writer_close(void);
 
 /* Publishes one head sample with the 5.6 seqlock protocol. */

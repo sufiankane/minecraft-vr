@@ -15,6 +15,15 @@ namespace Cubeglass.Voxel
     /// <c>Assembly.GetManifestResourceStream</c>, never <c>System.IO</c> file
     /// APIs. Invalid content throws <see cref="FormatException"/> so the pure
     /// module never references <c>System.IO.InvalidDataException</c>.
+    /// <para>
+    /// <see cref="Get"/> is total: an unknown id (including the reserved
+    /// 0xFFFF sentinel, which a corrupted payload can still place in a chunk)
+    /// returns the shared <see cref="Fallback"/> definition instead of
+    /// throwing. Meshing and interaction therefore degrade a poisoned cell to
+    /// a non-solid, non-opaque, hardness-zero placeholder with atlas tile 0
+    /// rather than crashing the frame. This is a contract amendment recorded
+    /// for the ADR-0006/0007 docs wave.
+    /// </para>
     /// </remarks>
     public sealed class BlockRegistry : IBlockRegistry
     {
@@ -32,6 +41,15 @@ namespace Cubeglass.Voxel
             _placeable = placeable;
         }
 
+        /// <summary>
+        /// The shared placeholder returned by <see cref="Get"/> for an unknown
+        /// block id: air-equivalent (non-solid, non-opaque, hardness zero)
+        /// with atlas tile 0 on every face. Its <see cref="BlockDefinition.Id"/>
+        /// is <see cref="BlockId.Air"/>, so it is never placeable.
+        /// </summary>
+        public static BlockDefinition Fallback { get; } =
+            new BlockDefinition(BlockId.Air, "Unknown", false, false, 0f, 0, 0, 0);
+
         /// <summary>The registry parsed from the embedded block definitions.</summary>
         public static BlockRegistry Default => Embedded.Value;
 
@@ -42,13 +60,7 @@ namespace Cubeglass.Voxel
 
         public BlockDefinition Get(BlockId id)
         {
-            if (_byId.TryGetValue(id, out BlockDefinition? definition))
-            {
-                return definition;
-            }
-
-            throw new KeyNotFoundException(
-                string.Format(CultureInfo.InvariantCulture, "No block definition for id {0}.", id.Value));
+            return _byId.TryGetValue(id, out BlockDefinition? definition) ? definition : Fallback;
         }
 
         /// <summary>

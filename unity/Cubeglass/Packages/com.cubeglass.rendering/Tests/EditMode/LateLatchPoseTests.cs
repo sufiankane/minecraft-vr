@@ -164,6 +164,86 @@ namespace Cubeglass.Unity.Rendering.Tests
                 "the head-relative pose applies no sample position; PlayerRoot owns the eye offset");
         }
 
+        /// <summary>
+        /// I-3: a corrupted sample rotation must never put NaN/infinity on the
+        /// rig; the last-known rotation is kept and finite samples resume.
+        /// </summary>
+        [Test]
+        public void NonFiniteRotationFallsBackToTheLastKnownRotation()
+        {
+            provider.Sample = YawSample(90f);
+            latch.TickOnce();
+            Quaternion lastGood = latch.transform.localRotation;
+
+            provider.Sample = new BridgeHeadSample
+            {
+                HostTime = 43L,
+                Pose = new BridgePose
+                {
+                    Position = new BridgeVec3 { X = float.NaN, Y = float.PositiveInfinity, Z = 0f },
+                    Rotation = new BridgeQuat
+                    {
+                        W = float.NaN,
+                        X = float.PositiveInfinity,
+                        Y = 0f,
+                        Z = 0f,
+                    },
+                },
+                State = TrackState.Stable,
+                Sequence = 5,
+            };
+            latch.TickOnce();
+
+            Assert.Less(
+                Quaternion.Angle(lastGood, latch.transform.localRotation),
+                Tolerance,
+                "the last-known rotation is kept for a non-finite sample");
+            Assert.IsTrue(IsFinite(latch.transform.localRotation), "the rig transform holds no NaN/infinity");
+
+            provider.Sample = PitchSample(30f);
+            latch.TickOnce();
+            Assert.Less(
+                Quaternion.Angle(latch.transform.localRotation, Quaternion.Euler(-30f, 0f, 0f)),
+                Tolerance,
+                "finite samples resume after a rejected one");
+        }
+
+        [Test]
+        public void NonFiniteFirstSampleCannotPutNaNOnTheRig()
+        {
+            provider.Sample = new BridgeHeadSample
+            {
+                HostTime = 44L,
+                Pose = new BridgePose
+                {
+                    Position = new BridgeVec3 { X = float.NegativeInfinity, Y = 0f, Z = 0f },
+                    Rotation = new BridgeQuat { W = float.NaN, X = 0f, Y = float.NaN, Z = 0f },
+                },
+                State = TrackState.Stable,
+                Sequence = 6,
+            };
+
+            latch.TickOnce();
+
+            Assert.Less(
+                Quaternion.Angle(Quaternion.identity, latch.transform.localRotation),
+                Tolerance,
+                "the first non-finite sample falls back to identity");
+            Assert.IsTrue(IsFinite(latch.transform.localRotation), "the rig transform holds no NaN/infinity");
+            Assert.IsTrue(IsFinite(latch.transform.localPosition), "the rig position is untouched");
+        }
+
+        private static bool IsFinite(Quaternion value)
+        {
+            return float.IsFinite(value.x) && float.IsFinite(value.y)
+                && float.IsFinite(value.z) && float.IsFinite(value.w);
+        }
+
+        private static bool IsFinite(Vector3 value)
+        {
+            return float.IsFinite(value.x) && float.IsFinite(value.y) && float.IsFinite(value.z);
+        }
+
         [Test]
         public void RecentreOnANonRecenterableProviderResetsTheLocalBaseline()
         {

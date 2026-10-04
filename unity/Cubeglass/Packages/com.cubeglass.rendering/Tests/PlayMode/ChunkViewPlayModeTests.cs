@@ -1,6 +1,8 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Cubeglass.CoreMath;
 using Cubeglass.Gameplay;
 using Cubeglass.Streaming;
@@ -9,6 +11,7 @@ using Cubeglass.Voxel;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
+using Object = UnityEngine.Object;
 
 namespace Cubeglass.Unity.Rendering.Tests
 {
@@ -595,6 +598,86 @@ namespace Cubeglass.Unity.Rendering.Tests
             return -1;
         }
 
+        /// <summary>
+        /// R-3/R-4: a systemic generator fault must burn at most one attempt
+        /// (and one loud error) per frame instead of one per queued chunk, and
+        /// the failed chunks must stay out of the live set.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator SystemicGeneratorFailuresBurnOneAttemptPerFrame()
+        {
+            var managerObject = new GameObject("ThrowingGenerator");
+            managerObject.transform.SetParent(root.transform, false);
+            ChunkViewManager manager = managerObject.AddComponent<ChunkViewManager>();
+            manager.Initialize(
+                SmallConfig(4),
+                23L,
+                capacity: 8,
+                chunkScheduler: null,
+                worldGenerator: new ThrowingGenerator());
+
+            LogAssert.Expect(LogType.Error, new Regex("generating chunk \\(0, 0, 0\\) failed"));
+            manager.OnLoad(new ChunkCoord(0, 0, 0));
+            Assert.AreEqual(1, manager.GenerationFailures, "the first failure is contained");
+            Assert.AreEqual(0, manager.LoadedChunks, "the failed chunk stays unloaded");
+            Assert.AreEqual(0, manager.DeferredLoads, "the failed chunk is dropped from the queue");
+
+            manager.OnLoad(new ChunkCoord(1, 0, 0));
+            manager.OnLoad(new ChunkCoord(2, 0, 0));
+            manager.OnLoad(new ChunkCoord(3, 0, 0));
+            Assert.AreEqual(3, manager.DeferredLoads, "the remaining loads wait for the next frame");
+
+            yield return null;
+
+            LogAssert.Expect(LogType.Error, new Regex("generating chunk \\(1, 0, 0\\) failed"));
+            manager.ProcessDeferredLoads();
+            Assert.AreEqual(
+                2,
+                manager.GenerationFailures,
+                "a systemic fault burns one attempt per frame, not one per queued chunk (review R-3)");
+            Assert.AreEqual(2, manager.DeferredLoads, "the other queued chunks stay queued");
+            Assert.AreEqual(0, manager.LoadedChunks);
+
+            yield return null;
+        }
+
+        /// <summary>
+        /// R-4/M-2: when the mesh build throws after a pooled view was
+        /// acquired, the view is returned to the pool exactly once (it is not
+        /// left in the active map and not lost from it), on every attempt.
+        /// </summary>
+        [Test]
+        public void UploadFailureReturnsThePooledViewExactlyOnce()
+        {
+            var managerObject = new GameObject("UploadFailure");
+            managerObject.transform.SetParent(root.transform, false);
+            ChunkViewManager manager = managerObject.AddComponent<ChunkViewManager>();
+            manager.Initialize(
+                SmallConfig(4),
+                23L,
+                capacity: 4,
+                chunkScheduler: null,
+                worldGenerator: new SingleBlockGenerator(new BlockId(1)));
+            manager.Blocks = new ThrowingBlockRegistry();
+
+            var coord = new ChunkCoord(0, 0, 0);
+            manager.OnLoad(coord);
+            Assert.AreEqual(1, manager.GeneratedChunks, "the chunk generated");
+            Assert.AreEqual(0, manager.ActiveViews, "nothing is uploaded yet");
+
+            Assert.Throws<InvalidOperationException>(() => manager.OnUpload(coord));
+            Assert.AreEqual(0, manager.ActiveViews, "the acquired view is returned exactly once");
+            Assert.IsFalse(manager.TryGetView(coord, out _), "the failed view is not registered");
+            Assert.AreEqual(
+                manager.MeshDataBuilds,
+                manager.MeshDataReleases,
+                "no mesh data is left outstanding");
+
+            Assert.Throws<InvalidOperationException>(() => manager.OnUpload(coord));
+            Assert.AreEqual(0, manager.ActiveViews, "a second failed attempt also releases exactly once");
+            Assert.AreEqual(1, manager.CreatedViews, "the pool reuses the same view instead of leaking one per attempt");
+        }
+
         private static StreamingConfig SmallConfig(int uploadBudget)
         {
             return new StreamingConfig
@@ -722,6 +805,27 @@ namespace Cubeglass.Unity.Rendering.Tests
                     block,
                     0L));
                 return chunk;
+            }
+        }
+
+        private sealed class ThrowingGenerator : IWorldGenerator
+        {
+            public Chunk Generate(ChunkCoord coord, long seed)
+            {
+                throw new InvalidOperationException("test: generator fault");
+            }
+        }
+
+        private sealed class ThrowingBlockRegistry : IBlockRegistry
+        {
+            public BlockDefinition Get(BlockId id)
+            {
+                throw new InvalidOperationException("test: registry fault");
+            }
+
+            public IReadOnlyList<BlockId> Placeable
+            {
+                get { throw new InvalidOperationException("test: registry fault"); }
             }
         }
     }

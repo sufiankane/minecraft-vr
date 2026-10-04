@@ -41,9 +41,33 @@ namespace Cubeglass.Streaming
     /// (the calls are idempotent). <see cref="Update(Vec3)"/> returns a reused
     /// list that must be consumed before the next update.
     /// </para>
+    /// <para>
+    /// Extreme inputs are contained rather than trusted: a non-finite position
+    /// component maps to chunk 0 on that axis, a finite position outside the
+    /// representable cell space clamps to the edge chunk
+    /// (<see cref="MinChunkCoordinate"/> or <see cref="MaxChunkCoordinate"/>),
+    /// and the desired box is clipped to that same range with 64-bit
+    /// arithmetic, so no radius addition can wrap. Priority order compares
+    /// squared chunk distance in <see cref="double"/> space, so two chunks at
+    /// opposite extremes cannot overflow into a wrong "nearer" chunk. The
+    /// config itself is already validated by
+    /// <see cref="StreamingConfig"/>, which bounds every radius and budget.
+    /// </para>
     /// </remarks>
     public sealed class ChunkStreamingScheduler
     {
+        /// <summary>
+        /// Smallest chunk coordinate whose cells are representable:
+        /// <c>int.MinValue / 16</c>.
+        /// </summary>
+        internal const int MinChunkCoordinate = int.MinValue / ChunkMath.ChunkSize;
+
+        /// <summary>
+        /// Largest chunk coordinate whose cells are representable:
+        /// <c>int.MaxValue / 16</c>.
+        /// </summary>
+        internal const int MaxChunkCoordinate = int.MaxValue / ChunkMath.ChunkSize;
+
         private readonly StreamingConfig _config;
         private readonly HashSet<ChunkCoord> _desired = new HashSet<ChunkCoord>();
         private readonly HashSet<ChunkCoord> _loaded = new HashSet<ChunkCoord>();
@@ -205,14 +229,29 @@ namespace Cubeglass.Streaming
 
             for (int dx = -radius; dx <= radius; dx++)
             {
+                long x = (long)_playerChunk.X + dx;
+                if (x < MinChunkCoordinate || x > MaxChunkCoordinate)
+                {
+                    continue;
+                }
+
                 for (int dy = -vertical; dy <= vertical; dy++)
                 {
+                    long y = (long)_playerChunk.Y + dy;
+                    if (y < MinChunkCoordinate || y > MaxChunkCoordinate)
+                    {
+                        continue;
+                    }
+
                     for (int dz = -radius; dz <= radius; dz++)
                     {
-                        _desired.Add(new ChunkCoord(
-                            _playerChunk.X + dx,
-                            _playerChunk.Y + dy,
-                            _playerChunk.Z + dz));
+                        long z = (long)_playerChunk.Z + dz;
+                        if (z < MinChunkCoordinate || z > MaxChunkCoordinate)
+                        {
+                            continue;
+                        }
+
+                        _desired.Add(new ChunkCoord((int)x, (int)y, (int)z));
                     }
                 }
             }
@@ -261,8 +300,8 @@ namespace Cubeglass.Streaming
 
         private bool BeyondRetention(ChunkCoord chunk)
         {
-            long horizontal = _config.ViewDistanceChunks + _config.UnloadHysteresis;
-            long vertical = (int)Math.Floor(_config.VerticalRadiusChunks) + _config.UnloadHysteresis;
+            long horizontal = (long)_config.ViewDistanceChunks + _config.UnloadHysteresis;
+            long vertical = (long)(int)Math.Floor(_config.VerticalRadiusChunks) + _config.UnloadHysteresis;
             long dx = (long)chunk.X - _playerChunk.X;
             long dy = (long)chunk.Y - _playerChunk.Y;
             long dz = (long)chunk.Z - _playerChunk.Z;
@@ -272,18 +311,18 @@ namespace Cubeglass.Streaming
                 || dz > horizontal || dz < -horizontal;
         }
 
-        private long SquaredDistance(ChunkCoord chunk)
+        private double SquaredDistance(ChunkCoord chunk)
         {
-            long dx = (long)chunk.X - _playerChunk.X;
-            long dy = (long)chunk.Y - _playerChunk.Y;
-            long dz = (long)chunk.Z - _playerChunk.Z;
+            double dx = (double)chunk.X - _playerChunk.X;
+            double dy = (double)chunk.Y - _playerChunk.Y;
+            double dz = (double)chunk.Z - _playerChunk.Z;
             return (dx * dx) + (dy * dy) + (dz * dz);
         }
 
         private int ComparePriority(ChunkCoord a, ChunkCoord b)
         {
-            long distanceA = SquaredDistance(a);
-            long distanceB = SquaredDistance(b);
+            double distanceA = SquaredDistance(a);
+            double distanceB = SquaredDistance(b);
             if (distanceA != distanceB)
             {
                 return distanceA < distanceB ? -1 : 1;
@@ -309,11 +348,37 @@ namespace Cubeglass.Streaming
 
         private static ChunkCoord ToChunk(Vec3 position)
         {
-            const double size = ChunkMath.ChunkSize;
             return new ChunkCoord(
-                (int)Math.Floor(position.X / size),
-                (int)Math.Floor(position.Y / size),
-                (int)Math.Floor(position.Z / size));
+                ChunkComponent(position.X),
+                ChunkComponent(position.Y),
+                ChunkComponent(position.Z));
+        }
+
+        /// <summary>
+        /// Maps one world coordinate to its chunk: NaN maps to 0, and a finite
+        /// value outside the representable cell space clamps to the edge
+        /// chunk, so the cast can never wrap and the result always names a
+        /// chunk whose cells exist.
+        /// </summary>
+        private static int ChunkComponent(double world)
+        {
+            if (double.IsNaN(world))
+            {
+                return 0;
+            }
+
+            double chunk = Math.Floor(world / ChunkMath.ChunkSize);
+            if (chunk <= MinChunkCoordinate)
+            {
+                return MinChunkCoordinate;
+            }
+
+            if (chunk >= MaxChunkCoordinate)
+            {
+                return MaxChunkCoordinate;
+            }
+
+            return (int)chunk;
         }
 
         private enum CandidateKind

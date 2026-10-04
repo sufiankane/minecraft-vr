@@ -152,7 +152,9 @@ void PrintUsage(std::FILE *stream) {
                "\n"
                "options:\n"
                "  --source NAME    sample source: fake (default), replay, viture\n"
-               "  --dll PATH       VITURE SDK library for --source viture (or CG_VITURE_DLL)\n"
+               "  --dll PATH       VITURE SDK library for --source viture (or CG_VITURE_DLL);\n"
+               "                   an absolute path outside the working directory (a DLL\n"
+               "                   next to cg-pose-probe.exe is also accepted)\n"
                "  --csv PATH       recorded dataset for --source replay (required)\n"
                "  --seconds N      run time in seconds (default 5)\n"
                "  --rate HZ        fake: sample rate (default 90). replay: wall-pacing\n"
@@ -265,8 +267,11 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string &
             if (!NextValue(argc, argv, index, arg, value, error)) {
                 return ParseOutcome::Error;
             }
-            if (!ParseDouble(value, options.rate_hz) || options.rate_hz <= 0.0) {
-                error = "--rate must be a finite positive number";
+            // A period that rounds to 0 ns would spin the fake driver and make
+            // the replay fixed grid degenerate (CXX-08).
+            if (!ParseDouble(value, options.rate_hz) || options.rate_hz <= 0.0 ||
+                cg::core_math::ToNanoseconds(1.0 / options.rate_hz) <= 0) {
+                error = "--rate must be a finite positive rate whose period is at least 1 ns";
                 return ParseOutcome::Error;
             }
             options.rate_set = true;

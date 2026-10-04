@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using Cubeglass.Voxel;
 
 namespace Cubeglass.Unity.Rendering
@@ -20,12 +19,29 @@ namespace Cubeglass.Unity.Rendering
     /// against the JSON; change both together.
     /// </para>
     /// <para>
+    /// <see cref="Get"/> is total, matching the pure module (dotnet review I1
+    /// and its Unity mirror): an id with no definition returns
+    /// <see cref="Fallback"/> (air-equivalent: non-solid, non-opaque, hardness
+    /// 0, atlas tile 0) instead of throwing, so a corrupted save or a future
+    /// block id can never stop a frame in the mesher or the interaction
+    /// service. The fallback is still meshed as a visible placeholder diamond
+    /// because the mesher keys "air vs block" on the stored id, not on the
+    /// resolved definition.
+    /// </para>
+    /// <para>
     /// <see cref="Get"/> scans a fixed array (six entries), so a chunk build
     /// performs no allocation and no dictionary lookup.
     /// </para>
     /// </remarks>
     public sealed class SliceBlockRegistry : IBlockRegistry
     {
+        /// <summary>
+        /// The definition returned for an id with no entry: an air-equivalent
+        /// placeholder with atlas tile 0 so the mesher can still draw it.
+        /// </summary>
+        public static readonly BlockDefinition Fallback =
+            new BlockDefinition(BlockId.Air, "Unknown", false, false, 0.0f, 0, 0, 0);
+
         private static readonly BlockDefinition[] Definitions =
         {
             new BlockDefinition(new BlockId(0), "Air", false, false, 0.0f, 0, 0, 0),
@@ -49,9 +65,10 @@ namespace Cubeglass.Unity.Rendering
         public static SliceBlockRegistry Default { get; } = new SliceBlockRegistry();
 
         /// <summary>
-        /// Returns the definition of <paramref name="id"/>.
+        /// Returns the definition of <paramref name="id"/>, or
+        /// <see cref="Fallback"/> when no built-in block has that id. Never
+        /// throws for an id.
         /// </summary>
-        /// <exception cref="KeyNotFoundException">No built-in block has that id.</exception>
         public BlockDefinition Get(BlockId id)
         {
             for (int i = 0; i < Definitions.Length; i++)
@@ -62,8 +79,7 @@ namespace Cubeglass.Unity.Rendering
                 }
             }
 
-            throw new KeyNotFoundException(
-                string.Format(CultureInfo.InvariantCulture, "No S7 slice block definition for id {0}.", id.Value));
+            return Fallback;
         }
 
         /// <summary>Every placeable block id in definition order; excludes air.</summary>

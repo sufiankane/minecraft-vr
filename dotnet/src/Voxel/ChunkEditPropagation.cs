@@ -14,7 +14,10 @@ namespace Cubeglass.Voxel
     /// at most two chunks and chunk membership is constant between its two
     /// boundary values, so the eight corner cells already produce every
     /// affected chunk: 1, 2, 4 or 8 of them, sorted by <c>(X, Y, Z)</c> for a
-    /// deterministic dirty order.
+    /// deterministic dirty order. A corner whose coordinate falls outside the
+    /// <see cref="int"/> cell range is skipped: there is no cell there, and
+    /// wrapping would otherwise name an unrelated chunk at the opposite end of
+    /// the coordinate space.
     /// </remarks>
     public static class ChunkEditPropagation
     {
@@ -35,8 +38,17 @@ namespace Cubeglass.Voxel
                 {
                     for (int dx = -1; dx <= 1; dx += 2)
                     {
-                        ChunkCoord chunk = ChunkMath.ToChunk(
-                            new Int3(cell.X + dx, cell.Y + dy, cell.Z + dz));
+                        long x = (long)cell.X + dx;
+                        long y = (long)cell.Y + dy;
+                        long z = (long)cell.Z + dz;
+                        if (x < int.MinValue || x > int.MaxValue
+                            || y < int.MinValue || y > int.MaxValue
+                            || z < int.MinValue || z > int.MaxValue)
+                        {
+                            continue;
+                        }
+
+                        ChunkCoord chunk = ChunkMath.ToChunk(new Int3((int)x, (int)y, (int)z));
 
                         bool seen = false;
                         for (int i = 0; i < count; i++)

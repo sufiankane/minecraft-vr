@@ -230,6 +230,46 @@ namespace Cubeglass.Unity.Input.Tests
             Assert.AreEqual(1f, length, Tolerance, "diagonal move is normalised to the unit disc");
         }
 
+        /// <summary>
+        /// Review M-6: infinity used to survive ClampToUnit's length check and
+        /// normalise into NaN (inf * 0), which then propagated into the player
+        /// state; non-finite input is now zeroed at both helpers.
+        /// </summary>
+        [Test]
+        public void NonFiniteMoveAndLookAreZeroedBeforeTheyCanBecomeNaN()
+        {
+            Assert.AreEqual(
+                Vector2f.Zero,
+                InputMapper.ClampToUnit(new Vector2f(float.PositiveInfinity, 0f)),
+                "+inf move is zero");
+            Assert.AreEqual(
+                Vector2f.Zero,
+                InputMapper.ClampToUnit(new Vector2f(0f, float.NegativeInfinity)),
+                "-inf move is zero");
+            Assert.AreEqual(
+                Vector2f.Zero,
+                InputMapper.ClampToUnit(new Vector2f(float.NaN, 1f)),
+                "NaN move is zero");
+            Assert.AreEqual(
+                Vector2f.Zero,
+                InputMapper.ApplyRadialDeadzone(new Vector2f(float.PositiveInfinity, 0f), 0.15f),
+                "+inf is deadzoned out instead of passing through");
+
+            var mapper = new InputMapper(lookDeadzone: 0.15f);
+            InputFrame frame = mapper.Map(new RawInputSample(
+                new Vector2f(float.NaN, float.PositiveInfinity),
+                new Vector2f(float.PositiveInfinity, float.NaN),
+                90f,
+                false,
+                false,
+                false,
+                0,
+                false,
+                false));
+            Assert.AreEqual(Vector2f.Zero, frame.Move, "non-finite move must not reach the frame");
+            Assert.AreEqual(0f, frame.TurnSnap, Tolerance, "non-finite look must not turn the view");
+        }
+
         [Test]
         public void LookDeadzoneGatesContinuousTurn()
         {

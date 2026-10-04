@@ -87,6 +87,19 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void CycleDoesNotOverflowForExtremeDeltas()
+        {
+            var hotbar = new Hotbar();
+            hotbar.Cycle(5);
+
+            hotbar.Cycle(int.MaxValue);
+            Assert.That(hotbar.SelectedIndex, Is.EqualTo(6), "int.MaxValue % 9 == 1");
+
+            hotbar.Cycle(int.MinValue);
+            Assert.That(hotbar.SelectedIndex, Is.EqualTo(4), "int.MinValue % 9 folds to 7, so 6 + 7 wraps to 4");
+        }
+
+        [Test]
         public void GetRejectsSlotsOutsideTheBar()
         {
             var hotbar = new Hotbar();

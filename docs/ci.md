@@ -77,22 +77,30 @@ absent directory without weakening the check for every other module.
 
 Dossier section 9 item 7 requires contract files to stay frozen unless the ABI
 version is bumped (and an ADR explains it). `python -m depcheck contracts
---root .` (required `depcheck` job) computes a normalised fingerprint over
-`contracts/cg_types.h`, `contracts/cg_unity_bridge.h`,
-`contracts/cpp/ports.hpp` and `contracts/cpp/result.hpp` — comments and
-whitespace stripped, so formatting-only edits pass — and compares it with the
-committed `contracts/abi-baseline.json`.
+--root .` (required `depcheck` job) recomputes a normalised fingerprint over the
+live contract surface - `contracts/cg_types.h`, `contracts/cg_unity_bridge.h`,
+`contracts/cpp/ports.hpp`, `contracts/cpp/result.hpp` and the golden fixture
+schema - with comments/whitespace stripped, string and raw-string literals
+masked, line continuations spliced and C++ digraphs translated (`%:include` is
+an include).
 
-- An unchanged fingerprint passes.
-- A changed fingerprint fails when `CG_ABI_VERSION` (declared in
-  `contracts/cg_types.h`) is unchanged, naming the changed files.
-- After bumping `CG_ABI_VERSION`, regenerate the baseline with
-  `python -m depcheck contracts --root . --update`. `--update` refuses to write
-  while the version is unchanged, so a contract edit cannot silently rebase the
-  baseline.
+- The live fingerprints are compared against **`KNOWN_FINGERPRINTS` in
+  `python/depcheck/contracts.py`**. Any layout drift requires a review-visible
+  code-constant edit; editing `contracts/abi-baseline.json` alone (even
+  consistently rewriting its `files` and `fingerprint` maps) cannot admit drift
+  (the second critical review's bypass, closed 2026-10-04).
+- The source ABI version must also equal `KNOWN_ABI_VERSIONS`; a real change is
+  a three-edit commit: bump `CG_ABI_VERSION` in `contracts/cg_types.h`, update
+  both constants, then `python -m depcheck contracts --root . --update`.
+  `--update` refuses while a live fingerprint differs from the code constant,
+  and the baseline is bookkeeping, not the trust anchor.
+- Version-bump discipline beyond the anchor is review-enforced (TD-049); the
+  textual scan remains best-effort for interpolation holes and string-built
+  names (TD-048).
 
 The baseline was added 2026-10-03 (infra review part A); ADR-0003 records why
-the S1 follow-up did not happen until then.
+the S1 follow-up did not happen until then. The gate was hardened after the
+2026-10-04 critical review.
 
 ## Formatting and clang-tidy scope
 
@@ -219,9 +227,11 @@ path: every floor above is enforced from its job's coverage report. See
   `docs/perf/nightly-baseline.json`. A benchmark present in both the run and the
   baseline that regresses by more than 10 percent fails the job and names the
   offender. While the baseline file is missing, the job passes with a
-  `baseline established` message and uploads the captured run as the
-  `nightly-baseline` artefact; committing that file enables enforcement from the
-  next run. Benchmarks absent from the baseline are new and never fail.
+`baseline established` message and uploads the captured run as the
+`nightly-baseline` artefact; committing that file enables enforcement from the
+next run (owner debt TD-054). A zero-report glob now fails the step instead of
+silently comparing nothing. Benchmarks absent from the baseline are new and
+never fail.
 - `supply-chain`: `dotnet list dotnet/Cubeglass.sln package --vulnerable
   --include-transitive` (fails on any vulnerable package, transitive included)
   and `pip-audit -r python/requirements-dev.txt` (fails on any finding).
@@ -302,8 +312,13 @@ Cubeglass.Editor.BuildPlayer.BuildWindows64`; editor 6000.6.3f1 from
 `ProjectSettings/ProjectVersion.txt`, target StandaloneWindows64) under the
 licence activated in the step above - no third-party action and no account
 credentials - and packages
-`Cubeglass-windows-x64.zip`, uploads it as the `Cubeglass-windows-x64` artefact
-and attaches the archive to the release when `v0.1.0` exists.
+`Cubeglass-windows-x64.zip` plus a `Cubeglass-windows-x64.zip.sha256` in
+`sha256sum` format, uploads them as the `Cubeglass-windows-x64` artefact and
+attaches both to the release when `v0.1.0` exists. Build steps hold
+`contents: read` with `persist-credentials: false`; repository write is granted
+only to the separate `attach-hosted` job, which downloads the artefact and runs
+`gh release upload` (with `--clobber` for re-runs, TD-055). The cpp lanes carry
+60-minute timeouts (TD-061 tracks attach-job verification).
 
 ### Route 2: `self-hosted`
 
@@ -312,15 +327,19 @@ machine whose Unity editor is already activated through the Unity Hub. It needs
 no Unity secrets: the machine's own Hub activation (Unity Personal here) is the
 licence. The job runs the same EditMode and PlayMode suites with the machine's
 editor (`unity test unity/Cubeglass --mode EditMode --non-interactive` and
-`--mode PlayMode --non-interactive`) after the plugins are staged, then
+`--mode PlayMode --non-interactive`) after the plugins are staged, asserted by
+the shared `scripts/check-unity-results.ps1` (totals, failures, skips and
+required assemblies - the same gate as the hosted route), then
 `unity run unity/Cubeglass --non-interactive -- -executeMethod
 Cubeglass.Editor.BuildPlayer.BuildWindows64` directly, with no editor install
 and no activation step. The build is guarded: a non-zero `unity run` exit code
 or a missing
 `unity/Cubeglass/build/StandaloneWindows64/Cubeglass/Cubeglass.exe` fails the
 job with a message naming the Hub-activation requirement. The player is
-packaged as `Cubeglass-v0.1.0-win-x64.zip` and uploaded as the
-`Cubeglass-v0.1.0-win-x64` artefact before the attach.
+packaged as `Cubeglass-v0.1.0-win-x64.zip` with a matching
+`.sha256` and uploaded as the `Cubeglass-v0.1.0-win-x64` artefact; the
+`attach-self-hosted` job (the only writer) attaches both when the tag exists
+and needs a second runner pickup (TD-061, TD-047).
 
 Runner setup (one-off): repo → **Settings → Actions → Runners → New self-hosted
 runner → Windows**; run `config.cmd` with the labels `self-hosted, windows`.

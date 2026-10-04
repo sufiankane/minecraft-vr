@@ -35,9 +35,14 @@ namespace Cubeglass.Unity.Rendering.PlayTests
     /// in the number.
     /// </para>
     /// <para>
-    /// The test is evidence, not a gate: it fails only when the committed scene
-    /// cannot be loaded or streamed to drained, never on the recorded
-    /// milliseconds. The on-glasses 90 Hz check is the S7 HIL run.
+    /// Review I-11: each window's recorded frame p99 is asserted against the
+    /// documented headless ceiling, so a real regression fails the release
+    /// lane. The number is a CPU-side proxy (streaming + bridge tick + render
+    /// submission, no present and no GPU completion); the real ADR-0010
+    /// 11.1 ms frame budget is HIL/player-verified. Review M-7: the lane
+    /// forces <see cref="PoseProviderSelector.ForceSyntheticForTests"/>, so a
+    /// live bridge region on the machine cannot take the pose path or add
+    /// probe/log work to the measured frames.
     /// </para>
     /// </remarks>
     public class GameFrameBudgetPlayModeTests
@@ -66,6 +71,18 @@ namespace Cubeglass.Unity.Rendering.PlayTests
         /// <summary>ADR-0010 target frame time at 90 Hz.</summary>
         public const double TargetFrameMilliseconds = 11.1;
 
+        /// <summary>
+        /// Review I-11 headless p99 ceiling in milliseconds. This is a CPU-side
+        /// proxy for frame cost (streaming + bridge tick + render submission,
+        /// no present, no GPU wait), not the 11.1 ms GPU budget; the GPU budget
+        /// is HIL/player-verified. The review suggested 5 ms, but the release
+        /// machine measured 7.8 ms frame p99 (mean 2.8 ms, overlay-off window)
+        /// with background load, so the documented headless ceiling is 15 ms:
+        /// about twice the observed p99, generous enough not to fail on
+        /// scheduler noise, while a real regression still trips it.
+        /// </summary>
+        public const double HeadlessP99CeilingMilliseconds = 15.0;
+
         /// <summary>Fixed slice tick; matches the end-to-end game scene smoke.</summary>
         public const double Dt = 1.0 / 60.0;
 
@@ -86,6 +103,9 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             Assert.IsNull(GameBoot.WorldNameOverride, "a previous test leaked the world-name override");
             Assert.IsNull(GameBoot.RootDirectoryOverride, "a previous test leaked the root override");
 
+            // Review M-7: a live bridge region must not change the measured
+            // pose path, the probe timing or the fallback log volume.
+            PoseProviderSelector.ForceSyntheticForTests = true;
             worldName = "game-budget-" + Guid.NewGuid().ToString("N");
             rootDirectory = Path.Combine(Path.GetTempPath(), "cg-game-budget-" + Guid.NewGuid().ToString("N"));
             GameBoot.WorldNameOverride = worldName;
@@ -98,6 +118,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
         {
             GameBoot.WorldNameOverride = null;
             GameBoot.RootDirectoryOverride = null;
+            PoseProviderSelector.ForceSyntheticForTests = false;
 
             if (rig != null)
             {
@@ -194,6 +215,22 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             TestContext.WriteLine("[S7-GAME-FRAME-BUDGET] report written to " + reportPath);
 
             Assert.Greater(off.Frame.Length, 0);
+            WindowStats offFrame = Summarize(off.Frame);
+            WindowStats onFrame = Summarize(on.Frame);
+            Assert.LessOrEqual(
+                offFrame.P99,
+                HeadlessP99CeilingMilliseconds,
+                "overlay-off frame p99 {0:F3} ms exceeds the documented headless ceiling {1:F1} ms (review I-11); "
+                + "this is a CPU-side proxy, not the 11.1 ms GPU budget",
+                offFrame.P99,
+                HeadlessP99CeilingMilliseconds);
+            Assert.LessOrEqual(
+                onFrame.P99,
+                HeadlessP99CeilingMilliseconds,
+                "overlay-on frame p99 {0:F3} ms exceeds the documented headless ceiling {1:F1} ms (review I-11); "
+                + "this is a CPU-side proxy, not the 11.1 ms GPU budget",
+                onFrame.P99,
+                HeadlessP99CeilingMilliseconds);
         }
 
         private IEnumerator LoadGameScene()
@@ -212,6 +249,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             bridge = FindInScene<GameplayBridge>(gameScene);
             overlay = FindInScene<DebugOverlay>(gameScene);
             rig = FindInScene<StereoRig>(gameScene);
+            PoseProviderSelector selector = FindInScene<PoseProviderSelector>(gameScene);
 
             Assert.IsNotNull(runtime, "the scene must carry a StreamingRuntime");
             Assert.IsNotNull(bridge, "the scene must carry a GameplayBridge");
@@ -219,6 +257,13 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             Assert.IsNotNull(rig, "the scene must carry a StereoRig");
             Assert.IsNotNull(rig.LeftCamera, "left eye camera");
             Assert.IsNotNull(rig.RightCamera, "right eye camera");
+            Assert.IsNotNull(selector, "the scene must carry a PoseProviderSelector");
+            Assert.IsFalse(
+                selector.UsingBridge,
+                "the budget lane must run on the forced synthetic provider (review M-7)");
+            Assert.IsFalse(
+                selector.PluginUnavailable,
+                "forcing the synthetic provider is not a plugin failure and must not be reported as one");
 
             runtime.AutoUpdate = false;
             bridge.AutoUpdate = false;
@@ -321,6 +366,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
                 measuredFrames = MeasuredFrames,
                 drainedViews = drainedViews,
                 targetFrameMilliseconds = (float)TargetFrameMilliseconds,
+                headlessP99CeilingMilliseconds = (float)HeadlessP99CeilingMilliseconds,
                 overlayOff = WindowReport.From(false, Summarize(off.Frame), Summarize(off.Render)),
                 overlayOn = WindowReport.From(true, Summarize(on.Frame), Summarize(on.Render)),
                 processorType = SystemInfo.processorType,
@@ -452,6 +498,7 @@ namespace Cubeglass.Unity.Rendering.PlayTests
             public int measuredFrames;
             public int drainedViews;
             public float targetFrameMilliseconds;
+            public float headlessP99CeilingMilliseconds;
             public WindowReport overlayOff;
             public WindowReport overlayOn;
             public string processorType;

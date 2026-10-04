@@ -544,6 +544,17 @@ TEST(FakeSource, InvalidRateIsRejectedWithoutPublishing) {
     EXPECT_FALSE(uut.source->TryGetLatest(sample, Duration{0}));
 }
 
+TEST(FakeSource, PeriodRoundsToZeroIsRejected) {
+    // 3 GHz is finite and positive, but ToNanoseconds(1/rate) rounds to 0 ns;
+    // the old guard let it through and `EmitOne` divided by a zero dt (CXX-08).
+    SourceUnderTest uut = MakeFakeSource(FakeScript::Static(), 3e9);
+    const cg::Result<void> result = uut.source->Start();
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), cg::StatusCode::InvalidArgument);
+    HeadSample sample = PlaceholderSample();
+    EXPECT_FALSE(uut.source->TryGetLatest(sample, Duration{0}));
+}
+
 /// Owns a `VitureHeadPoseSource` together with the fake API and the manual
 /// host clock it reads, in an order that keeps the fakes alive until after the
 /// source has stopped. `advance` releases exactly one gated poll per step, so

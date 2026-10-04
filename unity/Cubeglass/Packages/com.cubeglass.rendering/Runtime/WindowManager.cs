@@ -59,9 +59,17 @@ namespace Cubeglass.Unity.Rendering
         /// untouched, when borderless is disabled or the Editor preview guard
         /// rejects the switch.
         /// </summary>
+        /// <remarks>
+        /// Review R-1: a deserialized scene can carry an invalid refresh (a
+        /// legacy/default-initialised <c>targetRefresh = 0</c> would otherwise
+        /// request 1 Hz), so the effective config is validated at the point of
+        /// use before anything reads it. Validation is idempotent, so repeated
+        /// applies do not log repeatedly.
+        /// </remarks>
         public bool ApplyWindowMode()
         {
             StereoRigConfig effective = config ?? new StereoRigConfig();
+            effective.Validate();
             if (!ShouldApplyFullscreen(effective.BorderlessFullscreen, Application.isEditor, applyInEditor))
             {
                 return false;
@@ -110,7 +118,10 @@ namespace Cubeglass.Unity.Rendering
                 FullScreenMode.FullScreenWindow,
                 new RefreshRate
                 {
-                    numerator = (uint)Mathf.Max(1, targetRefresh),
+                    // Defence in depth (review R-1): even if a caller bypassed
+                    // ApplyWindowMode's validation, the request can never be
+                    // 1 Hz or a non-finite clamp artifact.
+                    numerator = (uint)StereoRigConfig.SanitizeTargetRefresh(targetRefresh),
                     denominator = 1u,
                 });
         }

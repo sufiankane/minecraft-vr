@@ -14,6 +14,24 @@ namespace Cubeglass.Voxel.Tests
         private static readonly Int3 LocalMax = new Int3(15, 15, 15);
 
         [Test]
+        public void ExtremeCoordinatesDoNotAliasTheOppositeNeighbour()
+        {
+            var world = new World();
+            var edge = new ChunkCoord(int.MaxValue, 0, 0);
+            var wrapped = new ChunkCoord(int.MinValue, -1, -1);
+            world.LoadChunk(new Chunk(edge));
+            world.LoadChunk(new Chunk(wrapped));
+
+            NeighbourSnapshot snapshot = world.CreateNeighbourSnapshot(edge);
+
+            Assert.That(
+                snapshot.Get(new Int3(1, -1, -1)),
+                Is.Null,
+                "int.MaxValue + 1 must not alias int.MinValue");
+            Assert.That(snapshot.Get(new Int3(-1, -1, -1)), Is.Null, "that neighbour is not loaded");
+        }
+
+        [Test]
         public void GetResolvesAllTwentySixDirections()
         {
             World world = CreateWorldWithEveryNeighbour(out Dictionary<Int3, ChunkCoord> neighbours);

@@ -23,6 +23,13 @@ namespace Cubeglass.Unity.Rendering
     /// reads back into <c>PlayerState</c>.
     /// </para>
     /// <para>
+    /// <see cref="SetPlayerPose"/> rejects non-finite positions and yaws (I-3):
+    /// a NaN or infinity never reaches <c>transform.position</c> or the yaw
+    /// quaternion. The rejected sample falls back to the last-known pose, or to
+    /// identity (origin, yaw 0) before the first finite pose, and the first
+    /// rejection logs one warning until a finite pose resumes.
+    /// </para>
+    /// <para>
     /// The root is expected to be a top-level scene object; it writes
     /// <c>transform.position</c> and a yaw-only local rotation.
     /// </para>
@@ -39,6 +46,7 @@ namespace Cubeglass.Unity.Rendering
         [SerializeField] private Transform head;
 
         private bool hasPose;
+        private bool warnedNonFinitePose;
 
         /// <summary>The head child (the stereo rig); defaults to the first child.</summary>
         public Transform Head
@@ -72,10 +80,32 @@ namespace Cubeglass.Unity.Rendering
         /// <summary>
         /// Applies the player's body pose: position and yaw converted exactly
         /// once through <see cref="UnityConvert"/>, and the fixed eye height on
-        /// the head child.
+        /// the head child. Non-finite positions or yaws are rejected: the
+        /// last-known pose is kept (identity before the first finite pose) and
+        /// the first rejection of a run is logged.
         /// </summary>
         public void SetPlayerPose(Vec3 internalPosition, float yawRadians)
         {
+            if (!IsFinitePosition(internalPosition) || !float.IsFinite(yawRadians))
+            {
+                if (!warnedNonFinitePose)
+                {
+                    warnedNonFinitePose = true;
+                    Debug.LogWarning(
+                        "PlayerRoot: rejected a non-finite player pose (position "
+                        + internalPosition.X + ", " + internalPosition.Y + ", " + internalPosition.Z
+                        + "; yaw " + yawRadians + "); keeping the "
+                        + (hasPose ? "last-known pose." : "identity pose."));
+                }
+
+                internalPosition = hasPose ? PositionInternal : default;
+                yawRadians = hasPose ? YawRadians : 0f;
+            }
+            else
+            {
+                warnedNonFinitePose = false;
+            }
+
             PositionInternal = internalPosition;
             YawRadians = yawRadians;
             hasPose = true;
@@ -87,6 +117,18 @@ namespace Cubeglass.Unity.Rendering
                 (float)unityPosition.Z);
             transform.localRotation = Heading(yawRadians);
             ApplyHeadOffset();
+        }
+
+        /// <summary>
+        /// True when every component survives the double-to-float conversion to
+        /// Unity space as a finite float (a finite double above
+        /// <see cref="float.MaxValue"/> would otherwise become infinity).
+        /// </summary>
+        private static bool IsFinitePosition(Vec3 position)
+        {
+            return float.IsFinite((float)position.X)
+                && float.IsFinite((float)position.Y)
+                && float.IsFinite((float)position.Z);
         }
 
         /// <summary>Pins the head child to the eye height above the feet centre.</summary>

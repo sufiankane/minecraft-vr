@@ -111,6 +111,16 @@ Before any sample the offset is zero, so `Map(sdk) = ToNanoseconds(sdk)`, and
 `< 1 ms` in tests. The window deliberately lags a step change in offset by up to
 16 samples; the median makes it robust to outlier callbacks.
 
+Adapters record the SDK sample with `AddSample(seconds, clock.Now())` and only
+then call `Map(seconds)`, so the **first published sample of a session is
+anchored to its host arrival instant** — the SDK's own seconds epoch never
+reaches a consumer through `HeadSample::time`. This is pinned by
+`ClockMapperTest.FirstSampleAnchorsTheMapToItsHostTime` and
+`VitureFault.FirstPublishedSampleIsAnchoredToTheHostTimeline`. When mapped time
+regresses (a device recreate restarted the SDK epoch), the adapter re-seeds the
+mapper from the current sample, which re-anchors the same way; the window needs
+no warm-up before a mapped time is trustworthy at the anchor sample.
+
 ### Unity conversion
 
 The formulas are:

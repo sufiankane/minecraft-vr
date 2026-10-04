@@ -104,21 +104,29 @@ class RawRegionView {
 
     void ZeroMagic() const noexcept { std::memset(base_, 0, sizeof(std::uint64_t)); }
 
-    /// Stores the three header fields the open validation checks, with the
-    /// release semantics the bridge's atomic validation pairs with. Used to
-    /// complete a region the open retry is already watching.
+    /// Stores the header fields the open validation checks with the writer's
+    /// publication order (shm_layout.hpp, I-3): the mutable fields first with
+    /// relaxed stores, then `magic` last with a release store, so an acquire
+    /// load of a valid magic sees a complete header. CXX-10: storing `magic`
+    /// first would model a protocol-violating writer and would let a
+    /// magic-first writer regression pass this suite.
     void InitialiseHeader() const noexcept {
+        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version)))
+            .store(kShmAbiVersion, std::memory_order_relaxed);
+        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, header_size)))
+            .store(kHeaderSize, std::memory_order_relaxed);
         std::atomic_ref<std::uint64_t>(*reinterpret_cast<std::uint64_t *>(base_))
             .store(kShmMagic, std::memory_order_release);
-        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version)))
-            .store(kShmAbiVersion, std::memory_order_release);
-        std::atomic_ref<std::uint32_t>(*reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, header_size)))
-            .store(kHeaderSize, std::memory_order_release);
     }
 
     void SetAbiVersion(std::uint32_t version) const noexcept {
         auto *abi = reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, abi_version));
         std::memcpy(abi, &version, sizeof(version));
+    }
+
+    void SetHeaderSize(std::uint32_t size) const noexcept {
+        auto *word = reinterpret_cast<std::uint32_t *>(base_ + offsetof(ShmHeader, header_size));
+        std::memcpy(word, &size, sizeof(size));
     }
 
     [[nodiscard]] std::uint8_t *base() const noexcept { return base_; }
@@ -339,6 +347,23 @@ TEST_F(ShmReaderTest, OpenRecoversWhenTheHeaderInitialisesWithinTheRetryWindow) 
     EXPECT_EQ(status, CG_OK);
     EXPECT_NE(handle, nullptr);
     cg_bridge_close(handle);
+}
+
+TEST_F(ShmReaderTest, OpenRejectsAValidMagicWithAnIncompleteHeader) {
+    // A region whose `magic` is valid but whose remaining header is not yet
+    // published (exactly what a magic-first writer leaves visible) must not
+    // open: the validation checks abi_version and header_size, not magic
+    // alone. Pins the reader side of the CXX-10 publication order.
+    RawRegionView view;
+    ASSERT_TRUE(view.Open());
+    view.SetAbiVersion(0);
+    view.SetHeaderSize(0);
+
+    void *handle = nullptr;
+    EXPECT_EQ(cg_bridge_open(&handle), CG_ERR_UNSUPPORTED);
+    EXPECT_EQ(handle, nullptr);
+    const std::string error = LastHeaderError();
+    EXPECT_NE(error.find("abi_version 0"), std::string::npos) << error;
 }
 
 TEST_F(ShmReaderTest, SendCommandReachesWriterAndAckIsWriterSideOnly) {

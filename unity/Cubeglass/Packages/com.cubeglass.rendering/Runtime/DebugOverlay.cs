@@ -62,6 +62,26 @@ namespace Cubeglass.Unity.Rendering
                 ? "ack -"
                 : "ack 0x" + ack.ToString("X8", CultureInfo.InvariantCulture);
         }
+
+        /// <summary>
+        /// Formats a pose-source bucket: 1 is the bridge, 0 is unknown/source
+        /// absent, and <c>2 + (int)PoseFallbackReason</c> is the active
+        /// synthetic fallback reason (I-1), so a silent fallback is visible.
+        /// </summary>
+        public static string PoseSource(int bucket)
+        {
+            if (bucket == 1)
+            {
+                return "pose bridge";
+            }
+
+            if (bucket < 2)
+            {
+                return "pose -";
+            }
+
+            return "pose synthetic (" + ((PoseFallbackReason)(bucket - 2)).ToString() + ")";
+        }
     }
 
     /// <summary>
@@ -131,8 +151,9 @@ namespace Cubeglass.Unity.Rendering
 
     /// <summary>
     /// IMGUI debug overlay (game view / Editor preview only): smoothed frame
-    /// time in ms, pose rate in Hz, pose age in ms, tracking state and the last
-    /// command ack. Values refresh once per rendered frame and are drawn from
+    /// time in ms, pose rate in Hz, pose age in ms, tracking state, the pose
+    /// source (bridge vs synthetic fallback reason, I-1) and the last command
+    /// ack. Values refresh once per rendered frame and are drawn from
     /// pre-formatted <see cref="GUIContent"/> buffers reused by
     /// <see cref="OverlayText"/>, so repaints with unchanged values allocate
     /// nothing. Disabling the component stops all of its work.
@@ -150,7 +171,7 @@ namespace Cubeglass.Unity.Rendering
     {
         private const float Smoothing = 0.1f;
         private const float RateSmoothing = 0.2f;
-        private const int RowCount = 5;
+        private const int RowCount = 6;
         private const float PanelX = 8f;
         private const float PanelY = 8f;
         private const float PanelWidth = 240f;
@@ -160,6 +181,7 @@ namespace Cubeglass.Unity.Rendering
         private static readonly OverlayText.Formatter PoseRateFormatter = OverlayFormat.PoseRateHz;
         private static readonly OverlayText.Formatter PoseAgeFormatter = OverlayFormat.PoseAgeMs;
         private static readonly OverlayText.Formatter TrackingFormatter = OverlayFormat.TrackingState;
+        private static readonly OverlayText.Formatter PoseSourceFormatter = OverlayFormat.PoseSource;
         private static readonly OverlayText.Formatter CommandAckFormatter = OverlayFormat.CommandAck;
 
         [SerializeField] private bool visible = true;
@@ -169,6 +191,7 @@ namespace Cubeglass.Unity.Rendering
         private OverlayText poseRate;
         private OverlayText poseAge;
         private OverlayText tracking;
+        private OverlayText poseSource;
         private OverlayText commandAck;
 
         private float smoothedFrameMs;
@@ -196,12 +219,24 @@ namespace Cubeglass.Unity.Rendering
             set { lateLatch = value; }
         }
 
+        /// <summary>
+        /// The pose selector whose bridge/fallback state is shown; resolved at
+        /// <c>Awake</c> from the scene (the selector sits on the rig object),
+        /// or assigned explicitly. Null keeps the row at "-".
+        /// </summary>
+        public PoseProviderSelector PoseSource { get; set; }
+
         private void Awake()
         {
             EnsureRows();
             if (lateLatch == null)
             {
                 lateLatch = GetComponent<LateLatchPose>();
+            }
+
+            if (PoseSource == null)
+            {
+                PoseSource = FindFirstObjectByType<PoseProviderSelector>(FindObjectsInactive.Include);
             }
         }
 
@@ -216,6 +251,7 @@ namespace Cubeglass.Unity.Rendering
             poseRate = new OverlayText(PoseRateFormatter);
             poseAge = new OverlayText(PoseAgeFormatter);
             tracking = new OverlayText(TrackingFormatter);
+            poseSource = new OverlayText(PoseSourceFormatter);
             commandAck = new OverlayText(CommandAckFormatter);
         }
 
@@ -282,6 +318,23 @@ namespace Cubeglass.Unity.Rendering
             }
 
             commandAck.Set(CommandAck == 0 ? -1 : (int)Math.Min(CommandAck, (uint)int.MaxValue));
+            poseSource.Set(DescribePoseSource());
+        }
+
+        /// <summary>
+        /// Maps the selector state to the pose-source bucket: 1 bridge, 0
+        /// source absent, otherwise <c>2 + reason</c> (see
+        /// <see cref="OverlayFormat.PoseSource"/>).
+        /// </summary>
+        private int DescribePoseSource()
+        {
+            PoseProviderSelector selector = PoseSource;
+            if (selector == null)
+            {
+                return 0;
+            }
+
+            return selector.UsingBridge ? 1 : 2 + (int)selector.FallbackReason;
         }
 
         private void DrawPanel()
@@ -296,6 +349,8 @@ namespace Cubeglass.Unity.Rendering
             DrawRow(y, poseAge);
             y += RowHeight;
             DrawRow(y, tracking);
+            y += RowHeight;
+            DrawRow(y, poseSource);
             y += RowHeight;
             DrawRow(y, commandAck);
         }

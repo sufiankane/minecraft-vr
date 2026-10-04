@@ -1,3 +1,4 @@
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -157,6 +158,114 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             Assert.AreEqual(rig.LeftCamera.depth, rig.RightCamera.depth, "equal depth");
             Assert.AreEqual(rig.LeftCamera.clearFlags, rig.RightCamera.clearFlags, "equal clear flags");
+        }
+
+        /// <summary>
+        /// I-3: a corrupted serialized config (a scene asset can hold NaN/inf
+        /// because Unity deserialization bypasses the setters) must never reach
+        /// a camera's transform or projection parameters.
+        /// </summary>
+        [Test]
+        public void NonFiniteSerializedConfigNeverReachesTheCameras()
+        {
+            StereoRigConfig config = rig.Config;
+            foreach (float poison in new[] { float.NaN, float.PositiveInfinity, float.NegativeInfinity })
+            {
+                SetConfigField(config, "ipdMeters", poison);
+                SetConfigField(config, "fovDegrees", poison);
+                SetConfigField(config, "near", poison);
+                SetConfigField(config, "far", poison);
+
+                rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
+
+                foreach (Camera camera in new[] { rig.LeftCamera, rig.RightCamera })
+                {
+                    Assert.IsTrue(float.IsFinite(camera.fieldOfView), "fov finite for poison " + poison);
+                    Assert.IsTrue(float.IsFinite(camera.nearClipPlane), "near finite for poison " + poison);
+                    Assert.IsTrue(float.IsFinite(camera.farClipPlane), "far finite for poison " + poison);
+                    Assert.Greater(camera.nearClipPlane, 0f, "near positive");
+                    Assert.Greater(camera.farClipPlane, camera.nearClipPlane, "far beyond near");
+                    Assert.IsTrue(
+                        float.IsFinite(camera.transform.localPosition.x),
+                        "eye offset finite for poison " + poison);
+                }
+            }
+
+            Assert.AreEqual(-0.032f, rig.LeftCamera.transform.localPosition.x, Tolerance, "default IPD fallback");
+            Assert.AreEqual(0.032f, rig.RightCamera.transform.localPosition.x, Tolerance, "default IPD fallback");
+            Assert.AreEqual(
+                ConvertedVerticalFov(StereoRigConfig.DefaultFovDegrees),
+                rig.LeftCamera.fieldOfView,
+                1e-4f,
+                "default FOV fallback");
+            Assert.AreEqual(StereoRigConfig.DefaultNear, rig.LeftCamera.nearClipPlane, Tolerance, "default near fallback");
+            Assert.AreEqual(StereoRigConfig.DefaultFar, rig.LeftCamera.farClipPlane, Tolerance, "default far fallback");
+        }
+
+        /// <summary>Far must stay beyond near even when both were written finite.</summary>
+        [Test]
+        public void InvertedSerializedNearFarFallsBackAboveNear()
+        {
+            SetConfigField(rig.Config, "near", 100f);
+            SetConfigField(rig.Config, "far", 50f);
+
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
+
+            Assert.AreEqual(100f, rig.LeftCamera.nearClipPlane, Tolerance, "the valid near is kept");
+            Assert.Greater(rig.LeftCamera.farClipPlane, 100f, "far falls back beyond near");
+            Assert.IsTrue(float.IsFinite(rig.LeftCamera.farClipPlane));
+        }
+
+        /// <summary>
+        /// R-5 at the point of use: a finite-but-huge serialized near whose
+        /// doubling would overflow must repair to the documented defaults on
+        /// both cameras instead of writing infinity.
+        /// </summary>
+        [Test]
+        public void HugeSerializedNearFarCannotOverflowTheCameras()
+        {
+            SetConfigField(rig.Config, "near", 3e38f);
+            SetConfigField(rig.Config, "far", 3e38f);
+
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
+
+            foreach (Camera camera in new[] { rig.LeftCamera, rig.RightCamera })
+            {
+                Assert.AreEqual(StereoRigConfig.DefaultNear, camera.nearClipPlane, Tolerance, "near repaired");
+                Assert.AreEqual(StereoRigConfig.DefaultFar, camera.farClipPlane, Tolerance, "far repaired");
+                Assert.IsTrue(float.IsFinite(camera.nearClipPlane));
+                Assert.IsTrue(float.IsFinite(camera.farClipPlane));
+                Assert.Greater(camera.farClipPlane, camera.nearClipPlane);
+            }
+        }
+
+        [Test]
+        public void RefreshSanitizerMapsHostileRequestsToSafeValues()
+        {
+            Assert.AreEqual(
+                StereoRigConfig.DefaultTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(0),
+                "a default-initialised/legacy zero resolves to the documented default");
+            Assert.AreEqual(
+                StereoRigConfig.DefaultTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(-5),
+                "negative resolves to the default");
+            Assert.AreEqual(
+                StereoRigConfig.MinTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(1),
+                "a positive out-of-range low value clamps up");
+            Assert.AreEqual(
+                StereoRigConfig.MaxTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(10000),
+                "an out-of-range high value clamps down");
+            Assert.AreEqual(90, StereoRigConfig.SanitizeTargetRefresh(90), "a sane value passes through");
+        }
+
+        private static void SetConfigField(StereoRigConfig config, string field, object value)
+        {
+            FieldInfo info = typeof(StereoRigConfig).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(info, "StereoRigConfig." + field + " must exist");
+            info.SetValue(config, value);
         }
 
         [Test]
@@ -329,6 +438,107 @@ namespace Cubeglass.Unity.Rendering.Tests
             config.LoadFromJson("{\"ipdMeters\":0.08}");
             config.LoadFromJson("   ");
             Assert.AreEqual(0.064f, config.IpdMeters, Tolerance, "blank restores defaults");
+        }
+
+        /// <summary>I-3: every numeric setter rejects non-finite input.</summary>
+        [Test]
+        public void NonFiniteSettersFallBackToDefaults()
+        {
+            var config = new StereoRigConfig();
+
+            config.IpdMeters = float.NaN;
+            Assert.AreEqual(StereoRigConfig.DefaultIpdMeters, config.IpdMeters, Tolerance, "NaN ipd");
+            config.IpdMeters = float.PositiveInfinity;
+            Assert.AreEqual(StereoRigConfig.DefaultIpdMeters, config.IpdMeters, Tolerance, "+inf ipd");
+            config.FovDegrees = float.NegativeInfinity;
+            Assert.AreEqual(StereoRigConfig.DefaultFovDegrees, config.FovDegrees, Tolerance, "-inf fov");
+            config.Near = float.NaN;
+            Assert.AreEqual(StereoRigConfig.DefaultNear, config.Near, Tolerance, "NaN near");
+            config.Near = -1f;
+            Assert.AreEqual(StereoRigConfig.DefaultNear, config.Near, Tolerance, "negative near");
+            config.Far = float.PositiveInfinity;
+            Assert.AreEqual(StereoRigConfig.DefaultFar, config.Far, Tolerance, "+inf far");
+            config.Far = 0f;
+            Assert.AreEqual(StereoRigConfig.DefaultFar, config.Far, Tolerance, "zero far");
+
+            Assert.IsTrue(float.IsFinite(config.IpdMeters), "stored ipd finite");
+            Assert.IsTrue(float.IsFinite(config.FovDegrees), "stored fov finite");
+            Assert.IsTrue(float.IsFinite(config.Near), "stored near finite");
+            Assert.IsTrue(float.IsFinite(config.Far), "stored far finite");
+        }
+
+        /// <summary>
+        /// I-3/M-10: values that bypass the setters (JSON overwrite and
+        /// serialized scene data) are rejected by <see cref="StereoRigConfig.Validate"/>,
+        /// and refresh is clamped into the display-sane range.
+        /// </summary>
+        [Test]
+        public void ValidateRejectsNonFiniteSerializedFieldsAndClampsRefresh()
+        {
+            var config = new StereoRigConfig();
+            SetConfigField(config, "ipdMeters", float.NaN);
+            SetConfigField(config, "fovDegrees", float.PositiveInfinity);
+            SetConfigField(config, "near", float.NaN);
+            SetConfigField(config, "far", -5f);
+            SetConfigField(config, "targetRefresh", 0);
+
+            Assert.IsTrue(config.Validate(), "every poisoned field must be reported as changed");
+            Assert.AreEqual(StereoRigConfig.DefaultIpdMeters, config.IpdMeters, Tolerance, "ipd fallback");
+            Assert.AreEqual(StereoRigConfig.DefaultFovDegrees, config.FovDegrees, Tolerance, "fov fallback");
+            Assert.AreEqual(StereoRigConfig.DefaultNear, config.Near, Tolerance, "near fallback");
+            Assert.AreEqual(500f, config.Far, Tolerance, "far fallback above near");
+            Assert.AreEqual(
+                StereoRigConfig.DefaultTargetRefresh,
+                config.TargetRefresh,
+                "a 1 Hz request must resolve to the documented default (reviews M-10, R-1)");
+            Assert.IsFalse(config.Validate(), "the second validation pass is clean");
+        }
+
+        /// <summary>
+        /// R-5: the far-repair path must not overflow when a serialized
+        /// <c>near</c> is a finite-but-huge float (doubling it reaches +inf).
+        /// The pair is repaired to the documented defaults instead.
+        /// </summary>
+        [Test]
+        public void ValidateFarRepairCannotOverflowForHugeNear()
+        {
+            var config = new StereoRigConfig();
+            SetConfigField(config, "near", 3e38f);
+            SetConfigField(config, "far", 1e38f);
+
+            Assert.IsTrue(config.Validate(), "the poisoned near/far pair must be repaired");
+            Assert.AreEqual(StereoRigConfig.DefaultNear, config.Near, Tolerance, "near falls back to the default");
+            Assert.AreEqual(StereoRigConfig.DefaultFar, config.Far, Tolerance, "far falls back to the default");
+            Assert.IsTrue(float.IsFinite(config.Near), "repaired near finite");
+            Assert.IsTrue(float.IsFinite(config.Far), "repaired far finite");
+            Assert.Greater(config.Far, config.Near, "the repair preserves far > near");
+
+            var second = new StereoRigConfig();
+            SetConfigField(second, "near", 1000f);
+            SetConfigField(second, "far", float.NaN);
+            Assert.IsTrue(second.Validate());
+            Assert.AreEqual(1000f, second.Near, Tolerance, "a usable near is kept");
+            Assert.AreEqual(2000f, second.Far, Tolerance, "the repaired far stays finite above near");
+        }
+
+        [Test]
+        public void LoadFromJsonClampsRefreshAndKeepsNearFarOrdered()
+        {
+            var config = new StereoRigConfig();
+            config.LoadFromJson("{\"targetRefresh\":10000}");
+            Assert.AreEqual(StereoRigConfig.MaxTargetRefresh, config.TargetRefresh, "upper refresh clamp");
+
+            config.LoadFromJson("{\"near\":10,\"far\":5}");
+            Assert.AreEqual(10f, config.Near, Tolerance, "valid near kept");
+            Assert.Greater(config.Far, config.Near, "far is repaired above near");
+            Assert.IsTrue(float.IsFinite(config.Far), "far stays finite");
+        }
+
+        private static void SetConfigField(StereoRigConfig config, string field, object value)
+        {
+            FieldInfo info = typeof(StereoRigConfig).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(info, "StereoRigConfig." + field + " must exist");
+            info.SetValue(config, value);
         }
     }
 }

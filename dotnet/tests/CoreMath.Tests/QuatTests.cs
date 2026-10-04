@@ -55,6 +55,28 @@ namespace Cubeglass.CoreMath.Tests
         }
 
         [Test]
+        public void FromComponentsHugeFiniteOverflowIsIdentity()
+        {
+            // The squared norm overflows to +Inf, which is treated as
+            // degenerate. Pinned deliberately and mirrored by C++ (M6).
+            Quat q = Quat.FromComponents(1e200, 1e200, 0.0, 0.0);
+            Assert.That(q.W, Is.EqualTo(1.0));
+            Assert.That(q.X, Is.EqualTo(0.0));
+            Assert.That(q.Y, Is.EqualTo(0.0));
+            Assert.That(q.Z, Is.EqualTo(0.0));
+        }
+
+        [Test]
+        public void FromAxisAngleHugeFiniteAxisOverflowIsIdentity()
+        {
+            Quat q = Quat.FromAxisAngle(new Vec3(1e200, 1e200, 0.0), 1.0);
+            Assert.That(q.W, Is.EqualTo(1.0));
+            Assert.That(q.X, Is.EqualTo(0.0));
+            Assert.That(q.Y, Is.EqualTo(0.0));
+            Assert.That(q.Z, Is.EqualTo(0.0));
+        }
+
+        [Test]
         public void FromComponentsNaNIsIdentity()
         {
             Quat q = Quat.FromComponents(double.NaN, 0.0, 0.0, 0.0);

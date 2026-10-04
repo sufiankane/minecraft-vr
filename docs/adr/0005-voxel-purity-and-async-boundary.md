@@ -164,3 +164,14 @@ formatting.
 - Related ADRs: [ADR-0003](0003-testing-strategy.md),
   [ADR-0004](0004-coordinate-unit-time-conventions.md),
   [ADR-0006](0006-chunk-storage-and-save-format.md).
+
+## Amendment (2026-10-04, critical review)
+
+contracts/layers.json admits System.Threading.CancellationToken for
+Cubeglass.Voxel in addition to System.Threading.Tasks. CancellationToken
+is the inert cooperative-cancellation handle that accompanies ValueTask in the
+IWorldStore signatures (dossier 5.9); passing it does not start threads or
+locks. Threading primitives (Thread, locks, timers, Task.Run,
+CancellationTokenSource) remain forbidden. The dotted-prefix rule also admits
+System.Threading.CancellationTokenSource; tightening to exact-type matching is
+tracked as TD-050.

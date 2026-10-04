@@ -386,6 +386,73 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void NonFinitePitchIsSanitised()
+        {
+            IWorld world = TestWorlds.CreateEmpty();
+
+            PlayerState nan = Player(0, 10, 0);
+            nan.PitchRadians = float.NaN;
+            PlayerController.Step(nan, in Frames.Neutral, world, Dt);
+            Assert.That(nan.PitchRadians, Is.EqualTo(0f), "a NaN pitch resets to level");
+
+            PlayerState above = Player(0, 10, 0);
+            above.PitchRadians = float.PositiveInfinity;
+            PlayerController.Step(above, in Frames.Neutral, world, Dt);
+            Assert.That(above.PitchRadians, Is.EqualTo((float)PlayerController.MaxPitchRadians));
+
+            PlayerState below = Player(0, 10, 0);
+            below.PitchRadians = float.NegativeInfinity;
+            PlayerController.Step(below, in Frames.Neutral, world, Dt);
+            Assert.That(below.PitchRadians, Is.EqualTo((float)-PlayerController.MaxPitchRadians));
+        }
+
+        [Test]
+        public void NonFiniteVelocityCannotPoisonTheStep()
+        {
+            IWorld world = TestWorlds.CreateFloor();
+            PlayerState player = Player(8, 1, 8);
+            player.Velocity = new Vec3(double.NaN, double.PositiveInfinity, double.NegativeInfinity);
+
+            Run(player, Frames.Neutral, world, Dt, 10);
+
+            Assert.That(double.IsFinite(player.Position.X), Is.True);
+            Assert.That(double.IsFinite(player.Position.Y), Is.True);
+            Assert.That(double.IsFinite(player.Position.Z), Is.True);
+            Assert.That(double.IsFinite(player.Velocity.X), Is.True);
+            Assert.That(double.IsFinite(player.Velocity.Y), Is.True);
+            Assert.That(double.IsFinite(player.Velocity.Z), Is.True);
+        }
+
+        [Test]
+        public void NonFinitePositionIsSanitised()
+        {
+            IWorld world = TestWorlds.CreateFloor();
+            PlayerState player = Player(double.NaN, double.PositiveInfinity, double.NegativeInfinity);
+
+            Run(player, Frames.Neutral, world, Dt, 5);
+
+            Assert.That(player.Position.X, Is.EqualTo(0.0), "a NaN position component resets to zero");
+            Assert.That(double.IsFinite(player.Position.X), Is.True);
+            Assert.That(double.IsFinite(player.Position.Y), Is.True);
+            Assert.That(double.IsFinite(player.Position.Z), Is.True);
+        }
+
+        [Test]
+        public void HugeFiniteDtCannotOverflowThePlayerState()
+        {
+            IWorld world = TestWorlds.CreateFloor();
+            PlayerState player = Player(8, 1, 8);
+
+            PlayerController.Step(player, in Frames.Neutral, world, double.MaxValue);
+
+            Assert.That(player.Position, Is.EqualTo(new Vec3(8, 1, 8)), "an overflowing displacement keeps the position");
+            Assert.That(double.IsFinite(player.Velocity.X), Is.True);
+            Assert.That(double.IsFinite(player.Velocity.Y), Is.True);
+            Assert.That(double.IsFinite(player.Velocity.Z), Is.True);
+            Assert.That(player.OnGround, Is.True, "a refused downward displacement still lands");
+        }
+
+        [Test]
         public void NegativeOrNonFiniteDtIsRejected()
         {
             IWorld world = TestWorlds.CreateEmpty();

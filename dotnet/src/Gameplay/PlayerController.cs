@@ -35,14 +35,22 @@ namespace Cubeglass.Gameplay
     /// (4.5 m/s at 60 Hz is 0.075 m).
     /// </para>
     /// <para>
-    /// <b>Input sanitisation.</b> A corrupt input frame cannot poison the
-    /// player: NaN <see cref="InputFrame.Move"/> components map to zero,
-    /// positive/negative infinity clamps to the documented range end (+/-1),
-    /// and a NaN or infinite <see cref="InputFrame.TurnSnap"/> maps to zero or
-    /// the finite float range end respectively. A non-finite
-    /// <see cref="PlayerState.YawRadians"/> resets to zero before use and the
-    /// yaw update is clamped to the finite float range, so for any finite
-    /// <paramref name="dt"/> the step leaves a finite player state.
+    /// <b>State sanitisation.</b> A corrupt input frame or a corrupt player
+    /// state cannot poison the step: NaN <see cref="InputFrame.Move"/>
+    /// components map to zero, positive/negative infinity clamps to the
+    /// documented range end (+/-1), and a NaN or infinite
+    /// <see cref="InputFrame.TurnSnap"/> maps to zero or the finite float range
+    /// end respectively. A non-finite <see cref="PlayerState.YawRadians"/>
+    /// resets to zero before use and the yaw update is clamped to the finite
+    /// float range. On <see cref="PlayerState.Position"/> and
+    /// <see cref="PlayerState.Velocity"/>, a NaN component resets to zero and an
+    /// infinite component clamps to the finite range end; a NaN
+    /// <see cref="PlayerState.PitchRadians"/> resets to zero and an infinite
+    /// one clamps to +/- <see cref="MaxPitchRadians"/>. An axis displacement
+    /// that would leave the finite range is refused outright (the axis keeps
+    /// its coordinate and the velocity component is zeroed, exactly like a
+    /// blocked move), so for any finite <paramref name="dt"/> the step leaves a
+    /// finite player state.
     /// </para>
     /// <para>
     /// <b>Edge rules.</b> A null player or world throws
@@ -96,7 +104,7 @@ namespace Cubeglass.Gameplay
                 throw new ArgumentOutOfRangeException(nameof(dt), dt, "dt must be finite and non-negative.");
             }
 
-            ClampPitch(player);
+            SanitiseState(player);
 
             if (dt == 0.0)
             {
@@ -149,9 +157,13 @@ namespace Cubeglass.Gameplay
             }
 
             double start = player.Position.X;
-            double displacement = velocity * dt;
+            double next = start + (velocity * dt);
+            if (!double.IsFinite(next))
+            {
+                return 0.0;
+            }
 
-            player.Position = new Vec3(start + displacement, player.Position.Y, player.Position.Z);
+            player.Position = new Vec3(next, player.Position.Y, player.Position.Z);
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(start, player.Position.Y, player.Position.Z);
@@ -169,9 +181,13 @@ namespace Cubeglass.Gameplay
             }
 
             double start = player.Position.Z;
-            double displacement = velocity * dt;
+            double next = start + (velocity * dt);
+            if (!double.IsFinite(next))
+            {
+                return 0.0;
+            }
 
-            player.Position = new Vec3(player.Position.X, player.Position.Y, start + displacement);
+            player.Position = new Vec3(player.Position.X, player.Position.Y, next);
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(player.Position.X, player.Position.Y, start);
@@ -184,7 +200,14 @@ namespace Cubeglass.Gameplay
         private static double MoveY(PlayerState player, IWorld world, double velocity, double displacement)
         {
             double start = player.Position.Y;
-            player.Position = new Vec3(player.Position.X, start + displacement, player.Position.Z);
+            double next = start + displacement;
+            if (!double.IsFinite(next))
+            {
+                player.OnGround = displacement <= 0.0;
+                return 0.0;
+            }
+
+            player.Position = new Vec3(player.Position.X, next, player.Position.Z);
             if (VoxelCollision.Overlaps(world, player.Body))
             {
                 player.Position = new Vec3(player.Position.X, start, player.Position.Z);
@@ -251,10 +274,49 @@ namespace Cubeglass.Gameplay
             return (float)value;
         }
 
+        private static void SanitiseState(PlayerState player)
+        {
+            player.Position = SanitiseVec3(player.Position);
+            player.Velocity = SanitiseVec3(player.Velocity);
+            ClampPitch(player);
+        }
+
+        private static Vec3 SanitiseVec3(Vec3 value)
+        {
+            return new Vec3(
+                SanitiseCoordinate(value.X),
+                SanitiseCoordinate(value.Y),
+                SanitiseCoordinate(value.Z));
+        }
+
+        private static double SanitiseCoordinate(double value)
+        {
+            if (double.IsNaN(value))
+            {
+                return 0.0;
+            }
+
+            if (double.IsPositiveInfinity(value))
+            {
+                return double.MaxValue;
+            }
+
+            if (double.IsNegativeInfinity(value))
+            {
+                return double.MinValue;
+            }
+
+            return value;
+        }
+
         private static void ClampPitch(PlayerState player)
         {
             float pitch = player.PitchRadians;
-            if (pitch > MaxPitchRadians)
+            if (float.IsNaN(pitch))
+            {
+                pitch = 0f;
+            }
+            else if (pitch > MaxPitchRadians)
             {
                 pitch = (float)MaxPitchRadians;
             }

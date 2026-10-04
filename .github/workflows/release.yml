@@ -106,14 +106,15 @@ jobs:
     if: inputs.build_target == 'hosted'
     runs-on: windows-latest
     timeout-minutes: 180
-    # The only writer is the final `gh release upload`; everything else runs
-    # with the read-only default token.
-    permissions:
-      contents: write
+    # The build runs with the workflow's read-only default token: no step here
+    # needs repository write access. The release attach is a separate job with
+    # `contents: write` (see attach-hosted), so a compromised build step or the
+    # unpinned Unity CDN installer cannot reach a repo-write token.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Require the Unity licence secrets
         shell: pwsh
@@ -292,26 +293,11 @@ jobs:
             & $unity test unity/Cubeglass --mode $mode --non-interactive --output $results
             $testExit = $LASTEXITCODE
             $global:LASTEXITCODE = 0
-            if (-not (Test-Path -LiteralPath $results)) {
-              Write-Host "::error::$mode tests produced no NUnit results at $results (exit $testExit); the suite did not run."
+            & ./scripts/check-unity-results.ps1 -Mode $mode -ResultsPath $results -RequiredAssemblies $required[$mode] -TestExitCode $testExit
+            if ($LASTEXITCODE -ne 0) {
               exit 1
             }
-            [xml]$report = Get-Content -LiteralPath $results -Raw
-            $run = $report.SelectSingleNode('/test-run')
-            if ($null -eq $run) {
-              Write-Host "::error::$mode results at $results contain no /test-run element."
-              exit 1
-            }
-            $total = [int]$run.total
-            $failed = [int]$run.failed
-            $skipped = [int]$run.skipped
-            $assemblies = @($report.SelectNodes('.//test-suite[@type="Assembly"]') | ForEach-Object { $_.name })
-            $missing = @($required[$mode] | Where-Object { $assemblies -notcontains $_ })
-            if ($testExit -ne 0 -or $total -le 0 -or $failed -gt 0 -or $skipped -gt 0 -or $missing.Count -gt 0) {
-              Write-Host "::error::$mode tests not clean: exit=$testExit total=$total failed=$failed skipped=$skipped missingAssemblies=$($missing -join ',')."
-              exit 1
-            }
-            Write-Host "$mode tests passed: $total test(s)."
+            $global:LASTEXITCODE = 0
           }
 
       - name: Build the Windows x64 player (pinned Unity CLI)
@@ -344,16 +330,56 @@ jobs:
             exit 1
           }
           Compress-Archive -Path $player -DestinationPath $zip -Force
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText(
+            "$zip.sha256",
+            ("{0}  {1}`n" -f $hash, (Split-Path -Leaf $zip)),
+            [System.Text.UTF8Encoding]::new($false))
           Get-Item -LiteralPath $zip | Select-Object FullName, Length
+          Get-Content -LiteralPath "$zip.sha256"
 
-      - name: Upload the player artefact
+      - name: Upload the player artefact and its checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Cubeglass-windows-x64
-          path: unity/Cubeglass/build/Cubeglass-windows-x64.zip
+          path: |
+            unity/Cubeglass/build/Cubeglass-windows-x64.zip
+            unity/Cubeglass/build/Cubeglass-windows-x64.zip.sha256
           if-no-files-found: error
 
-      - name: Attach the player to the v0.1.0 release when it exists
+      - name: Return the Unity licence seat (serial mode)
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # Serial activations are seats; return it even when the job failed or
+          # was cancelled so ephemeral runners do not leak activations. The
+          # offline .ulf mode has nothing to return, hence continue-on-error.
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          if (Test-Path -LiteralPath $unity) {
+            & $unity license return --yes
+            $global:LASTEXITCODE = 0
+          }
+
+  attach-hosted:
+    name: Attach player (hosted)
+    if: inputs.build_target == 'hosted'
+    needs: windows-x64-player
+    runs-on: windows-latest
+    timeout-minutes: 15
+    # The only writer on this route: write is scoped to this dependent job, so
+    # the build job (and every one of its steps, including the unpinned Unity
+    # CDN installer) runs read-only.
+    permissions:
+      contents: write
+    steps:
+      - name: Download the player artefact and its checksum
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Cubeglass-windows-x64
+          path: dist
+
+      - name: Attach the player and its checksum to the v0.1.0 release when it exists
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -371,7 +397,7 @@ jobs:
             Write-Host ("v0.1.0 does not exist yet (probe output: {0}); the player stays available as the Cubeglass-windows-x64 workflow artefact (the tag is owner-gated per R50)." -f (($probe | Out-String).Trim()))
             exit 0
           }
-          $upload = gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-windows-x64.zip --clobber 2>&1
+          $upload = gh release upload v0.1.0 dist/Cubeglass-windows-x64.zip dist/Cubeglass-windows-x64.zip.sha256 --clobber 2>&1
           $uploadStatus = $LASTEXITCODE
           $global:LASTEXITCODE = 0
           if ($uploadStatus -ne 0) {
@@ -379,35 +405,20 @@ jobs:
             Write-Host "::error::gh release upload failed with exit code $uploadStatus."
             exit 1
           }
-          Write-Host 'Attached Cubeglass-windows-x64.zip to the v0.1.0 release.'
-
-      - name: Return the Unity licence seat (serial mode)
-        if: always()
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          # Serial activations are seats; return it even when the job failed or
-          # was cancelled so ephemeral runners do not leak activations. The
-          # offline .ulf mode has nothing to return, hence continue-on-error.
-          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
-          if (Test-Path -LiteralPath $unity) {
-            & $unity license return --yes
-            $global:LASTEXITCODE = 0
-          }
+          Write-Host 'Attached Cubeglass-windows-x64.zip and Cubeglass-windows-x64.zip.sha256 to the v0.1.0 release.'
 
   build-self-hosted:
     name: Build player (self-hosted Windows)
     if: inputs.build_target == 'self-hosted'
     runs-on: [self-hosted, windows]
     timeout-minutes: 60
-    # `gh release upload` is the only writer; everything else runs with the
-    # read-only default token, like the hosted job.
-    permissions:
-      contents: write
+    # Read-only build, like the hosted route: write is scoped to the dependent
+    # attach-self-hosted job so no build step can reach a repo-write token.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # The runner is a controlled machine that already has the pinned SDK, and
       # actions/setup-dotnet cannot install into C:\Program Files\dotnet without
@@ -530,18 +541,30 @@ jobs:
           Write-Host "Copied native bridge DLL: $source -> $destination"
 
       # Same release gate as the hosted route: the EditMode and PlayMode suites
-      # run before the player build, `unity test` propagates the suite's exit
-      # code, and any failing suite fails the job.
+      # run before the player build and the shared scripts/check-unity-results.ps1
+      # asserts the NUnit XML (non-zero total, zero failed, zero skipped and the
+      # required assemblies present), so an exit-0 run that executed nothing
+      # cannot pass the gate.
       - name: Run Unity EditMode and PlayMode tests (release gate)
         shell: powershell
         run: |
+          $required = @{
+            EditMode = @(
+              'Cubeglass.Unity.Bridge.Tests.dll',
+              'Cubeglass.Unity.Input.Tests.dll',
+              'Cubeglass.Unity.Rendering.Tests.dll')
+            PlayMode = @('Cubeglass.Unity.Rendering.PlayTests.dll')
+          }
           foreach ($mode in @('EditMode', 'PlayMode')) {
-            unity test unity/Cubeglass --mode $mode --non-interactive
+            $results = Join-Path $env:TEMP ('cg-unity-{0}-results.xml' -f $mode.ToLowerInvariant())
+            unity test unity/Cubeglass --mode $mode --non-interactive --output $results
+            $testExit = $LASTEXITCODE
+            $global:LASTEXITCODE = 0
+            & ./scripts/check-unity-results.ps1 -Mode $mode -ResultsPath $results -RequiredAssemblies $required[$mode] -TestExitCode $testExit
             if ($LASTEXITCODE -ne 0) {
-              Write-Host "::error::$mode tests failed with exit code $LASTEXITCODE."
               exit 1
             }
-            Write-Host "$mode tests passed."
+            $global:LASTEXITCODE = 0
           }
 
       # The machine's Hub activation is the licence: no secret, no `unity
@@ -576,16 +599,41 @@ jobs:
             exit 1
           }
           Compress-Archive -Path $player -DestinationPath $zip -Force
+          $hash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText(
+            "$zip.sha256",
+            ("{0}  {1}`n" -f $hash, (Split-Path -Leaf $zip)),
+            [System.Text.UTF8Encoding]::new($false))
           Get-Item -LiteralPath $zip | Select-Object FullName, Length
+          Get-Content -LiteralPath "$zip.sha256"
 
-      - name: Upload the player artefact
+      - name: Upload the player artefact and its checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: Cubeglass-v0.1.0-win-x64
-          path: unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip
+          path: |
+            unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip
+            unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip.sha256
           if-no-files-found: error
 
-      - name: Attach the player to the v0.1.0 release when it exists
+  attach-self-hosted:
+    name: Attach player (self-hosted)
+    if: inputs.build_target == 'self-hosted'
+    needs: build-self-hosted
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 15
+    # The only writer on this route: write is scoped to this dependent job, so
+    # the build job (and every one of its steps) runs read-only.
+    permissions:
+      contents: write
+    steps:
+      - name: Download the player artefact and its checksum
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: Cubeglass-v0.1.0-win-x64
+          path: dist
+
+      - name: Attach the player and its checksum to the v0.1.0 release when it exists
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
@@ -612,7 +660,7 @@ jobs:
             Write-Host ("v0.1.0 does not exist yet (probe output: {0}); the player stays available as the Cubeglass-v0.1.0-win-x64 workflow artefact (the tag is owner-gated per R50)." -f (($probe | Out-String).Trim()))
             exit 0
           }
-          $upload = gh release upload v0.1.0 unity/Cubeglass/build/Cubeglass-v0.1.0-win-x64.zip --clobber 2>&1
+          $upload = gh release upload v0.1.0 dist/Cubeglass-v0.1.0-win-x64.zip dist/Cubeglass-v0.1.0-win-x64.zip.sha256 --clobber 2>&1
           $uploadStatus = $LASTEXITCODE
           $global:LASTEXITCODE = 0
           if ($uploadStatus -ne 0) {
@@ -620,4 +668,4 @@ jobs:
             Write-Host "::error::gh release upload failed with exit code $uploadStatus."
             exit 1
           }
-          Write-Host 'Attached Cubeglass-v0.1.0-win-x64.zip to the v0.1.0 release.'
+          Write-Host 'Attached Cubeglass-v0.1.0-win-x64.zip and Cubeglass-v0.1.0-win-x64.zip.sha256 to the v0.1.0 release.'

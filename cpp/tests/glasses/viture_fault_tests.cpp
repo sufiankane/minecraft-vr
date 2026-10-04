@@ -1,8 +1,10 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <thread>
 
 #include <gtest/gtest.h>
@@ -94,6 +96,49 @@ bool WaitForSample(const VitureHeadPoseSource &source, HeadSample &out, std::uin
     return WaitFor([&] { return source.TryGetLatest(out, Duration{0}) && out.seq >= min_seq; });
 }
 
+// --- CXX-02 deterministic arming-race seam --------------------------------
+// The production `Recenter` invokes `g_arm_hook` while holding its arming
+// mutex; the test parks the poster there so a failing resolution is forced to
+// contend with an armed-but-unreleased transaction.
+std::mutex g_arm_mutex;
+std::condition_variable g_arm_cv;
+bool g_arm_entered = false;
+bool g_arm_release = false;
+
+void ParkedArmHook(void *) noexcept {
+    std::unique_lock<std::mutex> lock(g_arm_mutex);
+    g_arm_entered = true;
+    g_arm_cv.notify_all();
+    g_arm_cv.wait(lock, [] { return g_arm_release; });
+}
+
+/// Arms `VitureHeadPoseSource::SetTestRecentreArmHook` for the enclosing
+/// scope. The destructor clears the hook and releases a still-parked poster,
+/// so no test failure can leave a thread parked forever.
+class ScopedArmHook {
+  public:
+    ScopedArmHook() {
+        {
+            const std::lock_guard<std::mutex> lock(g_arm_mutex);
+            g_arm_entered = false;
+            g_arm_release = false;
+        }
+        VitureHeadPoseSource::SetTestRecentreArmHook(&ParkedArmHook, nullptr);
+    }
+
+    ~ScopedArmHook() {
+        VitureHeadPoseSource::SetTestRecentreArmHook(nullptr, nullptr);
+        {
+            const std::lock_guard<std::mutex> lock(g_arm_mutex);
+            g_arm_release = true;
+        }
+        g_arm_cv.notify_all();
+    }
+
+    ScopedArmHook(const ScopedArmHook &) = delete;
+    ScopedArmHook &operator=(const ScopedArmHook &) = delete;
+};
+
 bool WaitForState(const VitureHeadPoseSource &source, TrackState state, HeadSample &out) {
     return WaitFor([&] { return source.TryGetLatest(out, Duration{0}) && out.state == state; });
 }
@@ -118,6 +163,23 @@ TEST(VitureFault, CreateFailureReturnsErrorThenRetrySucceeds) {
     HeadSample sample = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, sample, 1U));
     EXPECT_EQ(sample.state, TrackState::Stable);
+    source.Stop();
+}
+
+/// CXX-06 rule: the FIRST published sample is anchored to the host timeline at
+/// poll time. `ClockMapper::AddSample` runs before the first `Map`, so the
+/// SDK's own seconds epoch (here 42 s) must never leak into `HeadSample::time`;
+/// the published instant is exactly the injected host clock's now (5 s).
+TEST(VitureFault, FirstPublishedSampleIsAnchoredToTheHostTimeline) {
+    FakeVitureApi api;
+    ManualHostClock clock(5'000'000'000);
+    api.poll_script = {Ok(CgSample(1, 42'000'000'000, CG_TRACK_STABLE, 10.0))};
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample sample = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, sample, 1U));
+    EXPECT_EQ(sample.time, 5'000'000'000) << "the first sample must map to its host arrival instant, not the SDK epoch";
     source.Stop();
 }
 
@@ -277,6 +339,119 @@ TEST(VitureFault, ResetFailureWithdrawsThePostedCorrection) {
         HeadSample latest = PlaceholderSample();
         return source.TryGetLatest(latest, Duration{0}) && std::abs(YawDegrees(latest.pose)) > 5.0;
     })) << "a failed reset must not leave the stream recentred";
+    source.Stop();
+}
+
+/// CXX-02 regression: a resolution that fails must not clobber an arm posted
+/// while that resolution was in flight. The failing seam call for post #1 is
+/// parked; post #2 arms and holds its arming transaction open inside
+/// `recentre_mutex_` (the test arm hook). The failure then has to observe the
+/// newer generation and skip its withdrawal, so post #2 stays armed and
+/// reader-visible before its own resolution completes. On the old code the
+/// arm stores ran outside the mutex, so that failure zeroed the offset while
+/// leaving `pending` set.
+TEST(VitureFault, FailedResolutionCannotClobberAFreshArm) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.poll_script = {Ok(CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 10.0)),
+                       Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 10.0)),
+                       Ok(CgSample(3, 1'020'000'000, CG_TRACK_STABLE, 10.0))};
+    api.empty_poll_result = Ok(CgSample(3, 1'020'000'000, CG_TRACK_STABLE, 10.0));
+    // Resolution #1 fails, resolution #2 succeeds.
+    api.reset_origin_script = {Err<void>(Status{StatusCode::Device, "fake: reset rejected"}), Ok()};
+
+    // Park resolution #1 in the seam so post #2 can race it deterministically.
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool resolution1_entered = false;
+    bool resolution1_release = false;
+    bool resolution2_entered = false;
+    bool resolution2_release = false;
+    api.on_reset_origin = [&](std::uint64_t call) {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        if (call == 1U) {
+            resolution1_entered = true;
+            gate_cv.notify_all();
+            gate_cv.wait(lock, [&] { return resolution1_release; });
+        } else if (call == 2U) {
+            resolution2_entered = true;
+            gate_cv.notify_all();
+            gate_cv.wait(lock, [&] { return resolution2_release; });
+        }
+    };
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+
+    // Post #1: the polling thread enters the failing resolution and parks.
+    ASSERT_TRUE(source.Recenter().ok());
+    bool entered1 = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        entered1 = gate_cv.wait_for(lock, std::chrono::seconds(2), [&] { return resolution1_entered; });
+    }
+    EXPECT_TRUE(entered1) << "resolution #1 never entered the seam";
+
+    // Post #2 while resolution #1 is in flight; the arm hook parks the poster
+    // *before* its arming transaction, exactly in the window the old code
+    // stored the arm outside the mutex. From here on failures use EXPECT and
+    // run to the joins.
+    ScopedArmHook arm_hook;
+    Result<void> second = Err<void>(Status{StatusCode::Internal, "the poster never ran"});
+    std::thread poster([&] { second = source.Recenter(); });
+    bool entered_arm = false;
+    {
+        std::unique_lock<std::mutex> lock(g_arm_mutex);
+        entered_arm = g_arm_cv.wait_for(lock, std::chrono::seconds(2), [&] { return g_arm_entered; });
+    }
+    EXPECT_TRUE(entered_arm) << "post #2 never reached the pre-arming seam";
+
+    // Let the failed resolution run to completion while the poster waits:
+    // releasing resolution #1 clears the *old* generation's state. The poll
+    // counter can only advance after `HandleRecentre` returned, so it proves
+    // the withdrawal finished before the poster arms.
+    const std::uint64_t polls_before_release = api.poll_calls.load();
+    {
+        const std::lock_guard<std::mutex> lock(gate_mutex);
+        resolution1_release = true;
+    }
+    gate_cv.notify_all();
+    EXPECT_TRUE(WaitFor([&] { return api.poll_calls.load() > polls_before_release; }, std::chrono::seconds(2)))
+        << "the failing resolution did not complete";
+
+    // Now let the poster arm. The fresh arm must survive the earlier failure.
+    {
+        const std::lock_guard<std::mutex> lock(g_arm_mutex);
+        g_arm_release = true;
+    }
+    g_arm_cv.notify_all();
+    poster.join();
+    EXPECT_TRUE(second.ok()) << second.status().message();
+
+    // Resolution #2 now reaches the seam and parks. While it is still
+    // unresolved, the read path must already carry the fresh arm: the old
+    // clobber left the offset zeroed, so this read would still show the raw
+    // 10-degree heading.
+    bool entered2 = false;
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        entered2 = gate_cv.wait_for(lock, std::chrono::seconds(2), [&] { return resolution2_entered; });
+    }
+    EXPECT_TRUE(entered2) << "the second post was not resolved by the polling thread";
+    HeadSample armed = PlaceholderSample();
+    const bool have_armed = source.TryGetLatest(armed, Duration{0});
+    EXPECT_NEAR(YawDegrees(armed.pose), 0.0, 0.1)
+        << "the second post must stay armed across the first resolution's failure";
+
+    {
+        const std::lock_guard<std::mutex> lock(gate_mutex);
+        resolution2_release = true;
+    }
+    gate_cv.notify_all();
+    EXPECT_TRUE(have_armed);
+    EXPECT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 2U; }));
     source.Stop();
 }
 

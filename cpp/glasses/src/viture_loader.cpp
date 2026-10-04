@@ -25,9 +25,11 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
@@ -82,7 +84,12 @@ std::wstring Utf8ToWide(const std::string &text) {
     if (wide.empty()) {
         return nullptr;
     }
-    return LoadLibraryW(wide.c_str());
+    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path and keeps the
+    // DLL's own directory available for its dependencies; DEFAULT_DIRS covers
+    // the application and user directories. Unlike the legacy search, neither
+    // flag consults the working directory or PATH, so a planted dependency
+    // next to the process cannot hijack the imports.
+    return LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 }
 
 void CloseLibrary(LibraryHandle handle) noexcept {
@@ -131,6 +138,62 @@ void CloseLibrary(LibraryHandle handle) noexcept {
 }
 
 #endif
+
+/// Outcome of validating a caller-supplied vendor-DLL path.
+///
+/// A path is accepted only when it is absolute and either outside the working
+/// directory or a sibling of the running executable: the working directory is
+/// attacker-influenced, so a library there is a planted DLL. Authenticating
+/// the vendor DLL (signature/hash) remains open and is recorded as tech debt.
+[[nodiscard]] bool SamePath(const std::filesystem::path &left, const std::filesystem::path &right) {
+#ifdef _WIN32
+    const std::wstring left_text = left.native();
+    const std::wstring right_text = right.native();
+    return _wcsicmp(left_text.c_str(), right_text.c_str()) == 0;
+#else
+    return left == right;
+#endif
+}
+
+/// Whether `candidate` is `directory` itself or lives below it (lexically).
+[[nodiscard]] bool IsWithin(const std::filesystem::path &candidate, const std::filesystem::path &directory) {
+    if (directory.empty()) {
+        return false;
+    }
+    if (SamePath(candidate, directory)) {
+        return true;
+    }
+    const std::filesystem::path relative = candidate.lexically_relative(directory);
+    if (relative.empty()) {
+        return false;
+    }
+    for (const std::filesystem::path &part : relative) {
+        if (part == "..") {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// The directory holding the running executable; empty when it cannot be read.
+[[nodiscard]] std::filesystem::path ExecutableDirectory() {
+#ifdef _WIN32
+    std::wstring buffer(MAX_PATH, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0) {
+        return {};
+    }
+    buffer.resize(length);
+    return std::filesystem::path(buffer).parent_path();
+#else
+    std::error_code error;
+    const std::filesystem::path executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (error) {
+        return {};
+    }
+    return executable.parent_path();
+#endif
+}
 
 /// Maximum number of distinct messages interned over the process lifetime.
 constexpr std::size_t kMaxInternedMessages = 64;
@@ -320,12 +383,63 @@ class VendorVitureApi final : public IVitureApi {
 
 } // namespace
 
+DllPathDecision DecideDllPath(const std::filesystem::path &candidate, const std::filesystem::path &working_directory,
+                              const std::filesystem::path &executable_directory) {
+    if (candidate.empty() || !candidate.is_absolute()) {
+        return DllPathDecision::kRejectRelative;
+    }
+    const std::filesystem::path resolved = candidate.lexically_normal();
+    const std::filesystem::path working = working_directory.lexically_normal();
+    if (!IsWithin(resolved, working)) {
+        return DllPathDecision::kAllow;
+    }
+    if (!executable_directory.empty() && SamePath(resolved.parent_path(), executable_directory.lexically_normal())) {
+        return DllPathDecision::kAllow;
+    }
+    return DllPathDecision::kRejectInsideWorkingDirectory;
+}
+
 Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
     if (dll_path.empty()) {
         return Err<std::unique_ptr<IVitureApi>>(Status{StatusCode::InvalidArgument, "viture_loader: empty DLL path"});
     }
 
-    LibraryHandle handle = OpenLibrary(dll_path);
+    std::error_code working_error;
+    const std::filesystem::path working_directory = std::filesystem::current_path(working_error);
+    if (working_error) {
+        return Err<std::unique_ptr<IVitureApi>>(Status{
+            StatusCode::InvalidArgument,
+            "viture_loader: cannot resolve the working directory to validate the DLL path; pass an absolute path"});
+    }
+#ifdef _WIN32
+    const std::filesystem::path candidate{Utf8ToWide(dll_path)};
+#else
+    const std::filesystem::path candidate{dll_path};
+#endif
+    switch (DecideDllPath(candidate, working_directory, ExecutableDirectory())) {
+    case DllPathDecision::kRejectRelative:
+        return Err<std::unique_ptr<IVitureApi>>(Status{
+            StatusCode::InvalidArgument, InternMessage("viture_loader: refusing the relative DLL path '" + dll_path +
+                                                       "'; pass an absolute path outside the working directory")});
+    case DllPathDecision::kRejectInsideWorkingDirectory:
+        return Err<std::unique_ptr<IVitureApi>>(Status{
+            StatusCode::InvalidArgument,
+            InternMessage("viture_loader: refusing the DLL path '" + dll_path +
+                          "': it is inside the working directory, where a same-user process could have planted it; "
+                          "pass an absolute path outside the working directory or place the DLL next to the running "
+                          "executable")});
+    case DllPathDecision::kAllow:
+        break;
+    }
+
+    const std::filesystem::path resolved = candidate.lexically_normal();
+#ifdef _WIN32
+    const std::wstring wide = resolved.wstring();
+    const std::string resolved_path = WideToUtf8(wide.c_str(), static_cast<int>(wide.size()));
+#else
+    const std::string resolved_path = resolved.string();
+#endif
+    LibraryHandle handle = OpenLibrary(resolved_path);
     if (handle == nullptr) {
         return Err<std::unique_ptr<IVitureApi>>(
             Status{StatusCode::Unsupported, InternMessage(dll_path + ": " + LastLibraryError())});

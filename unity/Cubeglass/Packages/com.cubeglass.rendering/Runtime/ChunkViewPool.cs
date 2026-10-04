@@ -360,6 +360,15 @@ namespace Cubeglass.Unity.Rendering
                 indices.Add(sourceIndices[i + 1]);
             }
 
+            // Unity defaults meshes to 16-bit indices, which truncate or throw
+            // once a build exceeds 65535 vertices (review M-4). A 16³ chunk
+            // cannot reach that today, but the guard keeps a future chunk size,
+            // a different mesher or a denser atlas stream-safe. Setting the
+            // format before Clear avoids re-uploading an already-populated
+            // buffer after the switch.
+            mesh.indexFormat = data.VertexCount > 65535
+                ? UnityEngine.Rendering.IndexFormat.UInt32
+                : UnityEngine.Rendering.IndexFormat.UInt16;
             mesh.Clear();
             mesh.SetVertices(positions);
             mesh.SetNormals(normals);

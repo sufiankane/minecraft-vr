@@ -49,7 +49,10 @@ namespace Cubeglass.Voxel
     /// </para>
     /// <para>
     /// <b>Degenerate inputs.</b> A zero direction, a non-finite origin or
-    /// direction returns null. A negative, NaN or infinite
+    /// direction returns null. A finite direction whose squared length
+    /// overflows <see cref="double"/> is rescaled by its largest component
+    /// before normalising, so a huge-but-valid direction still casts instead of
+    /// collapsing to zero. A negative, NaN or infinite
     /// <paramref name="maxDistance"/> throws
     /// <see cref="ArgumentOutOfRangeException"/>: the accepted range is
     /// <c>[0, float.MaxValue]</c> (zero is valid and inclusive).
@@ -96,7 +99,7 @@ namespace Cubeglass.Voxel
                 return null;
             }
 
-            Vec3 direction = Vec3.Normalized(ray.Direction);
+            Vec3 direction = NormalizeDirection(ray.Direction);
             if (!IsFinite(direction.X) || !IsFinite(direction.Y) || !IsFinite(direction.Z)
                 || (direction.X == 0.0 && direction.Y == 0.0 && direction.Z == 0.0))
             {
@@ -208,6 +211,29 @@ namespace Cubeglass.Voxel
                     return hit;
                 }
             }
+        }
+
+        /// <summary>
+        /// Normalises <paramref name="direction"/> scale-safely: the usual path
+        /// is bit-identical to <see cref="Vec3.Normalized"/>, but when the
+        /// squared length overflows to infinity the vector is first divided by
+        /// its largest absolute component, so a huge finite direction still
+        /// normalises instead of collapsing to zero.
+        /// </summary>
+        private static Vec3 NormalizeDirection(Vec3 direction)
+        {
+            if (double.IsInfinity(Vec3.Dot(direction, direction)))
+            {
+                double scale = Math.Max(
+                    Math.Abs(direction.X),
+                    Math.Max(Math.Abs(direction.Y), Math.Abs(direction.Z)));
+                if (scale > 0.0 && !double.IsInfinity(scale))
+                {
+                    return Vec3.Normalized(direction / scale);
+                }
+            }
+
+            return Vec3.Normalized(direction);
         }
 
         private static RayHit? Probe(IWorld w, int x, int y, int z, Int3 normal, float distance)

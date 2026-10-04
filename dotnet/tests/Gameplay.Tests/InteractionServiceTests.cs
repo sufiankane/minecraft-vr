@@ -117,6 +117,24 @@ namespace Cubeglass.Gameplay.Tests
         }
 
         [Test]
+        public void BreakingAnUnknownBlockIdFromACorruptSaveDoesNotThrow()
+        {
+            InteractionService service = NewService();
+            var world = new World();
+            world.LoadChunk(new Chunk(new ChunkCoord(0, 0, 0)));
+            var poison = new BlockId(65000);
+            Set(world, new Int3(2, 1, 4), poison);
+            PlayerState player = Player(8, 1, 8);
+            PointerRay pointer = Down(new Int3(2, 1, 4));
+
+            InteractionResult result = service.Update(
+                Frame(primary: ButtonState.Held, pointer: pointer), world, player, Dt);
+
+            Assert.That(result.Edited, Is.True, "the placeholder hardness is breakable in one 0.1 s step");
+            Assert.That(world.Get(new Int3(2, 1, 4)), Is.EqualTo(BlockId.Air));
+        }
+
+        [Test]
         public void ReachIsInclusiveAtFiveMetres()
         {
             InteractionService service = NewService();

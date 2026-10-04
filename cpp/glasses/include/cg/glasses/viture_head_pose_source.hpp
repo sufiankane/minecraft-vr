@@ -8,8 +8,10 @@
 #include <thread>
 
 #include "cg/core_math/clock_mapper.hpp"
+#include "cg/glasses/device_gate.hpp"
 #include "cg/glasses/host_clock.hpp"
 #include "cg/glasses/pose_slot.hpp"
+#include "cg/glasses/recentre_state.hpp"
 #include "cg/glasses/viture_api.hpp"
 #include "ports.hpp"
 
@@ -24,6 +26,10 @@ namespace cg::glasses {
 /// timeline, dossier F-05) through `ClockMapper` together with the injected
 /// `IHostClock`, converts the pose with `core_math::PoseFromSdk` and publishes
 /// `{mapped host time, pose, state, ++seq}` into a wait-free `PoseSlot`.
+/// Each sample is recorded with `AddSample` before it is mapped, so the first
+/// published sample is anchored to its host arrival instant and the SDK's own
+/// epoch never reaches a consumer (CXX-06); the same seeding re-anchors after
+/// a mapped-time regression reset.
 ///
 /// Fault policy:
 /// - a quiet feed (no successful poll) is reported as `Unstable` after 500 ms
@@ -88,10 +94,20 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     [[nodiscard]] bool TryGetLatest(HeadSample &out, Duration predict) const noexcept override;
     Result<void> Recenter() override;
 
+    /// Runs `action` while the source is stopped, holding `lifecycle_mutex_`
+    /// for its duration: no `Start`/`Stop` transition can interleave and no
+    /// poll can be in flight (the polling thread exists only while `Running()`).
+    /// Returns `NotReady` while `Running()`. This is the production gate the
+    /// display control binds (`DeviceGate`), closing the is-running TOCTOU
+    /// against `Start` (CXX-01).
+    [[nodiscard]] Result<void> WithDeviceStopped(const DisplaySeamAction &action);
+
     /// True while the polling thread is alive (between a successful `Start`
-    /// and the join in `Stop`). `VitureDisplayControl` takes this as its
-    /// is-running predicate: display calls are refused while a poll could be
-    /// in flight, so configure the display before `Start` or after `Stop`.
+    /// and the join in `Stop`). This remains the display control's fast
+    /// "refuse now" predicate, but correctness comes from
+    /// `WithDeviceStopped`: a bare predicate check would race `Start` between
+    /// the check and the seam call, so the display control no longer uses
+    /// `Running()` as its guard.
     [[nodiscard]] bool Running() const noexcept { return running_.load(std::memory_order_acquire); }
 
     /// Diagnostics only (HIL recordings), NOT part of `IHeadPoseSource`: the
@@ -103,6 +119,21 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     /// allocation, no exceptions. Quiet `Unstable`/`Lost` synthetics carry the
     /// last real stamp forward rather than clearing it.
     [[nodiscard]] std::optional<double> LastSdkSeconds() const noexcept;
+
+    /// Test-only seam invoked by `Recenter` after the target capture and before
+    /// the arming transaction. It deliberately runs *outside*
+    /// `recentre_mutex_`: a test parks the poster there while a failing
+    /// resolution completes — the exact window CXX-02 closed. On the fixed
+    /// code the arm is wholly inside the mutex afterwards, so the fresh post
+    /// survives; on the old code the arm stores had already happened outside,
+    /// and the failing resolution clobbered them. Arm it only while no
+    /// `Recenter` is in flight and clear it afterwards; production leaves it
+    /// unset and pays one predictable null check.
+    using TestRecentreArmHook = void (*)(void *) noexcept;
+    static void SetTestRecentreArmHook(TestRecentreArmHook hook, void *context) noexcept {
+        test_recentre_arm_hook_ = hook;
+        test_recentre_arm_context_ = context;
+    }
 
   private:
     void PollLoop(std::stop_token stop) noexcept;
@@ -143,7 +174,6 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     std::mutex recentre_call_mutex_;
     std::mutex recentre_mutex_;
     std::atomic<bool> recentre_requested_{false};
-    std::atomic<bool> recentre_pending_{false};
     std::uint64_t recentre_generation_ = 0; // Guarded by `recentre_mutex_`.
 
     // Device lifetime (create success sets it, before every destroy it is
@@ -169,20 +199,25 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     bool session_published_ = false;
 
     // Reader-visible state. The correction applies to samples up to
-    // `recentre_until_seq_`, or to every sample while `recentre_pending_` is
+    // `RecentreState::Value::until_seq`, or to every sample while `pending` is
     // set (a posted request is armed but not yet resolved against the SDK).
-    // The reader acquires `recentre_until_seq_`/`recentre_pending_` before
-    // reading `yaw_offset_deg_`, and every writer stores the offset first.
+    // All three fields are published as one seqlock snapshot (CXX-13), so a
+    // reader can never combine a newer offset with an older `until_seq` (the
+    // old loose reads let two overlapping recentres glitch one frame).
     std::atomic<double> yaw_rate_deg_per_s_{0.0};
     std::atomic<double> pitch_rate_deg_per_s_{0.0};
-    std::atomic<double> yaw_offset_deg_{0.0};
-    std::atomic<std::uint32_t> recentre_until_seq_{0};
+    RecentreState recentre_state_{};
 
     // Diagnostics-only SDK stamp (see `LastSdkSeconds`). Written by the polling
     // thread before the matching publish; `has_sdk_seconds_` is the release
     // flag that makes it readable.
     std::atomic<double> last_sdk_seconds_{0.0};
     std::atomic<bool> has_sdk_seconds_{false};
+
+    // Test-only arming seam (see `SetTestRecentreArmHook`); null unless armed.
+    // The poster reads it while holding `recentre_mutex_`.
+    inline static TestRecentreArmHook test_recentre_arm_hook_ = nullptr;
+    inline static void *test_recentre_arm_context_ = nullptr;
 };
 
 } // namespace cg::glasses

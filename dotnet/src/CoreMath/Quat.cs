@@ -45,6 +45,12 @@ namespace Cubeglass.CoreMath
         /// the squared norm is below <c>1e-24</c> or any component is non-finite,
         /// returns <see cref="Identity"/>.
         /// </summary>
+        /// <remarks>
+        /// A huge finite component set whose squared norm overflows to infinity
+        /// is degenerate by the same rule and also returns <see cref="Identity"/>.
+        /// That overflow edge is deliberate, pinned by tests and mirrored by the
+        /// C++ implementation (M6); it is not silently wrapped.
+        /// </remarks>
         public static Quat FromComponents(double w, double x, double y, double z)
         {
             double squaredNorm = (w * w) + (x * x) + (y * y) + (z * z);
@@ -63,6 +69,11 @@ namespace Cubeglass.CoreMath
         /// first; a zero or non-finite axis, or non-finite
         /// <paramref name="radians"/>, yields <see cref="Identity"/>.
         /// </summary>
+        /// <remarks>
+        /// A huge finite axis whose squared length overflows to infinity is
+        /// degenerate by the same rule and also yields <see cref="Identity"/>
+        /// (the documented M6 overflow edge, mirrored by C++).
+        /// </remarks>
         public static Quat FromAxisAngle(Vec3 axis, double radians)
         {
             double squaredAxisLength = (axis.X * axis.X) + (axis.Y * axis.Y) + (axis.Z * axis.Z);

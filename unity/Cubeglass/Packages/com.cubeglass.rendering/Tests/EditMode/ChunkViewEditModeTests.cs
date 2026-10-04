@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
+using Cubeglass.CoreMath;
 using Cubeglass.Mesh;
 using Cubeglass.Voxel;
 using NUnit.Framework;
@@ -193,6 +195,114 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
+        public void MeshesOverThe16BitVertexLimitUseThe32BitIndexFormat()
+        {
+            MeshData data = CreateLargeMeshData(65540);
+            var root = new GameObject("IndexFormatPool");
+            try
+            {
+                var pool = new ChunkViewPool(root.transform, 1);
+                try
+                {
+                    Assert.IsTrue(pool.TryAcquire(out ChunkView view));
+                    pool.Upload(view, data);
+
+                    Assert.AreEqual(
+                        UnityEngine.Rendering.IndexFormat.UInt32,
+                        view.Mesh.indexFormat,
+                        "a build above 65535 vertices must switch to 32-bit indices (review M-4)");
+                    Assert.AreEqual(65540, view.Mesh.vertexCount);
+                    Assert.AreEqual(pool.MeshDataBuilds, pool.MeshDataReleases, "the upload releases the mesh data");
+                    Assert.AreEqual(0, pool.OutstandingMeshData);
+                }
+                finally
+                {
+                    pool.Dispose();
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        [Test]
+        public void SmallMeshesStayOnThe16BitIndexFormat()
+        {
+            MeshData data = BuildSingleStoneChunk();
+            var root = new GameObject("IndexFormatSmallPool");
+            try
+            {
+                var pool = new ChunkViewPool(root.transform, 1);
+                try
+                {
+                    Assert.IsTrue(pool.TryAcquire(out ChunkView view));
+                    pool.Upload(view, data);
+                    Assert.AreEqual(
+                        UnityEngine.Rendering.IndexFormat.UInt16,
+                        view.Mesh.indexFormat,
+                        "the default chunk mesh keeps the cheaper 16-bit format");
+                }
+                finally
+                {
+                    pool.Dispose();
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(root);
+            }
+        }
+
+        /// <summary>
+        /// Builds a mesh bigger than the 16-bit index range. <see cref="MeshData"/>
+        /// and its initialization are internal to the Cubeglass.Mesh assembly,
+        /// so the test rents a wrapper and initializes it through the same
+        /// reflection seam the pool contract exposes.
+        /// </summary>
+        private static MeshData CreateLargeMeshData(int vertexCount)
+        {
+            const BindingFlags NonPublicInstance = BindingFlags.Instance | BindingFlags.NonPublic;
+            var bufferPool = new MeshBufferPool();
+            MethodInfo rent = typeof(MeshBufferPool).GetMethod("RentMeshData", NonPublicInstance);
+            Assert.IsNotNull(rent, "MeshBufferPool.RentMeshData exists");
+            var data = (MeshData)rent.Invoke(bufferPool, null);
+
+            var positions = new Vector3f[vertexCount];
+            var normals = new Vector3f[vertexCount];
+            var uvs = new Vector2f[vertexCount];
+            var ao = new byte[vertexCount];
+            int quadCount = vertexCount / 4;
+            var indices = new int[quadCount * 6];
+            for (int quad = 0; quad < quadCount; quad++)
+            {
+                int vertex = quad * 4;
+                indices[(quad * 6) + 0] = vertex;
+                indices[(quad * 6) + 1] = vertex + 1;
+                indices[(quad * 6) + 2] = vertex + 2;
+                indices[(quad * 6) + 3] = vertex;
+                indices[(quad * 6) + 4] = vertex + 2;
+                indices[(quad * 6) + 5] = vertex + 3;
+            }
+
+            MethodInfo initialize = typeof(MeshData).GetMethod("Initialize", NonPublicInstance);
+            Assert.IsNotNull(initialize, "MeshData.Initialize exists");
+            initialize.Invoke(data, new object[]
+            {
+                positions,
+                normals,
+                uvs,
+                ao,
+                indices,
+                vertexCount,
+                indices.Length,
+                new Vector3f(0f, 0f, 0f),
+                new Vector3f(1f, 1f, 1f),
+            });
+            return data;
+        }
+
+        [Test]
         public void SliceBlockRegistryMatchesTheCommittedBlocksJson()
         {
             string repoRoot = Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", ".."));
@@ -218,7 +328,69 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(5, placeable.Count);
             Assert.IsFalse(Contains(placeable, BlockId.Air));
             Assert.IsTrue(Contains(placeable, new BlockId(1)));
-            Assert.Throws<KeyNotFoundException>(() => SliceBlockRegistry.Default.Get(new BlockId(6)));
+
+            BlockDefinition unknown = SliceBlockRegistry.Default.Get(new BlockId(65000));
+            Assert.AreSame(SliceBlockRegistry.Fallback, unknown, "unknown ids resolve to the documented fallback");
+            Assert.AreEqual(BlockId.Air, unknown.Id);
+            Assert.IsFalse(unknown.Solid);
+            Assert.IsFalse(unknown.Opaque);
+            Assert.AreEqual(0f, unknown.Hardness);
+            Assert.AreEqual(0, unknown.AtlasIndexTop);
+            Assert.AreEqual(0, unknown.AtlasIndexFront);
+            Assert.AreEqual(0, unknown.AtlasIndexSide);
+        }
+
+        /// <summary>
+        /// Unity mirror of the pure-module I1 test: a corrupt save can carry
+        /// any block id in the codec range; decoding it, applying it and
+        /// building the chunk mesh must not throw, and the unknown id must
+        /// still render as a visible placeholder (six quads).
+        /// </summary>
+        [Test]
+        public void UnknownBlockIdMeshesAsAVisiblePlaceholderThroughTheChunkMeshPath()
+        {
+            var coord = new ChunkCoord(0, 0, 0);
+            var poison = new BlockId(65000);
+            var local = new Int3(8, 8, 8);
+            byte[] payload = ChunkDeltaCodec.Serialize(new ChunkDelta(
+                coord, new Dictionary<Int3, BlockId> { { local, poison } }));
+            Assert.IsTrue(ChunkDeltaCodec.TryDeserialize(payload, out ChunkDelta decoded), "codec round trip");
+            Assert.IsNotNull(decoded);
+
+            var world = new World();
+            var chunk = new Chunk(coord);
+            world.LoadChunk(chunk);
+            foreach (KeyValuePair<Int3, BlockId> edit in decoded.Edits)
+            {
+                Assert.AreEqual(
+                    EditResult.Applied,
+                    world.Apply(new EditCommand(
+                        ChunkMath.ToWorld(coord, edit.Key), BlockId.Air, edit.Value, 0L)),
+                    "the decoded unknown id must apply");
+            }
+
+            var mesher = new GreedyMesher(new AtlasLayout(16, 16), new MeshBufferPool());
+            MeshData data = mesher.Build(chunk.Snapshot(), NeighbourSnapshot.Empty, SliceBlockRegistry.Default);
+            try
+            {
+                Assert.AreEqual(36, data.IndexCount, "the placeholder emits six visible quads");
+                Assert.AreEqual(24, data.VertexCount);
+                Assert.AreEqual(
+                    poison,
+                    world.Get(ChunkMath.ToWorld(coord, local)),
+                    "the raw unknown id must survive apply untouched");
+
+                BlockDefinition definition = SliceBlockRegistry.Default.Get(poison);
+                Assert.AreSame(SliceBlockRegistry.Fallback, definition);
+                Assert.IsFalse(definition.Solid, "the placeholder must not block movement");
+                Assert.IsFalse(definition.Opaque, "the placeholder must not cull its neighbours");
+                Assert.AreEqual(0f, definition.Hardness, "the placeholder is breakable instantly");
+                Assert.AreEqual(0, definition.AtlasIndexTop, "the placeholder maps to atlas tile 0");
+            }
+            finally
+            {
+                data.Release();
+            }
         }
 
         private static MeshData BuildSingleStoneChunk()

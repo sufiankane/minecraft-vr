@@ -12,7 +12,10 @@ namespace Cubeglass.Voxel
     /// <c>(x, y)</c> mixed with the seed, finished with the MurmurHash3
     /// <c>fmix64</c> avalanche so that adjacent seeds decorrelate; the top
     /// 53 bits of the result map exactly onto <c>[0, 1)</c> in
-    /// <see cref="double"/>.
+    /// <see cref="double"/>. A coordinate at or beyond the clamped lattice end
+    /// (<c>int.MaxValue</c>) repeats that edge cell instead of wrapping to the
+    /// opposite end of the coordinate space, so the noise stays continuous and
+    /// deterministic for every finite input.
     /// </para>
     /// <para>
     /// There is no clock, no <c>System.Random</c> and no mutable state, so
@@ -37,9 +40,9 @@ namespace Cubeglass.Voxel
             double v = Fade(y - y0);
 
             double n00 = Lattice(x0, y0, seed);
-            double n10 = Lattice(x0 + 1, y0, seed);
-            double n01 = Lattice(x0, y0 + 1, seed);
-            double n11 = Lattice(x0 + 1, y0 + 1, seed);
+            double n10 = Lattice(NextLattice(x0), y0, seed);
+            double n01 = Lattice(x0, NextLattice(y0), seed);
+            double n11 = Lattice(NextLattice(x0), NextLattice(y0), seed);
 
             double top = n00 + ((n10 - n00) * u);
             double bottom = n01 + ((n11 - n01) * u);
@@ -72,6 +75,18 @@ namespace Cubeglass.Voxel
         private static double Fade(double t)
         {
             return t * t * t * ((t * ((t * 6.0) - 15.0)) + 10.0);
+        }
+
+        /// <summary>
+        /// The next lattice index: the clamped coordinate ends at
+        /// <see cref="int.MaxValue"/>, so the "+1" neighbour repeats that cell
+        /// instead of wrapping to <see cref="int.MinValue"/>. The top edge
+        /// therefore goes flat rather than blending with the opposite end of
+        /// the coordinate space; every in-range sample is unchanged.
+        /// </summary>
+        private static int NextLattice(int value)
+        {
+            return value == int.MaxValue ? int.MaxValue : value + 1;
         }
 
         private static double Lattice(int x, int y, long seed)

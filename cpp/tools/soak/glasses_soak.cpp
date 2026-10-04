@@ -9,6 +9,12 @@
 // baseline and exits non-zero when that growth exceeds 1 MiB. Ctrl+C stops the
 // run cleanly through a signal flag.
 //
+// The RSS reading is the current resident set: `GetProcessMemoryInfo` working
+// set on Windows and `/proc/self/statm` on Linux (not the `getrusage` peak, so
+// growth that stays below a transient peak is still visible); macOS falls back
+// to `ru_maxrss`. A failed reading is *not* treated as zero: it fails the gate
+// (CXX-04).
+//
 // `fresh` counts reads that observed a new sequence number; `read` counts every
 // successful TryGetLatest (the render-path read), and `misses` counts the
 // transient false reads (before the first publish or a bounded-retry
@@ -28,6 +34,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -37,6 +44,7 @@
 #include "cg/glasses/manual_clock.hpp"
 #include "ports.hpp"
 #include "result.hpp"
+#include "rss_gate.hpp"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -51,6 +59,7 @@
 #include <timeapi.h>
 #else
 #include <sys/resource.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -133,7 +142,7 @@ void PrintUsage(std::FILE *stream) {
                "current process RSS and the cumulative read-to-read gap p95 (the gap\n"
                "between consecutive successful reads); at exit it prints the RSS growth\n"
                "after the first-minute baseline and exits non-zero when it exceeds\n"
-               "1 MiB.\n",
+               "1 MiB or when an RSS reading is unavailable.\n",
                stream);
 }
 
@@ -149,8 +158,12 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string_v
         }
         const std::string_view value{argv[++index]};
         if (arg == "--rate") {
-            if (!ParseDouble(value, options.rate_hz) || options.rate_hz <= 0.0) {
-                error = "--rate must be a finite positive number";
+            // The fake source rejects a rate whose period rounds to 0 ns; the
+            // tool must do the same instead of dividing by a zero period when
+            // it computes its own pacing (CXX-08).
+            if (!ParseDouble(value, options.rate_hz) || options.rate_hz <= 0.0 ||
+                cg::core_math::ToNanoseconds(1.0 / options.rate_hz) <= 0) {
+                error = "--rate must be a finite positive rate whose period is at least 1 ns";
                 return ParseOutcome::Error;
             }
         } else if (arg == "--minutes") {
@@ -166,25 +179,41 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string_v
     return ParseOutcome::Ok;
 }
 
-/// The process RSS in bytes: current working set on Windows, the `getrusage`
-/// peak resident set on POSIX (`ru_maxrss` is KiB on Linux, bytes on macOS).
-std::uint64_t ResidentBytes() noexcept {
+/// The process's *current* resident set in bytes, or `std::nullopt` when the
+/// query fails. Windows: `GetProcessMemoryInfo` working set. Linux:
+/// `/proc/self/statm`'s resident pages times the page size — the live RSS, not
+/// `getrusage`'s peak, so growth under an earlier transient peak is visible
+/// (CXX-04). macOS: `ru_maxrss` (bytes), the only cheap portable query there.
+std::optional<std::uint64_t> ResidentBytes() noexcept {
 #if defined(_WIN32)
     PROCESS_MEMORY_COUNTERS counters{};
     if (::GetProcessMemoryInfo(::GetCurrentProcess(), &counters, sizeof(counters)) == 0) {
-        return 0;
+        return std::nullopt;
     }
     return static_cast<std::uint64_t>(counters.WorkingSetSize);
-#else
+#elif defined(__APPLE__)
     rusage usage{};
     if (::getrusage(RUSAGE_SELF, &usage) != 0) {
-        return 0;
+        return std::nullopt;
     }
-#if defined(__APPLE__)
     return static_cast<std::uint64_t>(usage.ru_maxrss);
 #else
-    return static_cast<std::uint64_t>(usage.ru_maxrss) * 1024ULL;
-#endif
+    std::FILE *file = std::fopen("/proc/self/statm", "r");
+    if (file == nullptr) {
+        return std::nullopt;
+    }
+    unsigned long size_pages = 0;
+    unsigned long resident_pages = 0;
+    const int fields = std::fscanf(file, "%lu %lu", &size_pages, &resident_pages);
+    std::fclose(file);
+    if (fields != 2) {
+        return std::nullopt;
+    }
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(resident_pages) * static_cast<std::uint64_t>(page_size);
 #endif
 }
 
@@ -303,9 +332,9 @@ int Run(const Options &options) {
     const double total_seconds = options.minutes * 60.0;
     const HostTime period_ns = static_cast<HostTime>(std::llround(kNanosecondsPerSecond / options.rate_hz));
     std::uint64_t published = 0;
-    std::uint64_t baseline_rss = 0;
-    bool have_baseline = false;
+    std::optional<std::uint64_t> baseline_rss;
     double baseline_seconds = 0.0;
+    bool reported = false;
     double next_report_seconds = kReportIntervalSeconds;
 
     std::printf("glasses_soak: rate=%.3f Hz minutes=%.3f rss budget=%.2f MiB\n", options.rate_hz, options.minutes,
@@ -320,12 +349,14 @@ int Run(const Options &options) {
         }
 
         if (elapsed_seconds >= next_report_seconds) {
-            const std::uint64_t rss = ResidentBytes();
-            std::printf("[soak] t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%.2f MiB\n",
-                        elapsed_seconds, static_cast<unsigned long long>(published),
+            const std::optional<std::uint64_t> rss = ResidentBytes();
+            char rss_text[32];
+            cg::soak::FormatRssBytes(rss_text, sizeof(rss_text), rss);
+            std::printf("[soak] t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%s\n", elapsed_seconds,
+                        static_cast<unsigned long long>(published),
                         static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                         static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
-                        static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), Mib(rss));
+                        static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), rss_text);
             std::printf("[soak] latency t=%.1f s reads=%llu fresh=%llu p95_read_gap=%.2f us "
                         "(cumulative, bucket bound)\n",
                         elapsed_seconds,
@@ -333,10 +364,10 @@ int Run(const Options &options) {
                         static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
                         P95ReadGapNs(counters) / 1e3);
             std::fflush(stdout);
-            if (!have_baseline) {
+            reported = true;
+            if (!baseline_rss.has_value()) {
                 baseline_rss = rss;
                 baseline_seconds = elapsed_seconds;
-                have_baseline = true;
             }
             do {
                 next_report_seconds += kReportIntervalSeconds;
@@ -363,33 +394,58 @@ int Run(const Options &options) {
     source.Stop();
 
     const double elapsed_seconds = ToSeconds(ElapsedSince(start));
-    const std::uint64_t final_rss = ResidentBytes();
-    std::printf("[soak] done t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%.2f MiB "
+    const std::optional<std::uint64_t> final_rss = ResidentBytes();
+    // Format both readings into separate buffers once: formatting two values
+    // through one shared buffer in a single printf would print the same text
+    // twice (argument evaluation order is unspecified), hiding the baseline.
+    char baseline_rss_text[32];
+    char final_rss_text[32];
+    cg::soak::FormatRssBytes(baseline_rss_text, sizeof(baseline_rss_text), baseline_rss);
+    cg::soak::FormatRssBytes(final_rss_text, sizeof(final_rss_text), final_rss);
+    std::printf("[soak] done t=%.1f s published=%llu read=%llu fresh=%llu misses=%llu rss=%s "
                 "p95_read_gap=%.2f us\n",
                 elapsed_seconds, static_cast<unsigned long long>(published),
                 static_cast<unsigned long long>(counters.reads.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(counters.fresh.load(std::memory_order_relaxed)),
-                static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), Mib(final_rss),
+                static_cast<unsigned long long>(counters.misses.load(std::memory_order_relaxed)), final_rss_text,
                 P95ReadGapNs(counters) / 1e3);
     if (g_stop_requested != 0) {
         std::printf("[soak] stopped by signal\n");
     }
 
-    if (!have_baseline) {
+    if (!reported && !baseline_rss.has_value()) {
+        // The run ended before the first report: no baseline exists by design,
+        // so the gate cannot be evaluated. This is the documented short-run
+        // behaviour, not a reading failure.
         std::printf("[soak] rss delta: no baseline (run shorter than %.0f s)\n", kReportIntervalSeconds);
         std::fflush(stdout);
         return 0;
     }
 
-    const std::uint64_t delta = final_rss > baseline_rss ? final_rss - baseline_rss : 0;
-    std::printf("[soak] rss baseline (t=%.1f s)=%.2f MiB final=%.2f MiB delta=%.2f MiB (budget %.2f MiB)\n",
-                baseline_seconds, Mib(baseline_rss), Mib(final_rss), Mib(delta), Mib(kRssBudgetBytes));
-    if (delta > kRssBudgetBytes) {
-        std::printf("[soak] FAIL: RSS growth %.2f MiB exceeds the %.2f MiB budget\n", Mib(delta), Mib(kRssBudgetBytes));
+    const cg::soak::RssGateResult gate = cg::soak::EvaluateRssGate(baseline_rss, final_rss, kRssBudgetBytes);
+    switch (gate.reason) {
+    case cg::soak::RssGateReason::MissingBaseline:
+        std::printf("[soak] FAIL: baseline RSS reading unavailable; the leak gate cannot be evaluated\n");
         std::fflush(stdout);
         return 1;
+    case cg::soak::RssGateReason::MissingFinal:
+        std::printf("[soak] FAIL: final RSS reading unavailable; the leak gate cannot be evaluated\n");
+        std::fflush(stdout);
+        return 1;
+    case cg::soak::RssGateReason::OverBudget:
+        std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
+                    baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
+        std::printf("[soak] FAIL: RSS growth %.2f MiB exceeds the %.2f MiB budget\n", Mib(gate.growth_bytes),
+                    Mib(kRssBudgetBytes));
+        std::fflush(stdout);
+        return 1;
+    case cg::soak::RssGateReason::WithinBudget:
+        break;
     }
-    std::printf("[soak] PASS: RSS growth %.2f MiB within the %.2f MiB budget\n", Mib(delta), Mib(kRssBudgetBytes));
+    std::printf("[soak] rss baseline (t=%.1f s)=%s final=%s delta=%.2f MiB (budget %.2f MiB)\n", baseline_seconds,
+                baseline_rss_text, final_rss_text, Mib(gate.growth_bytes), Mib(kRssBudgetBytes));
+    std::printf("[soak] PASS: RSS growth %.2f MiB within the %.2f MiB budget\n", Mib(gate.growth_bytes),
+                Mib(kRssBudgetBytes));
     std::fflush(stdout);
     return 0;
 }

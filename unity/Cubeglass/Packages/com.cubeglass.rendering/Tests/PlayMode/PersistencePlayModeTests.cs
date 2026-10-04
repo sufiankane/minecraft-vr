@@ -376,6 +376,197 @@ namespace Cubeglass.Unity.Rendering.Tests
             yield return null;
         }
 
+        /// <summary>
+        /// I-2: the swap is a same-volume atomic overwriting rename, so the
+        /// new content lands, the old file is only ever replaced (never
+        /// deleted), and no temp file survives.
+        /// </summary>
+        [Test]
+        public void AtomicSwapLandsTheNewContentAndConsumesTheTemp()
+        {
+            var coord = new ChunkCoord(0, 0, 0);
+            store.SaveAsync(coord, DeltaFor(coord, new Int3(1, 2, 3), new BlockId(5)), CancellationToken.None);
+            FlushResult first = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(first.Succeeded, "the fixture write must succeed: {0}", first);
+            byte[] before = File.ReadAllBytes(store.ChunkPath(coord));
+
+            store.SaveAsync(coord, DeltaFor(coord, new Int3(4, 5, 6), new BlockId(6)), CancellationToken.None);
+            FlushResult swap = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(swap.Succeeded, "the swap must succeed: {0}", swap);
+            Assert.AreEqual(0, swap.FailedWrites, "the swap is not a failed write");
+
+            ChunkDelta loaded = store.LoadAsync(coord, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            Assert.IsNotNull(loaded, "the swapped delta must load");
+            Assert.AreEqual(new BlockId(6), loaded.Edits[new Int3(4, 5, 6)], "the new content is in place");
+            CollectionAssert.AreNotEqual(before, File.ReadAllBytes(store.ChunkPath(coord)), "the file changed");
+            Assert.AreEqual(1, store.CountSavedChunks(), "exactly one delta file");
+            Assert.AreEqual(
+                0,
+                Directory.GetFiles(store.WorldDirectory, "*.tmp").Length,
+                "the swap consumes the temp file");
+        }
+
+        /// <summary>
+        /// I-2: when the atomic swap is refused (a reader holds the delta, or
+        /// the file system refuses the rename), the write is reported failed
+        /// and the previous complete file is untouched — the store must never
+        /// delete the destination to make room.
+        /// </summary>
+        [Test]
+        public void ForcedSwapFailureKeepsTheOldFileIntactAndReportsTheWrite()
+        {
+            var coord = new ChunkCoord(0, 0, 0);
+            store.SaveAsync(coord, DeltaFor(coord, new Int3(1, 2, 3), new BlockId(5)), CancellationToken.None);
+            FlushResult first = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(first.Succeeded, "the fixture write must succeed: {0}", first);
+            byte[] before = File.ReadAllBytes(store.ChunkPath(coord));
+
+            FileWorldStore.SwapAttemptForTests = (temp, path) => false;
+            try
+            {
+                store.SaveAsync(coord, DeltaFor(coord, new Int3(4, 5, 6), new BlockId(6)), CancellationToken.None);
+                FlushResult refused = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+                Assert.IsTrue(refused.Completed, "the failed swap still completes the flush");
+                Assert.AreEqual(1, refused.FailedWrites, "the refused swap is reported as a failed write");
+
+                CollectionAssert.AreEqual(before, File.ReadAllBytes(store.ChunkPath(coord)), "the old bytes survive");
+                ChunkDelta loaded = store.LoadAsync(coord, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+                Assert.IsNotNull(loaded, "the old delta still loads");
+                Assert.AreEqual(new BlockId(5), loaded.Edits[new Int3(1, 2, 3)], "the old content is intact");
+                Assert.AreEqual(
+                    0,
+                    Directory.GetFiles(store.WorldDirectory, "*.tmp").Length,
+                    "the refused temp is cleaned up");
+            }
+            finally
+            {
+                FileWorldStore.SwapAttemptForTests = null;
+            }
+        }
+
+        /// <summary>
+        /// I-2: while the store rewrites one chunk, a load loop on another
+        /// thread must always see the old or the new complete delta and never
+        /// a missing or partial file. The swap is an atomic overwriting rename
+        /// that never deletes the destination; when a reader refuses it, the
+        /// write is reported failed and the old file stays in place. The old
+        /// delete-then-move fallback left exactly the missing-file window this
+        /// test hunts for.
+        /// </summary>
+        [Test]
+        public void ConcurrentLoadsNeverObserveAMissingOrPartialDeltaDuringAtomicSwaps()
+        {
+            var coord = new ChunkCoord(0, 0, 0);
+            var cellA = new Int3(1, 2, 3);
+            var cellB = new Int3(4, 5, 6);
+            var blockA = new BlockId(1);
+            var blockB = new BlockId(6);
+            store.SaveAsync(coord, DeltaFor(coord, cellA, blockA), CancellationToken.None);
+            Assert.IsTrue(
+                store.WaitForPendingWrites(TimeSpan.FromSeconds(10)).Succeeded,
+                "the fixture write must succeed");
+
+            long missing = 0;
+            long partial = 0;
+            long reads = 0;
+            int landed = 0;
+            Exception readerFailure = null;
+            using (var stop = new ManualResetEventSlim(false))
+            {
+                Task reader = Task.Run(() =>
+                {
+                    try
+                    {
+                        while (!stop.IsSet)
+                        {
+                            ChunkDelta delta = store
+                                .LoadAsync(coord, CancellationToken.None)
+                                .AsTask()
+                                .GetAwaiter()
+                                .GetResult();
+                            if (delta == null)
+                            {
+                                Interlocked.Increment(ref missing);
+                                continue;
+                            }
+
+                            Interlocked.Increment(ref reads);
+                            bool isOld = delta.Edits.Count == 1
+                                && delta.Edits.TryGetValue(cellA, out BlockId oldBlock)
+                                && oldBlock == blockA;
+                            bool isNew = delta.Edits.Count == 1
+                                && delta.Edits.TryGetValue(cellB, out BlockId newBlock)
+                                && newBlock == blockB;
+                            if (!isOld && !isNew)
+                            {
+                                Interlocked.Increment(ref partial);
+                            }
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        readerFailure = exception;
+                    }
+                });
+
+                try
+                {
+                    for (int i = 0; i < 60; i++)
+                    {
+                        ChunkDelta payload = i % 2 == 0
+                            ? DeltaFor(coord, cellB, blockB)
+                            : DeltaFor(coord, cellA, blockA);
+                        store.SaveAsync(coord, payload, CancellationToken.None);
+                        FlushResult write = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+                        if (write.Succeeded)
+                        {
+                            landed++;
+                        }
+
+                        Assert.IsTrue(File.Exists(store.ChunkPath(coord)), "the delta file must never be missing");
+                        Assert.IsNotNull(
+                            store.LoadAsync(coord, CancellationToken.None).AsTask().GetAwaiter().GetResult(),
+                            "the delta must always load between swaps");
+                    }
+
+                    // Deterministic refusals under load: the old file must stay
+                    // readable and the path must stay present.
+                    FileWorldStore.SwapAttemptForTests = (temp, path) => false;
+                    for (int i = 0; i < 5; i++)
+                    {
+                        store.SaveAsync(coord, DeltaFor(coord, cellB, blockB), CancellationToken.None);
+                        store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+                        Assert.IsTrue(File.Exists(store.ChunkPath(coord)), "a refused swap must not remove the delta");
+                        Assert.IsNotNull(
+                            store.LoadAsync(coord, CancellationToken.None).AsTask().GetAwaiter().GetResult(),
+                            "a refused swap must leave a loadable delta");
+                    }
+                }
+                finally
+                {
+                    FileWorldStore.SwapAttemptForTests = null;
+                    stop.Set();
+                }
+
+                Assert.IsTrue(reader.Wait(TimeSpan.FromSeconds(10)), "the reader loop must finish");
+            }
+
+            // With the reader gone the swap lands the final content: the
+            // overwriting rename is a full replacement, not a hole.
+            store.SaveAsync(coord, DeltaFor(coord, cellB, blockB), CancellationToken.None);
+            FlushResult final = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(final.Succeeded, "the final write must land once the reader stops: {0}", final);
+            ChunkDelta finalDelta = store.LoadAsync(coord, CancellationToken.None).AsTask().GetAwaiter().GetResult();
+            Assert.IsNotNull(finalDelta, "the final delta must load");
+            Assert.AreEqual(blockB, finalDelta.Edits[cellB], "the swap landed the new content");
+
+            Assert.IsNull(readerFailure, "the reader faulted: {0}", readerFailure);
+            Assert.Greater(reads, 0L, "the reader must have observed at least one complete delta");
+            Assert.Greater(landed, 0, "at least one swap must land while the reader is live");
+            Assert.AreEqual(0L, missing, "a concurrent load observed no delta file");
+            Assert.AreEqual(0L, partial, "a concurrent load observed bytes that were neither old nor new");
+        }
+
         [UnityTest]
         public IEnumerator QuitFlushReportsFailedWritesLoudly()
         {

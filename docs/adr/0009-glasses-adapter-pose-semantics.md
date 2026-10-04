@@ -156,9 +156,12 @@ Every vendor call goes through `IVitureApi`
 the polling loop. `PollPose`/`ResetOriginCarina` run on the polling thread, and
 `ResetOriginCarina` requires a live device (`NotReady` otherwise). Display
 calls (`SetDisplayMode`/`GetRefreshHz`) only run while the pose source is
-stopped: `VitureDisplayControl` takes an is-running predicate
-(`VitureHeadPoseSource::Running` in production) and reports `NotReady` while it
-is true, so display calls are never concurrent with `PollPose`. `RequestStop`
+stopped: `VitureDisplayControl` runs every display action through a `DeviceGate`
+(`VitureHeadPoseSource::WithDeviceStopped` in production), which reports
+`NotReady` while the source runs and otherwise holds the source's lifecycle
+mutex for the action, so display calls are never concurrent with `PollPose` or
+a `Start`/`Stop` transition (the is-running predicate alone raced `Start`,
+CXX-01). `RequestStop`
 is the one cross-thread call, is thread-safe and `noexcept`, and must make a
 blocked `PollPose` return promptly with `Timeout`; `StartPose` clears it. Time
 enters the wrapper as an injected `IHostClock` (`SteadyHostClock` in
@@ -238,7 +241,13 @@ this call. At post time it arms an inverse-yaw correction so the newest
 pre-reset sample reads recentred as soon as `Recenter` returns (pitch and roll
 untouched, position unchanged) and the pose stream is never stalled; the
 correction stays applied to every sample, quiet synthetics included, until the
-request is resolved against the SDK. The polling thread services the request
+request is resolved against the SDK. The arm, the pending flag and the posted
+generation are written in one critical section of the same mutex the polling
+thread claims and resolves under, so a resolution racing a post can never clear
+a newer arm (CXX-02); the reader-visible offset, `until_seq`, pending flag and
+generation are published as one seqlock snapshot (`RecentreState`, CXX-13), so
+a reader can never pair a newer offset with an older `until_seq` when two
+recentres overlap a read. The polling thread services the request
 between polls only while the device is alive and the current device session has
 published: a request that finds the device dead or freshly recreated but not
 yet publishing stays pending, so a post that races a device loss is applied
@@ -352,9 +361,19 @@ is provisional until then). This section is filled in before
     guard. The contract suite includes `RecenterBeforeTheFirstSampleIsNotReady`
     for every factory.
 - `cpp/tests/glasses/display_control_tests.cpp` pins the enforced display rule:
-  `Get`/`Set` are `NotReady` and make no seam call while an injected is-running
-  predicate is true, and round-trip normally before `Start` and after `Stop`,
-  including wired to a live `VitureHeadPoseSource::Running`.
+  `Get`/`Set` are `NotReady` and make no seam call while a refusing gate is
+  bound, round-trip normally before `Start` and after `Stop` when wired to a
+  live `VitureHeadPoseSource::WithDeviceStopped`, prove that an open display
+  seam blocks `Start` until it completes (deterministic interleaving), and
+  run a deterministic per-round stress that parks a `Set`/`Get` seam, holds
+  `Start` at the gate, and asserts no lifecycle or poll call overlaps the seam
+  action (CXX-01).
+- `cpp/tests/glasses/recentre_state_tests.cpp` pins the CXX-13 snapshot: a
+  publish landing between the two halves of a read invalidates the attempt and
+  the production reader returns the whole new snapshot (never the new offset
+  with the old `until_seq`), and a threaded writer/reader pair asserts every
+  accepted read preserves the encoded offset/until/pending/generation
+  relation.
 - `cpp/tests/glasses/thread_safety_tests.cpp` stresses the slot (a saturated
   writer publishing 200k samples against 8 readers) and `VitureHeadPoseSource`
   over `FakeVitureApi` (one producer, four readers, a manual host clock
@@ -377,3 +396,14 @@ is provisional until then). This section is filled in before
 - SDD ruling R39 (a pose slot read that exhausts its bounded retries returns
   false; the caller keeps its previous frame, never a torn sample).
 - Escalation: `docs/questions/S5-HIL.md` (U-01, U-08; pending hardware).
+
+## Amendment (2026-10-04, critical review)
+
+Recentre state is published as one RecentreState seqlock snapshot (offset,
+validity sequence, pending flag, generation; Store/Load mirror the PoseSlot
+ordering). Exhausting the 64-read retry window drops a correction for one frame
+(same class as R39) rather than returning a torn pair. Test seams
+(BeginLoad/FinishLoad, SetTestRecentreArmHook) are documented test-only
+surface. U-08-dependent: Stop() can block behind an in-flight vendor display
+call now that lifecycle and display calls share lifecycle_mutex_; the
+acceptable bound is to be measured at HIL (TD-051 class).

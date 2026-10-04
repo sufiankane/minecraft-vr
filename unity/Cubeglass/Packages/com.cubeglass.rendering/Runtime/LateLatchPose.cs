@@ -57,6 +57,12 @@ namespace Cubeglass.Unity.Rendering
     /// <see cref="TrackingState"/> are kept unchanged. <see cref="TickOnce"/>
     /// is the manual entry point used by tests.
     /// </para>
+    /// <para>
+    /// A non-finite sample rotation (NaN or infinity) is rejected in
+    /// <c>ApplySample</c> and the last-known rotation is kept (identity before
+    /// the first sample), so corrupted bridge data cannot put a NaN on the
+    /// camera transform (I-3). The sample position is never read.
+    /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class LateLatchPose : MonoBehaviour
@@ -231,11 +237,14 @@ namespace Cubeglass.Unity.Rendering
 
         private void ApplySample(in BridgeHeadSample sample)
         {
-            Quat sampleRotation = Quat.FromComponents(
-                sample.Pose.Rotation.W,
-                sample.Pose.Rotation.X,
-                sample.Pose.Rotation.Y,
-                sample.Pose.Rotation.Z);
+            // I-3: a non-finite rotation must never reach the rig transform.
+            // Fall back to the last-known rotation (identity before the first
+            // sample). The sample position is ignored by design, so it cannot
+            // reach the transform either.
+            BridgeQuat rotation = sample.Pose.Rotation;
+            Quat sampleRotation = IsFiniteRotation(rotation)
+                ? Quat.FromComponents(rotation.W, rotation.X, rotation.Y, rotation.Z)
+                : lastRotation;
             lastRotation = sampleRotation;
 
             // Relative to the recentre baseline, in the internal frame, then
@@ -258,6 +267,14 @@ namespace Cubeglass.Unity.Rendering
                 (float)unityPose.Rotation.Y,
                 (float)unityPose.Rotation.Z,
                 (float)unityPose.Rotation.W);
+        }
+
+        private static bool IsFiniteRotation(BridgeQuat rotation)
+        {
+            return float.IsFinite(rotation.W)
+                && float.IsFinite(rotation.X)
+                && float.IsFinite(rotation.Y)
+                && float.IsFinite(rotation.Z);
         }
 
         private static PoseTrackingState MapState(TrackState state)

@@ -39,6 +39,20 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
+        public void FormatsPoseSourceBucketsIncludingEveryFallbackReason()
+        {
+            Assert.AreEqual("pose -", OverlayFormat.PoseSource(0), "no selector");
+            Assert.AreEqual("pose bridge", OverlayFormat.PoseSource(1), "bridge");
+            foreach (PoseFallbackReason reason in Enum.GetValues(typeof(PoseFallbackReason)))
+            {
+                Assert.AreEqual(
+                    "pose synthetic (" + reason + ")",
+                    OverlayFormat.PoseSource(2 + (int)reason),
+                    "fallback reason " + reason);
+            }
+        }
+
+        [Test]
         public void FrameTimeBucketIsStableWithinATenth()
         {
             Assert.AreEqual(

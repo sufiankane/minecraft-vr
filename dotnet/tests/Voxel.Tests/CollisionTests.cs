@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using Cubeglass.CoreMath;
 using NUnit.Framework;
 
@@ -184,6 +185,78 @@ namespace Cubeglass.Voxel.Tests
 
             Assert.Throws<ArgumentNullException>(() => VoxelCollision.Overlaps(null!, box));
             Assert.Throws<ArgumentNullException>(() => VoxelCollision.CanPlace(null!, Int3.Zero, box));
+        }
+
+        [Test]
+        public void ExtremeBoxThrowsInsteadOfScanningForever()
+        {
+            var world = new World();
+            var box = new Aabb(new Vec3(0, 0, 0), new Vec3(2147483648.0, 1, 1));
+
+            var stopwatch = Stopwatch.StartNew();
+            Assert.Throws<ArgumentException>(() => VoxelCollision.Overlaps(world, box));
+            stopwatch.Stop();
+
+            Assert.That(stopwatch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(2.0)));
+        }
+
+        [Test]
+        public void NonFiniteBoundsAreRejected()
+        {
+            var world = new World();
+
+            Assert.Throws<ArgumentException>(
+                () => VoxelCollision.Overlaps(world, new Aabb(new Vec3(0, 0, 0), new Vec3(double.PositiveInfinity, 1, 1))));
+            Assert.Throws<ArgumentException>(
+                () => VoxelCollision.Overlaps(world, new Aabb(new Vec3(double.NegativeInfinity, 0, 0), new Vec3(1, 1, 1))));
+            Assert.Throws<ArgumentException>(
+                () => VoxelCollision.Overlaps(world, new Aabb(new Vec3(double.NegativeInfinity, 0, 0), new Vec3(double.PositiveInfinity, 1, 1))));
+        }
+
+        [Test]
+        public void HugeFiniteBoxIsRejectedByTheCellBudget()
+        {
+            var world = new World();
+            var box = new Aabb(new Vec3(-1e300, -1e300, -1e300), new Vec3(1e300, 1e300, 1e300));
+
+            Assert.Throws<ArgumentException>(() => VoxelCollision.Overlaps(world, box));
+        }
+
+        [Test]
+        public void BoxEntirelyBeyondTheCellRangeIsEmpty()
+        {
+            var world = TestWorld.CreateLoaded(Origin, (Int3.Zero, Stone));
+            var box = new Aabb(new Vec3(1e12, 0, 0), new Vec3(1e12 + 1, 1, 1));
+
+            Assert.That(VoxelCollision.Overlaps(world, box), Is.False);
+        }
+
+        [Test]
+        public void OverlapsNearTheMaxCellMatchesTheCellCubeModel()
+        {
+            var chunk = new ChunkCoord(134_217_727, 0, 0);
+            World world = TestWorld.CreateLoaded(chunk, (new Int3(15, 0, 0), Stone));
+            var box = new Aabb(new Vec3(2147483646.75, 0.25, 0.25), new Vec3(2147483647.75, 0.75, 0.75));
+
+            Assert.That(VoxelCollision.Overlaps(world, box), Is.True);
+        }
+
+        [Test]
+        public void CanPlaceAtMaxIntDoesNotWrap()
+        {
+            var world = new World();
+            var playerBox = new Aabb(new Vec3(2147483647.0, 0, 0), new Vec3(2147483648.0, 1, 1));
+
+            Assert.That(VoxelCollision.CanPlace(world, new Int3(int.MaxValue, 0, 0), playerBox), Is.False);
+        }
+
+        [Test]
+        public void CanPlaceAtMinIntBlocksTheOccupiedCell()
+        {
+            var world = new World();
+            var playerBox = new Aabb(new Vec3(-2147483648.0, 0, 0), new Vec3(-2147483647.0, 1, 1));
+
+            Assert.That(VoxelCollision.CanPlace(world, new Int3(int.MinValue, 0, 0), playerBox), Is.False);
         }
     }
 }

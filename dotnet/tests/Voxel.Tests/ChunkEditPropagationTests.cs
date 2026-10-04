@@ -140,6 +140,26 @@ namespace Cubeglass.Voxel.Tests
             Assert.That(affected.Count, Is.EqualTo(8));
         }
 
+        [Test]
+        public void ExtremeCellDoesNotWrapAffectedChunks()
+        {
+            IReadOnlyList<ChunkCoord> max = ChunkEditPropagation.GetAffectedChunks(new Int3(int.MaxValue, 0, 0));
+
+            Assert.That(max.Count, Is.EqualTo(4), "the +1 corner lies outside the cell range and is skipped");
+            for (int i = 0; i < max.Count; i++)
+            {
+                Assert.That(max[i].X, Is.EqualTo(134_217_727), "a wrapped corner must not name an unrelated chunk");
+            }
+
+            IReadOnlyList<ChunkCoord> min = ChunkEditPropagation.GetAffectedChunks(new Int3(int.MinValue, 0, 0));
+
+            Assert.That(min.Count, Is.EqualTo(4), "the -1 corner lies outside the cell range and is skipped");
+            for (int i = 0; i < min.Count; i++)
+            {
+                Assert.That(min[i].X, Is.EqualTo(-134_217_728), "a wrapped corner must not name an unrelated chunk");
+            }
+        }
+
         private static int Compare(ChunkCoord a, ChunkCoord b)
         {
             int result = a.X.CompareTo(b.X);

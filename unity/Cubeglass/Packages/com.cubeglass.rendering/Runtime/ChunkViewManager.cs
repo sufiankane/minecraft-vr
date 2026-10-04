@@ -92,6 +92,7 @@ namespace Cubeglass.Unity.Rendering
         private long unloadedChunks;
         private long remeshedChunks;
         private long worldCompactions;
+        private long generationFailures;
         private bool initialized;
 
         /// <summary>
@@ -273,6 +274,15 @@ namespace Cubeglass.Unity.Rendering
         }
 
         /// <summary>
+        /// Deferred chunk generations that threw and were contained (review
+        /// M-2); each one logs an error and leaves a chunk hole until reload.
+        /// </summary>
+        public long GenerationFailures
+        {
+            get { return generationFailures; }
+        }
+
+        /// <summary>
         /// Fills <paramref name="destination"/> (at least
         /// <see cref="RemeshNeighbourhoodSize"/> entries) with the 27 chunks in
         /// the Chebyshev-1 neighbourhood of <paramref name="changed"/> and
@@ -447,6 +457,14 @@ namespace Cubeglass.Unity.Rendering
                 NeighbourSnapshot neighbours = world.CreateNeighbourSnapshot(chunk);
                 MeshData meshData = mesher.Build(snapshot, neighbours, blocks);
                 pool.Upload(view, meshData);
+
+                // Register the view only after every step that can throw, and
+                // last of all: a throw anywhere above then leaves the view out
+                // of the map, so the catch can return it exactly once instead
+                // of leaking a pooled view (review M-2).
+                view.Coord = chunk;
+                view.GameObject.transform.localPosition = ConvertedChunkOrigin(chunk);
+                views.Add(chunk, view);
             }
             catch
             {
@@ -454,9 +472,6 @@ namespace Cubeglass.Unity.Rendering
                 throw;
             }
 
-            view.Coord = chunk;
-            view.GameObject.transform.localPosition = ConvertedChunkOrigin(chunk);
-            views.Add(chunk, view);
             dirtySet.Remove(chunk);
             uploadsThisFrame++;
             uploadedChunks++;
@@ -535,8 +550,9 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>
         /// Generates at most one deferred chunk for the current Unity frame and
-        /// reports it ready to the scheduler. Returns 1 when a chunk was
-        /// generated, 0 otherwise.
+        /// reports it ready to the scheduler. A generation failure also burns
+        /// the frame's attempt (one loud error per frame, never one per queued
+        /// chunk). Returns 1 when a chunk was generated, 0 otherwise.
         /// </summary>
         public int ProcessDeferredLoads()
         {
@@ -554,26 +570,49 @@ namespace Cubeglass.Unity.Rendering
                     continue;
                 }
 
-                Chunk generated = generator.Generate(chunk, seed);
-                world.LoadChunk(generated);
-
-                // Replay a stored delta before the chunk joins the manager's
-                // live set: HandleChunkChanged only dirties resident chunks, so
-                // a fresh boot's replay does not schedule a remesh for a chunk
-                // that has no view yet.
-                ApplyStoredDelta(chunk);
-
-                chunks.Add(chunk, generated);
-                worldChunks++;
-                generatedChunks++;
-                lastGenerateFrame = Time.frameCount;
-                CompactWorldIfNeeded();
-                if (scheduler != null)
+                try
                 {
-                    scheduler.NotifyMeshReady(chunk);
-                }
+                    Chunk generated = generator.Generate(chunk, seed);
+                    world.LoadChunk(generated);
 
-                return 1;
+                    // Replay a stored delta before the chunk joins the manager's
+                    // live set: HandleChunkChanged only dirties resident chunks, so
+                    // a fresh boot's replay does not schedule a remesh for a chunk
+                    // that has no view yet.
+                    ApplyStoredDelta(chunk);
+
+                    chunks.Add(chunk, generated);
+                    worldChunks++;
+                    generatedChunks++;
+                    lastGenerateFrame = Time.frameCount;
+                    CompactWorldIfNeeded();
+                    if (scheduler != null)
+                    {
+                        scheduler.NotifyMeshReady(chunk);
+                    }
+
+                    return 1;
+                }
+                catch (Exception exception)
+                {
+                    // One bad chunk must not kill the frame or stall every
+                    // other deferred load (review M-2). The chunk is dropped
+                    // with a loud error and stays a hole until the scheduler
+                    // reloads it. Returning here burns the frame's attempt
+                    // budget: a systemic generator fault must log at most one
+                    // error per frame instead of one per queued entry
+                    // (review R-3). (If the throw happened after
+                    // world.LoadChunk, the world keeps the generated chunk;
+                    // compaction drops it from the neighbour snapshot once it
+                    // is no longer live.)
+                    generationFailures++;
+                    lastGenerateFrame = Time.frameCount;
+                    Debug.LogError(
+                        "ChunkViewManager: generating chunk (" + chunk.X + ", " + chunk.Y + ", " + chunk.Z
+                        + ") failed: " + exception.Message
+                        + "; the chunk stays unloaded until the scheduler reloads it.");
+                    return 0;
+                }
             }
 
             return 0;
@@ -751,6 +790,7 @@ namespace Cubeglass.Unity.Rendering
             remeshedChunks = 0;
             worldChunks = 0;
             worldCompactions = 0;
+            generationFailures = 0;
             deltasLoaded = 0;
             deltaEditsApplied = 0;
             liveDeltasReapplied = 0;

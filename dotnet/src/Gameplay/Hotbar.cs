@@ -47,11 +47,13 @@ namespace Cubeglass.Gameplay
 
         /// <summary>
         /// Moves the selection by <paramref name="delta"/> slots, wrapping at
-        /// both ends. Zero keeps the selection.
+        /// both ends. Zero keeps the selection. The delta is folded before the
+        /// addition, so any <see cref="int"/> delta (including
+        /// <see cref="int.MaxValue"/>) is exact and cannot overflow.
         /// </summary>
         public void Cycle(int delta)
         {
-            _selectedIndex = WrapIndex(_selectedIndex + delta);
+            _selectedIndex = WrapIndex(WrapIndex(_selectedIndex) + WrapIndex(delta));
         }
 
         /// <summary>

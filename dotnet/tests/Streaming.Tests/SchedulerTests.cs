@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using Cubeglass.CoreMath;
 using Cubeglass.Voxel;
+using FsCheck;
+using FsCheck.Fluent;
+using Microsoft.FSharp.Core;
 using NUnit.Framework;
 
 namespace Cubeglass.Streaming.Tests
@@ -9,6 +12,8 @@ namespace Cubeglass.Streaming.Tests
     [TestFixture]
     public sealed class StreamingConfigTests
     {
+        private const ulong Seed = 20261004UL;
+
         [Test]
         public void DefaultsMatchTheBrief()
         {
@@ -20,6 +25,217 @@ namespace Cubeglass.Streaming.Tests
             Assert.That(config.MaxUnloadsPerFrame, Is.EqualTo(4));
             Assert.That(config.MaxMeshUploadsPerFrame, Is.EqualTo(4));
             Assert.That(config.VerticalRadiusChunks, Is.EqualTo(2f));
+        }
+
+        [TestCase(0)]
+        [TestCase(-1)]
+        [TestCase(StreamingConfig.MaxViewDistanceChunks + 1)]
+        [TestCase(int.MaxValue)]
+        public void ViewDistanceChunksRejectsOutOfRangeValues(int value)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new StreamingConfig { ViewDistanceChunks = value });
+        }
+
+        [TestCase(-1)]
+        [TestCase(StreamingConfig.MaxUnloadHysteresis + 1)]
+        [TestCase(int.MaxValue)]
+        public void UnloadHysteresisRejectsOutOfRangeValues(int value)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new StreamingConfig { UnloadHysteresis = value });
+        }
+
+        [TestCase(-1)]
+        [TestCase(StreamingConfig.MaxActionsPerFrame + 1)]
+        [TestCase(int.MaxValue)]
+        public void LoadBudgetRejectsOutOfRangeValues(int value)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new StreamingConfig { MaxLoadsPerFrame = value });
+        }
+
+        [TestCase(-1)]
+        [TestCase(StreamingConfig.MaxActionsPerFrame + 1)]
+        [TestCase(int.MaxValue)]
+        public void UnloadBudgetRejectsOutOfRangeValues(int value)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new StreamingConfig { MaxUnloadsPerFrame = value });
+        }
+
+        [TestCase(-1)]
+        [TestCase(StreamingConfig.MaxActionsPerFrame + 1)]
+        [TestCase(int.MaxValue)]
+        public void UploadBudgetRejectsOutOfRangeValues(int value)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new StreamingConfig { MaxMeshUploadsPerFrame = value });
+        }
+
+        [TestCase(-0.001f)]
+        [TestCase(float.NaN)]
+        [TestCase(float.PositiveInfinity)]
+        [TestCase(float.NegativeInfinity)]
+        [TestCase(StreamingConfig.MaxVerticalRadiusChunks + 0.5f)]
+        [TestCase(1e30f)]
+        public void VerticalRadiusRejectsOutOfRangeValues(float value)
+        {
+            Assert.Throws<ArgumentOutOfRangeException>(() => new StreamingConfig { VerticalRadiusChunks = value });
+        }
+
+        [Test]
+        public void BoundaryValuesAreAccepted()
+        {
+            var minimum = new StreamingConfig
+            {
+                ViewDistanceChunks = StreamingConfig.MinViewDistanceChunks,
+                UnloadHysteresis = 0,
+                MaxLoadsPerFrame = 0,
+                MaxUnloadsPerFrame = 0,
+                MaxMeshUploadsPerFrame = 0,
+                VerticalRadiusChunks = 0f,
+            };
+
+            Assert.That(minimum.ViewDistanceChunks, Is.EqualTo(1));
+            Assert.That(minimum.MaxUnloadsPerFrame, Is.Zero);
+
+            var maximum = new StreamingConfig
+            {
+                ViewDistanceChunks = StreamingConfig.MaxViewDistanceChunks,
+                UnloadHysteresis = StreamingConfig.MaxUnloadHysteresis,
+                MaxLoadsPerFrame = StreamingConfig.MaxActionsPerFrame,
+                MaxUnloadsPerFrame = StreamingConfig.MaxActionsPerFrame,
+                MaxMeshUploadsPerFrame = StreamingConfig.MaxActionsPerFrame,
+                VerticalRadiusChunks = StreamingConfig.MaxVerticalRadiusChunks,
+            };
+
+            Assert.That(maximum.UnloadHysteresis, Is.EqualTo(StreamingConfig.MaxUnloadHysteresis));
+            Assert.That(maximum.VerticalRadiusChunks, Is.EqualTo(StreamingConfig.MaxVerticalRadiusChunks));
+        }
+
+        [Test]
+        public void ConstructionAcceptsExactlyTheDocumentedRanges()
+        {
+            int accepted = 0;
+            int rejected = 0;
+            Property property = Prop.ForAll(
+                ConfigCaseArbitrary(),
+                (ConfigCase testCase) =>
+                {
+                    bool expected =
+                        testCase.View >= StreamingConfig.MinViewDistanceChunks
+                        && testCase.View <= StreamingConfig.MaxViewDistanceChunks
+                        && testCase.Hysteresis >= 0
+                        && testCase.Hysteresis <= StreamingConfig.MaxUnloadHysteresis
+                        && testCase.Load >= 0
+                        && testCase.Load <= StreamingConfig.MaxActionsPerFrame
+                        && testCase.Unload >= 0
+                        && testCase.Unload <= StreamingConfig.MaxActionsPerFrame
+                        && testCase.Upload >= 0
+                        && testCase.Upload <= StreamingConfig.MaxActionsPerFrame
+                        && float.IsFinite(testCase.Vertical)
+                        && testCase.Vertical >= 0f
+                        && testCase.Vertical <= StreamingConfig.MaxVerticalRadiusChunks;
+
+                    try
+                    {
+                        var config = new StreamingConfig
+                        {
+                            ViewDistanceChunks = testCase.View,
+                            UnloadHysteresis = testCase.Hysteresis,
+                            MaxLoadsPerFrame = testCase.Load,
+                            MaxUnloadsPerFrame = testCase.Unload,
+                            MaxMeshUploadsPerFrame = testCase.Upload,
+                            VerticalRadiusChunks = testCase.Vertical,
+                        };
+
+                        accepted++;
+                        return expected
+                            && config.ViewDistanceChunks == testCase.View
+                            && config.UnloadHysteresis == testCase.Hysteresis
+                            && config.MaxLoadsPerFrame == testCase.Load
+                            && config.MaxUnloadsPerFrame == testCase.Unload
+                            && config.MaxMeshUploadsPerFrame == testCase.Upload
+                            && config.VerticalRadiusChunks == testCase.Vertical;
+                    }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        rejected++;
+                        return !expected;
+                    }
+                });
+
+            Check.One("config construction ranges", DeterministicConfig(), property);
+            Assert.That(accepted, Is.GreaterThan(0), "the property never constructed a sane config");
+            Assert.That(rejected, Is.GreaterThan(0), "the property never rejected an insane config");
+        }
+
+        private static Arbitrary<ConfigCase> ConfigCaseArbitrary()
+        {
+            return Arb.From(
+                from view in Gen.Choose(-8, StreamingConfig.MaxViewDistanceChunks + 8)
+                from hysteresis in Gen.Choose(-8, StreamingConfig.MaxUnloadHysteresis + 8)
+                from load in Gen.Choose(-8, StreamingConfig.MaxActionsPerFrame + 8)
+                from unload in Gen.Choose(-8, StreamingConfig.MaxActionsPerFrame + 8)
+                from upload in Gen.Choose(-8, StreamingConfig.MaxActionsPerFrame + 8)
+                from vertical in Gen.Choose(0, 16)
+                select new ConfigCase(view, hysteresis, load, unload, upload, VerticalValue(vertical)));
+        }
+
+        private static float VerticalValue(int selector)
+        {
+            switch (selector)
+            {
+                case 0:
+                    return float.NaN;
+                case 1:
+                    return float.PositiveInfinity;
+                case 2:
+                    return float.NegativeInfinity;
+                case 3:
+                    return -0.5f;
+                case 4:
+                    return 0f;
+                case 5:
+                    return 2f;
+                case 6:
+                    return StreamingConfig.MaxVerticalRadiusChunks;
+                case 7:
+                    return StreamingConfig.MaxVerticalRadiusChunks + 0.5f;
+                case 8:
+                    return 1e30f;
+                default:
+                    return selector;
+            }
+        }
+
+        private static Config DeterministicConfig()
+        {
+            Replay replay = new Replay(new Rnd(Seed), FSharpOption<int>.None);
+            return Config.QuickThrowOnFailure
+                .WithMaxTest(500)
+                .WithReplay(FSharpOption<Replay>.Some(replay));
+        }
+
+        private readonly struct ConfigCase
+        {
+            internal ConfigCase(int view, int hysteresis, int load, int unload, int upload, float vertical)
+            {
+                View = view;
+                Hysteresis = hysteresis;
+                Load = load;
+                Unload = unload;
+                Upload = upload;
+                Vertical = vertical;
+            }
+
+            internal int View { get; }
+
+            internal int Hysteresis { get; }
+
+            internal int Load { get; }
+
+            internal int Unload { get; }
+
+            internal int Upload { get; }
+
+            internal float Vertical { get; }
         }
     }
 
@@ -115,10 +331,10 @@ namespace Cubeglass.Streaming.Tests
         }
 
         [Test]
-        public void NonPositiveBudgetsEmitNothing()
+        public void ZeroBudgetsEmitNothing()
         {
             var scheduler = new ChunkStreamingScheduler(
-                Config(view: 1, vertical: 0, hysteresis: 0, loadBudget: 0, unloadBudget: -1, uploadBudget: 0),
+                Config(view: 1, vertical: 0, hysteresis: 0, loadBudget: 0, unloadBudget: 0, uploadBudget: 0),
                 12L);
 
             Assert.That(RunFrame(scheduler, Center(0, 0, 0)).Count, Is.Zero);
@@ -266,11 +482,11 @@ namespace Cubeglass.Streaming.Tests
         public void VerticalRadiusLimitsTheDesiredBoxAndAppliesHysteresis()
         {
             var scheduler = new ChunkStreamingScheduler(
-                Config(view: 0, vertical: 1, hysteresis: 1, loadBudget: 100, unloadBudget: 100),
+                Config(view: 1, vertical: 1, hysteresis: 1, loadBudget: 100, unloadBudget: 100),
                 7L);
             RunFrame(scheduler, Center(0, 0, 0));
 
-            Assert.That(scheduler.LoadedCount, Is.EqualTo(3));
+            Assert.That(scheduler.LoadedCount, Is.EqualTo(27));
             Assert.That(scheduler.IsLoaded(new ChunkCoord(0, 1, 0)), Is.True);
             Assert.That(scheduler.IsLoaded(new ChunkCoord(0, -1, 0)), Is.True);
             Assert.That(scheduler.IsLoaded(new ChunkCoord(0, 2, 0)), Is.False, "dy = 2 is outside the vertical radius");
@@ -281,7 +497,65 @@ namespace Cubeglass.Streaming.Tests
             Assert.That(scheduler.IsLoaded(new ChunkCoord(0, 4, 0)), Is.True);
             Assert.That(scheduler.IsLoaded(new ChunkCoord(0, 0, 0)), Is.False, "dy = -3 is beyond radius + hysteresis");
             Assert.That(scheduler.IsLoaded(new ChunkCoord(0, -1, 0)), Is.False, "dy = -4 is beyond radius + hysteresis");
-            Assert.That(scheduler.LoadedCount, Is.EqualTo(4));
+            Assert.That(scheduler.LoadedCount, Is.EqualTo(36));
+        }
+
+        [Test]
+        public void NonFinitePlayerPositionMapsToTheOriginChunk()
+        {
+            Assert.That(FirstLoad(new Vec3(double.NaN, 8, double.NaN)), Is.EqualTo(new ChunkCoord(0, 0, 0)));
+        }
+
+        [Test]
+        public void ExtremePlayerPositionClampsToTheRepresentableChunkRange()
+        {
+            Assert.That(
+                FirstLoad(new Vec3(double.PositiveInfinity, 8, 8)),
+                Is.EqualTo(new ChunkCoord(134_217_727, 0, 0)));
+            Assert.That(
+                FirstLoad(new Vec3(double.NegativeInfinity, 8, 8)),
+                Is.EqualTo(new ChunkCoord(-134_217_728, 0, 0)));
+        }
+
+        [Test]
+        public void ExtremePlayerPositionDoesNotWrapDesiredChunks()
+        {
+            var scheduler = new ChunkStreamingScheduler(
+                Config(view: 1, vertical: 0, hysteresis: 0, loadBudget: 100, unloadBudget: 100),
+                21L);
+
+            List<StreamingAction> actions = RunFrame(scheduler, new Vec3(1e12, 8, 8));
+
+            Assert.That(actions.Count, Is.EqualTo(6), "the desired box is clipped at the last representable chunk");
+            Assert.That(scheduler.DesiredCount, Is.EqualTo(6));
+            Assert.That(scheduler.IsLoaded(new ChunkCoord(134_217_727, 0, 0)), Is.True);
+            for (int i = 0; i < actions.Count; i++)
+            {
+                Assert.That(actions[i].Chunk.X, Is.GreaterThanOrEqualTo(-134_217_728));
+                Assert.That(actions[i].Chunk.X, Is.LessThanOrEqualTo(134_217_727), "no wrapped chunk may be desired");
+            }
+        }
+
+        [Test]
+        public void UploadPriorityDoesNotOverflowForExtremeLoadedChunks()
+        {
+            var scheduler = new ChunkStreamingScheduler(
+                Config(view: 1, vertical: 0, hysteresis: 0, loadBudget: 0, unloadBudget: 0, uploadBudget: 1),
+                22L);
+            var near = new ChunkCoord(int.MaxValue - 1, 0, 0);
+            var far = new ChunkCoord(int.MaxValue, int.MaxValue, int.MaxValue);
+            scheduler.NotifyLoaded(near);
+            scheduler.NotifyLoaded(far);
+            scheduler.NotifyMeshReady(near);
+            scheduler.NotifyMeshReady(far);
+
+            List<StreamingAction> actions = RunFrame(scheduler, Center(0, 0, 0));
+
+            Assert.That(actions.Count, Is.EqualTo(1));
+            Assert.That(
+                actions[0],
+                Is.EqualTo(Action(StreamingActionKind.Upload, int.MaxValue - 1, 0, 0)),
+                "the squared distances must not overflow to a negative long");
         }
 
         [Test]
@@ -355,7 +629,7 @@ namespace Cubeglass.Streaming.Tests
         public void ARejectedUploadStaysPendingAndStopsFurtherUploads()
         {
             var scheduler = new ChunkStreamingScheduler(
-                Config(view: 0, vertical: 0, hysteresis: 5, loadBudget: 100, uploadBudget: 4),
+                Config(view: 1, vertical: 0, hysteresis: 5, loadBudget: 0, uploadBudget: 4),
                 10L);
             var origin = new ChunkCoord(0, 0, 0);
             var neighbour = new ChunkCoord(1, 0, 0);
@@ -420,7 +694,7 @@ namespace Cubeglass.Streaming.Tests
         private static ChunkCoord FirstLoad(Vec3 position)
         {
             var scheduler = new ChunkStreamingScheduler(
-                Config(view: 0, vertical: 0, hysteresis: 0, loadBudget: 1),
+                Config(view: 1, vertical: 0, hysteresis: 0, loadBudget: 1),
                 1L);
             List<StreamingAction> actions = RunFrame(scheduler, position);
 
