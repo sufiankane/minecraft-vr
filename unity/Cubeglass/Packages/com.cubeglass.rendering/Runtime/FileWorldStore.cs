@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Cubeglass.Voxel;
@@ -60,13 +61,17 @@ namespace Cubeglass.Unity.Rendering
     /// <b>Writes never block the caller.</b> <see cref="SaveAsync"/> serialises
     /// the delta synchronously (cheap: one RLE pass over 4096 cells) and then
     /// enqueues the bytes. A single background pump writes one payload at a
-    /// time: it writes a per-chunk temp file and then
-    /// <see cref="File.Replace(string, string, string)"/>s or moves it over the
-    /// destination, so a reader always sees either the old or the new complete
-    /// file, never a partial one. The pump is one queue, so a repeated save of
-    /// the same chunk can never interleave with itself (last write wins), and a
-    /// save enqueued while an older payload of the same chunk is still queued
-    /// replaces it instead of duplicating the IO.
+    /// time: it writes and flushes (<c>FileStream.Flush(true)</c>, so the bytes
+    /// reach stable storage before the swap) a per-chunk temp file and then
+    /// atomically swaps it over the destination with the platform's
+    /// overwriting rename (I-2). The destination is never deleted first, so a
+    /// reader always sees either the old or the new complete file and can
+    /// never observe the path missing; if the rename cannot be applied (for
+    /// example a reader holds the file), the write is reported failed and the
+    /// previous file stays in place. The pump is one queue, so a repeated save
+    /// of the same chunk can never interleave with itself (last write wins),
+    /// and a save enqueued while an older payload of the same chunk is still
+    /// queued replaces it instead of duplicating the IO.
     /// </para>
     /// <para>
     /// <b>Reads.</b> <see cref="LoadAsync"/> is synchronous small-file IO on
@@ -117,6 +122,16 @@ namespace Cubeglass.Unity.Rendering
         private long failedLoads;
         private int tempCounter;
         private bool disposed;
+
+        /// <summary>
+        /// Test seam: when set, the pump calls this instead of the platform's
+        /// atomic swap. Returning false forces the swap-failure path
+        /// deterministically: the write is reported failed and the previous
+        /// complete file must be left untouched (I-2). The override must
+        /// perform a swap or leave the destination untouched; the store owns
+        /// the temp file. Process-wide; callers must clear it.
+        /// </summary>
+        public static Func<string, string, bool> SwapAttemptForTests { get; set; }
 
         /// <summary>Creates a store for <paramref name="worldName"/> under the default root.</summary>
         public FileWorldStore(string worldName)
@@ -284,7 +299,7 @@ namespace Cubeglass.Unity.Rendering
                     return new ValueTask<ChunkDelta>((ChunkDelta)null);
                 }
 
-                bytes = File.ReadAllBytes(path);
+                bytes = ReadFileAllowingReplace(path);
             }
             catch (Exception exception)
             {
@@ -491,23 +506,27 @@ namespace Cubeglass.Unity.Rendering
                     Thread.Sleep(WriteDelay);
                 }
 
-                File.WriteAllBytes(temp, write.Bytes);
+                using (var stream = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    stream.Write(write.Bytes, 0, write.Bytes.Length);
+                    // Flush(true) pushes the temp file's bytes through the OS
+                    // write cache to stable storage before it replaces the
+                    // destination, so a crash between write and swap cannot
+                    // leave the destination pointing at unflushed data (I-2).
+                    stream.Flush(true);
+                }
+
                 if (File.Exists(path))
                 {
-                    try
+                    if (!TryAtomicSwap(temp, path))
                     {
-                        File.Replace(temp, path, null);
-                    }
-                    catch (Exception exception) when (
-                        exception is FileNotFoundException
-                        || exception is IOException
-                        || exception is PlatformNotSupportedException)
-                    {
-                        // File.Replace can fail on file systems without replace
-                        // support or because the destination vanished; delete
-                        // the old file and move the complete temp into place.
-                        File.Delete(path);
-                        File.Move(temp, path);
+                        // Never delete the destination first: refusing the
+                        // swap (for example a reader holds the delta) fails
+                        // this write and leaves the previous complete file in
+                        // place, so a concurrent LoadAsync can never observe a
+                        // missing path (I-2).
+                        throw new IOException(
+                            "could not atomically replace '" + path + "'; the previous save is kept.");
                     }
                 }
                 else
@@ -595,6 +614,115 @@ namespace Cubeglass.Unity.Rendering
             return failures > int.MaxValue ? int.MaxValue : (int)failures;
         }
 
+        /// <summary>
+        /// Reads the whole delta file while allowing a concurrent atomic swap:
+        /// the handle shares read, write and delete, so the pump's
+        /// <see cref="File.Replace(string, string, string)"/> or overwriting
+        /// move can replace the directory entry while this read keeps the old
+        /// contents it already opened (I-2). Writers never modify a delta in
+        /// place, so the bytes read are always one complete version.
+        /// </summary>
+        private static byte[] ReadFileAllowingReplace(string path)
+        {
+            using (var stream = new FileStream(
+                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                long length = stream.Length;
+                if (length > int.MaxValue - 1L)
+                {
+                    throw new IOException("delta file is too large: " + length + " bytes");
+                }
+
+                var bytes = new byte[(int)length];
+                int offset = 0;
+                while (offset < bytes.Length)
+                {
+                    int read = stream.Read(bytes, offset, bytes.Length - offset);
+                    if (read <= 0)
+                    {
+                        throw new IOException("delta file ended before its recorded length");
+                    }
+
+                    offset += read;
+                }
+
+                return bytes;
+            }
+        }
+
+        /// <summary>
+        /// Atomically swaps the flushed <paramref name="temp"/> over an
+        /// existing <paramref name="path"/> on the same volume. Unity's .NET
+        /// Standard 2.1 profile does not expose
+        /// <c>File.Move(source, destination, overwrite)</c> (a .NET Core 3.0
+        /// API), so this uses the platform's overwriting rename:
+        /// <c>MoveFileExW</c> with <c>MOVEFILE_REPLACE_EXISTING</c> on Windows
+        /// (retried briefly, because the kernel refuses it while any handle
+        /// holds the destination) and
+        /// <see cref="File.Replace(string, string, string)"/> elsewhere.
+        /// Unlike the old delete-then-move, the destination is never removed.
+        /// <para>
+        /// <see cref="File.Replace(string, string, string)"/> must not be used
+        /// on Windows for this: it was measured to expose a window where the
+        /// destination name does not exist and to fail mid-swap under
+        /// concurrent readers, so a write that cannot complete the atomic
+        /// rename is reported failed with the previous file still in place
+        /// (I-2).
+        /// </para>
+        /// </summary>
+        private static bool TryAtomicSwap(string temp, string path)
+        {
+            Func<string, string, bool> swapOverride = SwapAttemptForTests;
+            if (swapOverride != null)
+            {
+                return swapOverride(temp, path);
+            }
+
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            const uint ReplaceExisting = 0x1;
+            const uint WriteThrough = 0x8;
+            const int Attempts = 3;
+            for (int attempt = 0; attempt < Attempts; attempt++)
+            {
+                if (MoveFileEx(temp, path, ReplaceExisting | WriteThrough))
+                {
+                    return true;
+                }
+
+                // 5 = access denied, 32 = sharing violation: a reader holds
+                // the destination right now; a very short wait usually lets
+                // the rename through, then the caller reports the failure.
+                int error = Marshal.GetLastWin32Error();
+                if (error != 5 && error != 32)
+                {
+                    return false;
+                }
+
+                Thread.Sleep(1);
+            }
+
+            return false;
+#else
+            try
+            {
+                File.Replace(temp, path, null);
+                return true;
+            }
+            catch (Exception exception) when (
+                exception is FileNotFoundException
+                || exception is IOException
+                || exception is PlatformNotSupportedException)
+            {
+                return false;
+            }
+#endif
+        }
+
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool MoveFileEx(string existingFileName, string newFileName, uint flags);
+#endif
+
         private static void DeleteBestEffort(string path)
         {
             try
@@ -627,8 +755,45 @@ namespace Cubeglass.Unity.Rendering
                     nameof(worldName));
             }
 
+            // Windows strips trailing dots and spaces from directory names, so
+            // "alpha." and "alpha " would alias "alpha" (or fail to open):
+            // reject them instead of silently writing a different directory
+            // (review M-11).
+            char last = worldName[worldName.Length - 1];
+            if (last == '.' || last == ' ')
+            {
+                throw new ArgumentException(
+                    "A world name must not end with a dot or a space.",
+                    nameof(worldName));
+            }
+
+            // Reserved device names are unusable as directory names even with
+            // an extension ("CON.txt"); compare the stem case-insensitively
+            // because the Windows file system is case-insensitive (M-11).
+            string stem = worldName;
+            int dot = stem.IndexOf('.');
+            if (dot >= 0)
+            {
+                stem = stem.Substring(0, dot);
+            }
+
+            if (ReservedDeviceNames.Contains(stem.TrimEnd(' ')))
+            {
+                throw new ArgumentException(
+                    "A world name must not be a reserved Windows device name (CON, PRN, AUX, NUL, COM0-9, LPT0-9).",
+                    nameof(worldName));
+            }
+
             return worldName;
         }
+
+        private static readonly HashSet<string> ReservedDeviceNames =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "CON", "PRN", "AUX", "NUL",
+                "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+                "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            };
 
         private sealed class PendingWrite
         {
