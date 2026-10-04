@@ -31,7 +31,12 @@ namespace Cubeglass.Unity.Rendering
     /// up to <see cref="FlushWaitMilliseconds"/> (default 2000 ms, documented
     /// and bounded because the process may not survive longer) for the writer
     /// queue to drain. On timeout the remaining writes are abandoned,
-    /// <see cref="TimedOutFlushes"/> increments and a warning is logged.
+    /// <see cref="TimedOutFlushes"/> increments and a warning is logged. When
+    /// the drain finishes but writes failed, <see cref="FailedFlushes"/>
+    /// increments and the failure is logged as an error — a failed write is
+    /// never reported as a clean flush (the store's
+    /// <see cref="FileWorldStore.FlushAsync"/> returns a
+    /// <see cref="FlushResult"/> carrying the failure count).
     /// </para>
     /// <para>
     /// <b>Memory.</b> A chunk's edit map is retained after a flush so the next
@@ -132,6 +137,9 @@ namespace Cubeglass.Unity.Rendering
         /// <summary>Times a bounded <see cref="Flush"/> wait expired with writes still queued.</summary>
         public long TimedOutFlushes { get; private set; }
 
+        /// <summary>Times a completed drain reported at least one failed write.</summary>
+        public long FailedFlushes { get; private set; }
+
         /// <summary>Calls to <see cref="Flush"/> or <see cref="FlushAsync"/> since scene start.</summary>
         public long FlushCalls { get; private set; }
 
@@ -215,33 +223,51 @@ namespace Cubeglass.Unity.Rendering
         /// <see cref="FlushWaitMilliseconds"/> for the writer queue to drain.
         /// This is the path <see cref="OnApplicationQuit"/> and
         /// <see cref="OnApplicationPause"/> use. Returns the number of chunks
-        /// queued.
+        /// queued. A completed drain with failed writes is logged loudly as an
+        /// error and counted in <see cref="FailedFlushes"/>.
         /// </summary>
         public int Flush()
         {
             FlushCalls++;
             int flushed = FlushDirtyChunks();
-            if (store != null
-                && !store.WaitForPendingWrites(TimeSpan.FromMilliseconds(FlushWaitMilliseconds)))
+            if (store == null)
+            {
+                return flushed;
+            }
+
+            FlushResult result = store.WaitForPendingWrites(TimeSpan.FromMilliseconds(FlushWaitMilliseconds));
+            if (!result.Completed)
             {
                 TimedOutFlushes++;
                 Debug.LogWarning(
                     "[SaveBatches] quit flush timed out after " + FlushWaitMilliseconds
                         + " ms; " + store.QueuedWrites + " write(s) may be lost.");
             }
+            else if (result.FailedWrites > 0)
+            {
+                FailedFlushes++;
+                Debug.LogError(
+                    "[SaveBatches] " + result.FailedWrites
+                        + " write(s) failed during the quit flush; those edits were not persisted.");
+            }
 
             return flushed;
         }
 
         /// <summary>
-        /// Flushes every dirty chunk and completes when the writer queue has
-        /// drained; used by tests and by any caller that can await.
+        /// Flushes every dirty chunk and completes with the store's
+        /// <see cref="FlushResult"/> when the writer queue has drained; used by
+        /// tests and by any caller that can await. The result's
+        /// <see cref="FlushResult.FailedWrites"/> surfaces write failures
+        /// instead of reporting a clean flush.
         /// </summary>
-        public Task FlushAsync()
+        public Task<FlushResult> FlushAsync()
         {
             FlushCalls++;
             FlushDirtyChunks();
-            return store != null ? store.FlushAsync() : Task.CompletedTask;
+            return store != null
+                ? store.FlushAsync()
+                : Task.FromResult(new FlushResult(true, 0));
         }
 
         /// <summary>
