@@ -40,13 +40,22 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - name: Toolchain versions
+      - name: Toolchain versions (pinned clang assertions)
+        # TD-037: the format/tidy gates must run the documented LLVM, not
+        # whatever the runner image happens to ship. Fail with an actionable
+        # message before any source is checked.
         run: |
           $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $expected = '23.1.2'
           cmake --version
           ninja --version
-          clang-format --version
-          clang-tidy --version
+          foreach ($tool in @('clang-format', 'clang-tidy')) {
+            $line = (& $tool --version | Select-Object -First 1)
+            Write-Host "$line"
+            if ($line -notmatch [regex]::Escape($expected)) {
+              throw "$tool is not LLVM $expected (got: $line). Install the pinned toolchain (winget install --id LLVM.LLVM --version $expected --exact --accept-source-agreements --accept-package-agreements) or bump the pin in .github/workflows/ci.yml and docs/toolchains.md together (TD-037)."
+            }
+          }
 
       - name: Configure
         run: cmake --preset windows-msvc
@@ -82,8 +91,7 @@ jobs:
           # excluded: those headers are dossier-verbatim.
           $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
           if ($files.Count -eq 0) {
-            Write-Host "No C++ sources to check"
-            exit 0
+            throw "clang-format selector found no C++ files under cpp/; the format gate would pass vacuously (TD-063)."
           }
           clang-format --dry-run --Werror $files
 
@@ -96,8 +104,7 @@ jobs:
           $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
           $files = @(git ls-files core-math/src | Where-Object { $_ -match '\.cpp$' })
           if ($files.Count -eq 0) {
-            Write-Host "No module sources to lint"
-            exit 0
+            throw "clang-tidy selector found no core-math sources; the tidy gate would pass vacuously (TD-063)."
           }
           clang-tidy -p build/windows-msvc $files
 
@@ -140,9 +147,13 @@ jobs:
 
       - name: Lower ASLR entropy for TSan
         # GCC's TSan runtime cannot map its shadow memory when vm.mmap_rnd_bits
-        # is 32, the Ubuntu runner default; 28 is the documented value. R33:
-        # TSan runs inside this job so branch protection keeps its six checks.
-        run: sudo sysctl vm.mmap_rnd_bits=28
+        # is 32, the Ubuntu runner default; 28 is the documented value. The
+        # previous value is captured so the reduction is job-scoped: a later
+        # step restores it even when the TSan test fails (TD-066).
+        run: |
+          before=$(sysctl -n vm.mmap_rnd_bits)
+          echo "CG_MMAP_RND_BITS_BEFORE=$before" >> "$GITHUB_ENV"
+          sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Configure (TSan)
         run: cmake --preset linux-tsan
@@ -155,6 +166,17 @@ jobs:
       - name: Test (TSan)
         run: ctest --preset linux-tsan --output-on-failure
         working-directory: cpp
+
+      - name: Restore ASLR entropy
+        # TD-066: the reduced-ASLR window is job-scoped. `if: always()` also
+        # restores when the TSan test failed or was cancelled midway.
+        if: always()
+        run: |
+          if [ -n "${CG_MMAP_RND_BITS_BEFORE:-}" ]; then
+            sudo sysctl "vm.mmap_rnd_bits=${CG_MMAP_RND_BITS_BEFORE}"
+          else
+            echo "ASLR entropy was not lowered in this job; nothing to restore."
+          fi
 
       # CXX-03: the sanitizer lanes above run Debug builds; this Release
       # (NDEBUG, no sanitizers) lane exercises the shipped code paths. It stays
@@ -177,7 +199,7 @@ jobs:
 
       - name: Install coverage tooling
         run: |
-          python -m pip install -r python/requirements-ci.txt
+          python -m pip install --require-hashes -r python/requirements-ci.txt
           python -m pip install -e python
 
       - name: Configure (coverage)
@@ -259,54 +281,22 @@ jobs:
           --results-directory ./coverage/streaming
 
       - name: Enforce CoreMath coverage floor
-        run: |
-          report=$(find coverage/coremath -name 'coverage.cobertura.xml' | head -n 1)
-          test -n "$report" || {
-            echo "ERROR: no coverage.cobertura.xml was found under coverage/coremath" >&2
-            exit 1
-          }
-          echo "Enforcing floor against ${report}"
-          python -m depcheck coverage --report "$report" --module Cubeglass.CoreMath --floor 95
+        # The report directory contains exactly one coverage.cobertura.xml; the
+        # depcheck resolver fails on zero or several candidates instead of
+        # silently picking the first (TD-032).
+        run: python -m depcheck coverage --report coverage/coremath --module Cubeglass.CoreMath --floor 95
 
       - name: Enforce Voxel coverage floor
-        run: |
-          report=$(find coverage/voxel -name 'coverage.cobertura.xml' | head -n 1)
-          test -n "$report" || {
-            echo "ERROR: no coverage.cobertura.xml was found under coverage/voxel" >&2
-            exit 1
-          }
-          echo "Enforcing floor against ${report}"
-          python -m depcheck coverage --report "$report" --module Cubeglass.Voxel --floor 90
+        run: python -m depcheck coverage --report coverage/voxel --module Cubeglass.Voxel --floor 90
 
       - name: Enforce Mesh coverage floor
-        run: |
-          report=$(find coverage/mesh -name 'coverage.cobertura.xml' | head -n 1)
-          test -n "$report" || {
-            echo "ERROR: no coverage.cobertura.xml was found under coverage/mesh" >&2
-            exit 1
-          }
-          echo "Enforcing floor against ${report}"
-          python -m depcheck coverage --report "$report" --module Cubeglass.Mesh --floor 90
+        run: python -m depcheck coverage --report coverage/mesh --module Cubeglass.Mesh --floor 90
 
       - name: Enforce Gameplay coverage floor
-        run: |
-          report=$(find coverage/gameplay -name 'coverage.cobertura.xml' | head -n 1)
-          test -n "$report" || {
-            echo "ERROR: no coverage.cobertura.xml was found under coverage/gameplay" >&2
-            exit 1
-          }
-          echo "Enforcing floor against ${report}"
-          python -m depcheck coverage --report "$report" --module Cubeglass.Gameplay --floor 90
+        run: python -m depcheck coverage --report coverage/gameplay --module Cubeglass.Gameplay --floor 90
 
       - name: Enforce Streaming coverage floor
-        run: |
-          report=$(find coverage/streaming -name 'coverage.cobertura.xml' | head -n 1)
-          test -n "$report" || {
-            echo "ERROR: no coverage.cobertura.xml was found under coverage/streaming" >&2
-            exit 1
-          }
-          echo "Enforcing floor against ${report}"
-          python -m depcheck coverage --report "$report" --module Cubeglass.Streaming --floor 90
+        run: python -m depcheck coverage --report coverage/streaming --module Cubeglass.Streaming --floor 90
 
   python:
     name: python
@@ -326,7 +316,7 @@ jobs:
         run: python --version
 
       - name: Install development requirements
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install --require-hashes -r requirements-dev.txt
 
       - name: Install the package (editable)
         run: python -m pip install -e .
@@ -355,6 +345,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so `git merge-base origin/<base> HEAD` exists for the
+          # version-bump check below (TD-049).
+          fetch-depth: 0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -362,14 +356,27 @@ jobs:
 
       - name: Install tooling
         run: |
-          python -m pip install -r python/requirements-dev.txt
+          python -m pip install --require-hashes -r python/requirements-dev.txt
           python -m pip install -e python
+
+      - name: Fetch the pull-request base for the version-bump check
+        if: github.event_name == 'pull_request'
+        run: git fetch --no-tags origin "${{ github.base_ref }}"
 
       - name: Enforce dependency rules and layers.json completeness
         run: python -m depcheck --root .
 
       - name: Enforce the contract-compatibility gate
+        # TD-049: on a PR the gate also compares against the base branch's
+        # merge-base baseline, so editing a contract constant and the baseline
+        # without bumping CG_ABI_VERSION is flagged. On push the ref is empty
+        # and the local (review-enforced) path runs.
+        env:
+          CG_CONTRACT_BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
         run: python -m depcheck contracts --root .
+
+      - name: Cross-check the golden transform fixture
+        run: python -m depcheck golden --root .
 
   licences:
     name: licences
@@ -384,7 +391,7 @@ jobs:
 
       - name: Install tooling
         run: |
-          python -m pip install -r python/requirements-dev.txt
+          python -m pip install --require-hashes -r python/requirements-dev.txt
           python -m pip install -e python
 
       - name: Enforce licence allowlist

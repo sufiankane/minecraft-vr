@@ -22,8 +22,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install clang-format
-        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install the pinned clang-format
+        # TD-037: the wheel is pinned (and hash-pinned) in requirements-ci.txt,
+        # so this job runs the same LLVM 23.1.2 as the cpp-windows format gate.
+        run: python -m pip install --require-hashes -r python/requirements-ci.txt
+
+      - name: Assert the pinned clang-format version
+        run: |
+          version=$(clang-format --version)
+          echo "$version"
+          if ! echo "$version" | grep -q "23.1.2"; then
+            echo "::error::clang-format is not the pinned 23.1.2 (got: $version); bump python/requirements-ci.txt and docs/toolchains.md together."
+            exit 1
+          fi
 
       - name: clang-format must reject the mis-formatted fixture
         run: |
@@ -54,7 +69,7 @@ jobs:
           python-version: "3.14"
 
       - name: Install tooling
-        run: python -m pip install -r python/requirements-dev.txt
+        run: python -m pip install --require-hashes -r python/requirements-dev.txt
 
       - name: pytest must reject the failing fixture
         run: |
@@ -86,7 +101,7 @@ jobs:
 
       - name: Install tooling
         run: |
-          python -m pip install -r python/requirements-dev.txt
+          python -m pip install --require-hashes -r python/requirements-dev.txt
           python -m pip install -e python
 
       - name: depcheck must reject the forbidden include fixture
@@ -105,3 +120,158 @@ jobs:
             exit 1
           fi
           echo "OK: depcheck rejected the fixture (exit $status) with the expected diagnostic."
+
+  expect-red-contracts:
+    name: expect-red-contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: python -m pip install -e python
+
+      - name: depcheck contracts must reject the drifted fixture
+        # The fixture carries the real contract files with one extra define in
+        # cg_types.h, so the failure must be the hardcoded KNOWN_FINGERPRINTS
+        # anchor, not a missing file or a missing baseline.
+        run: |
+          set +e
+          output=$(python -m depcheck contracts --root scripts/negative/contracts-root 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::depcheck contracts accepted a drifted contract file; the contract gate is not enforcing."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "KNOWN_FINGERPRINTS"; then
+            echo "::error::depcheck contracts exited $status but named no KNOWN_FINGERPRINTS anchor; this is a fixture/config error, not a rejection of the drift."
+            exit 1
+          fi
+          echo "OK: the contract gate rejected the drift (exit $status) against the code anchor."
+
+  expect-red-licences:
+    name: expect-red-licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: python -m pip install -e python
+
+      - name: depcheck licences must reject the undeclared package and the bogus SPDX id
+        run: |
+          set +e
+          output=$(python -m depcheck licences --root scripts/negative/licences-root 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::depcheck licences accepted a package outside the allowlist; the licence gate is not enforcing."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "ghost-package"; then
+            echo "::error::depcheck licences exited $status but named no undeclared package; this is a fixture/config error."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "unknown SPDX licence id"; then
+            echo "::error::depcheck licences exited $status but flagged no bogus SPDX id; this is a fixture/config error."
+            exit 1
+          fi
+          echo "OK: the licence gate rejected the fixture (exit $status) with both expected diagnostics."
+
+  expect-red-coverage:
+    name: expect-red-coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: python -m pip install -e python
+
+      - name: depcheck coverage must reject the below-floor fixture
+        run: |
+          set +e
+          output=$(python -m depcheck coverage --report scripts/negative/fixtures/coverage-below.xml --module core-math --floor 90 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::depcheck coverage accepted a module at 50% against a 90% floor; the coverage gate is not enforcing."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "observed 50.00%"; then
+            echo "::error::depcheck coverage exited $status but reported no 50.00% observation; this is a tool/config error."
+            exit 1
+          fi
+          echo "OK: the coverage gate rejected the below-floor fixture (exit $status)."
+
+      - name: depcheck coverage must reject the zero-line module (TD-032)
+        run: |
+          set +e
+          output=$(python -m depcheck coverage --report scripts/negative/fixtures/coverage-zero-lines.xml --module Cubeglass.Voxel --floor 90 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::depcheck coverage passed a matched module with zero coverable lines at 100%; TD-032 regressed."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "0 coverable lines"; then
+            echo "::error::depcheck coverage exited $status but named no zero-line module; this is a tool/config error."
+            exit 1
+          fi
+          echo "OK: the coverage gate rejected the zero-line fixture (exit $status)."
+
+  expect-red-benchregress:
+    name: expect-red-benchregress
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: python -m pip install -e python
+
+      - name: depcheck benchregress must reject the 30% regression and name the benchmark
+        run: |
+          set +e
+          output=$(python -m depcheck benchregress \
+            --baseline-from scripts/negative/fixtures/bench-baseline.json \
+            --format google --prefix cpp \
+            --current scripts/negative/fixtures/bench-current.json 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "::error::depcheck benchregress accepted a 30% regression against a 10% threshold; the regression gate is not enforcing."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "cpp/BM_A"; then
+            echo "::error::depcheck benchregress exited $status but named no benchmark; the gate must name the offender."
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "+30.0%"; then
+            echo "::error::depcheck benchregress exited $status but reported no 30.0% regression; this is a tool/config error."
+            exit 1
+          fi
+          echo "OK: the regression gate rejected the fixture (exit $status) naming cpp/BM_A."

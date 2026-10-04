@@ -1,0 +1,5 @@
+{
+  "benchmarks": [
+    { "name": "BM_A", "real_time": 130.0, "time_unit": "ns" }
+  ]
+}
