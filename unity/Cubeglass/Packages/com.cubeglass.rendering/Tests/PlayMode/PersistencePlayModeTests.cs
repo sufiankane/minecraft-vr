@@ -342,6 +342,63 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [UnityTest]
+        public IEnumerator FailedWriteSurfacesANonSuccessFlushAndKeepsThePreviousFile()
+        {
+            var coord = new ChunkCoord(0, 0, 0);
+            store.SaveAsync(coord, DeltaFor(coord, new Int3(1, 2, 3), new BlockId(5)), CancellationToken.None);
+            FlushResult first = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(first.Succeeded, "the fixture write must succeed: {0}", first);
+            byte[] before = File.ReadAllBytes(store.ChunkPath(coord));
+
+            // Hold the destination open with no sharing: File.Replace and the
+            // delete+move fallback both fail, so the write must be surfaced
+            // rather than counted as a clean flush.
+            using (new FileStream(store.ChunkPath(coord), FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                store.SaveAsync(coord, DeltaFor(coord, new Int3(4, 5, 6), new BlockId(6)), CancellationToken.None);
+                FlushResult failed = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+
+                Assert.IsTrue(failed.Completed, "the drain must still complete when a write fails");
+                Assert.IsFalse(failed.Succeeded, "a failed write must not report a successful flush");
+                Assert.AreEqual(1, failed.FailedWrites, "the failed write is reported exactly once");
+                Assert.AreEqual(1, store.FailedWrites, "the store counts the failed write");
+            }
+
+            CollectionAssert.AreEqual(
+                before,
+                File.ReadAllBytes(store.ChunkPath(coord)),
+                "the previous complete save must be untouched by the failed write");
+
+            store.SaveAsync(coord, DeltaFor(coord, new Int3(4, 5, 6), new BlockId(6)), CancellationToken.None);
+            FlushResult recovered = store.WaitForPendingWrites(TimeSpan.FromSeconds(10));
+            Assert.IsTrue(recovered.Succeeded, "the store must recover after the lock is released: {0}", recovered);
+            Assert.AreEqual(0, recovered.FailedWrites, "the recovered drain has no failures");
+            yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator QuitFlushReportsFailedWritesLoudly()
+        {
+            CreateSaveBatches();
+            var coord = new ChunkCoord(0, 0, 0);
+            saves.TrackEdit(CellIn(coord, 0), new BlockId(1));
+            Assert.AreEqual(1, saves.Flush(), "the fixture flush queues one chunk");
+            Assert.AreEqual(0, saves.FailedFlushes, "the fixture flush succeeds");
+            Assert.IsTrue(store.HasSavedChunk(coord));
+
+            using (new FileStream(store.ChunkPath(coord), FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                saves.TrackEdit(CellIn(coord, 1), new BlockId(2));
+                LogAssert.Expect(LogType.Error, new Regex("write\\(s\\) failed during the quit flush"));
+                Assert.AreEqual(1, saves.Flush(), "the quit flush still queues the dirty chunk");
+                Assert.AreEqual(0, saves.TimedOutFlushes, "the drain completed; it did not time out");
+                Assert.AreEqual(1, saves.FailedFlushes, "the quit flush must count the failed write");
+            }
+
+            yield return null;
+        }
+
+        [UnityTest]
         public IEnumerator FlushWaitsForEveryChunkWhenCoalescingReordersTheQueue()
         {
             store.WriteDelay = TimeSpan.FromMilliseconds(150);

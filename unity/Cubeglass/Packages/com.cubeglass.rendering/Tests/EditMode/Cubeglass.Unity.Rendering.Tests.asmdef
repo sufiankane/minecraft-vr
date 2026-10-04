@@ -3,6 +3,7 @@
   "rootNamespace": "Cubeglass.Unity.Rendering.Tests",
   "references": [
     "Cubeglass.Unity.Rendering",
+    "Cubeglass.Unity.Input",
     "Cubeglass.Unity.Bridge",
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"

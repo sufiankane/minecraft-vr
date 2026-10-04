@@ -10,13 +10,13 @@
   without the `UNITY_LICENSE` / `UNITY_EMAIL` / `UNITY_PASSWORD` repository
   secrets (R49).
 - **What was tried:** everything that does not need the glasses or the licence:
-  - the full local gate is green: EditMode **100/100**, PlayMode **40/40**,
-    0 skipped (including the game-scene end-to-end smoke and the new frame
-    budget measurement) and `ci-local -SkipUnity` **ALL LANES PASS**
-    (463 .NET + 45 Python tests);
+  - the full local gate is green: EditMode **112/112**, PlayMode **44/44**,
+    0 skipped (including the game-scene end-to-end smoke, the hotbar-anchor
+    viewport check and the frame budget measurement) and `ci-local -SkipUnity`
+    **ALL LANES PASS** (471 .NET + 45 Python tests);
   - the game scene streams its full view-distance-8 desired set to **1,445
     chunk views** and measures 600 frames per overlay state on the dev machine:
-    mean 1.392 ms, p50 1.293 ms, p95 2.141 ms, p99 2.749 ms (overlay off) —
+    mean 1.178 ms, p50 1.136 ms, p95 1.576 ms, p99 2.020 ms (overlay off) —
     see [`../perf/m1.md`](../perf/m1.md);
   - the input parity, comfort, pause/save/reload and no-stuck-state software
     behaviour is pinned by the EditMode and PlayMode suites (S7 gate note
@@ -58,12 +58,20 @@
 The committed scene is `unity/Cubeglass/Assets/Scenes/Game.unity` (built by
 `Assets/Editor/GameSceneBuilder.cs`; `[Game, Calibration]` in the committed
 `EditorBuildSettings`). The slice wiring: starter ground, `PlayerRoot` +
-`StereoRig` (bridge-first pose selection, synthetic fallback), `Streaming`
-(`StreamingRuntime` + `ChunkViewManager`, view distance 8, vertical radius 2,
-load/unload/upload budgets 4, pool cap 2048, seed 1), `Gameplay`
+`StereoRig` (bridge-first pose selection, synthetic fallback), `WindowManager`
+(borderless fullscreen at 90 Hz on the primary display, shared rig config),
+`Streaming` (`StreamingRuntime` + `ChunkViewManager`, view distance 8, vertical
+radius 2, load/unload/upload budgets 4, pool cap 2048, seed 1), `Gameplay`
 (`GameplayBridge`, `SnapTurn`, `MotionVignette`, `SaveBatches`), `WorldUi`
 (reticle + hotbar), `DebugOverlay`, and `GameBoot` (persistent store under
 `Application.persistentDataPath/Cubeglass/saves/default`, loaded back on boot).
+
+**HUD presentation (known, deferred M2+):** the reticle and hotbar are one
+screen-space IMGUI pass projected through the **left eye camera only**, so the
+right eye sees no HUD and there is no stereo depth. The reticle is
+screen-centred (same apparent direction for both eyes). Confirm readability in
+the left eye and that the right-eye view is not confusing; per-eye HUD geometry
+is M2+ work (ADR-0011, s7-gate deferred minors).
 
 Controls:
 
@@ -126,6 +134,11 @@ powershell -File scripts/sync-unity-plugins.ps1
 - [ ] **Stereo sanity (regression check).** The horizon is level in both eyes,
       no vertical disparity, no eye swap; the reticle lands on the block the
       gaze breaks.
+- [ ] **HUD visibility (both eyes).** The hotbar sits in the lower-centre
+      view when looking level (not clipped, not at the feet) and the reticle is
+      centred; confirm that the left-eye-only monocular HUD (above) is readable
+      and that the right-eye view without it is acceptable until the M2+ stereo
+      HUD. Record a photo/screenshot of each eye if possible.
 
 ## What to commit
 

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using System.Reflection;
 using Cubeglass.CoreMath;
 using Cubeglass.Gameplay;
 using Cubeglass.Streaming;
@@ -251,6 +252,50 @@ namespace Cubeglass.Unity.Rendering.Tests
                 manager.RemeshedChunks - remeshesBefore,
                 "every dirty chunk must be remeshed exactly once");
             Assert.LessOrEqual(manager.UploadedThisFrame, Budget, "the upload cap was exceeded on the drain frame");
+        }
+
+        [UnityTest]
+        public IEnumerator RemeshFailureReleasesThePooledView()
+        {
+            ChunkViewManager manager = CreateManager("RemeshFailure", SmallConfig(4), capacity: 4, out _);
+            var coord = new ChunkCoord(0, 0, 0);
+            manager.OnLoad(coord);
+            yield return PumpUntilUploaded(manager, new[] { coord }, 60);
+            Assert.AreEqual(1, manager.ActiveViews, "fixture: the chunk uploaded");
+
+            // Next frame: the upload budget resets so the dirty path is the
+            // limiter, not the budget.
+            yield return null;
+
+            Int3 cell = ChunkMath.ToWorld(coord, new Int3(0, 0, 0));
+            Assert.AreEqual(
+                EditResult.Applied,
+                manager.World.Apply(new EditCommand(cell, new BlockId(1), BlockId.Air, 0L)),
+                "fixture edit was rejected");
+            Assert.AreEqual(1, manager.DirtyChunks, "fixture: the chunk is dirty");
+
+            FieldInfo mesherField = typeof(ChunkViewManager).GetField(
+                "mesher", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(mesherField, "ChunkViewManager.mesher must exist");
+            object mesher = mesherField.GetValue(manager);
+            Assert.IsNotNull(mesher, "fixture: the mesher must be initialized");
+            mesherField.SetValue(manager, null);
+            try
+            {
+                Assert.Throws<System.NullReferenceException>(
+                    () => manager.ProcessDirtyRemeshes(),
+                    "a mesher failure must propagate instead of being swallowed");
+            }
+            finally
+            {
+                mesherField.SetValue(manager, mesher);
+            }
+
+            Assert.AreEqual(0, manager.ActiveViews, "the view must not stay checked out after a failed remesh");
+            Assert.AreEqual(1, manager.PooledViews, "the released view must be reusable");
+            Assert.AreEqual(0, manager.DirtyChunks, "the dropped view must leave the dirty queue");
+            Assert.IsFalse(manager.TryGetView(coord, out _), "the failed view must not stay mapped to the chunk");
+            Assert.AreEqual(0, manager.OutstandingMeshData, "no mesh data may leak");
         }
 
         [UnityTest]

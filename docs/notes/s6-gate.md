@@ -119,7 +119,10 @@ Machine: AMD Ryzen AI 9 365 (20 logical CPUs), 23 GiB RAM, NVIDIA GeForce RTX
   3840×1080 side-by-side target, 1920×1080 per eye — refresh 90 Hz) with
   `LateLatchPose`, `PoseProviderSelector` (bridge first, synthetic fallback),
   a `SyntheticPoseProvider` child with `UnityInputProvider` +
-  `SyntheticPoseDrive` (move axes turn, Q/E snap-turn, R recentres) and
+  `SyntheticPoseDrive` (move axes turn, **F** snap right / **Shift+F** snap left
+  — Q/E are hotbar since the S7 mapping; the S7 review round fixed the drive's
+  `TurnSnap` integration to the degrees-per-second contract and routed the edge
+  through `ISnapInputSource`; R recentres) and
   `WindowManager`;
 - a `DebugOverlay` GameObject with the latch wired and the overlay enabled.
 

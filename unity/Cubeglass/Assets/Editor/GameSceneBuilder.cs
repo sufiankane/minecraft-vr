@@ -14,10 +14,11 @@ namespace Cubeglass.Editor
     /// <summary>
     /// Deterministic builder for the S7 game scene (Task 4c): a flat starter
     /// ground around the spawn, the player root + stereo rig (bridge-first,
-    /// synthetic-fallback pose selection), the streaming runtime and view
-    /// manager, the gameplay bridge with gaze targeting and the desktop input
-    /// provider, the world HUD (reticle + hotbar), the comfort components
-    /// (vignette and snap turn), batched persistence and the debug overlay.
+    /// synthetic-fallback pose selection), the fullscreen window manager, the
+    /// streaming runtime and view manager, the gameplay bridge with gaze
+    /// targeting and the desktop input provider, the world HUD (reticle +
+    /// hotbar), the comfort components (vignette and snap turn), batched
+    /// persistence and the debug overlay.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -214,6 +215,7 @@ namespace Cubeglass.Editor
             StereoRig rig;
             LateLatchPose latch;
             BuildPlayerSpawn(spawn, out playerRoot, out rig, out latch);
+            BuildWindow(rig);
 
             UnityInputProvider input = BuildInput();
             StreamingRuntime runtime = BuildStreaming(rig);
@@ -293,6 +295,21 @@ namespace Cubeglass.Editor
             return inputObject.AddComponent<UnityInputProvider>();
         }
 
+        /// <summary>
+        /// Adds the <see cref="WindowManager"/> to the rig, sharing
+        /// <see cref="StereoRig.Config"/> exactly like the calibration scene:
+        /// the release build requests borderless fullscreen at the configured
+        /// refresh rate on the target display (FR-01). The Editor preview is
+        /// left alone (<see cref="WindowManager.ApplyInEditor"/> is false).
+        /// </summary>
+        private static void BuildWindow(StereoRig rig)
+        {
+            var window = rig.gameObject.AddComponent<WindowManager>();
+            window.Config = rig.Config;
+            window.TargetDisplayIndex = 0;
+            window.ApplyInEditor = false;
+        }
+
         private static StreamingRuntime BuildStreaming(StereoRig rig)
         {
             var streamingObject = new GameObject("Streaming");
@@ -334,6 +351,8 @@ namespace Cubeglass.Editor
             var ui = uiObject.AddComponent<WorldUi>();
             ui.Bridge = bridge;
             ui.AnchorSource = playerRoot.transform;
+            ui.AnchorEyeHeight = PlayerRoot.EyeHeightMeters;
+            ui.AnchorDropMeters = WorldUi.DefaultAnchorDropMeters;
             ui.Visible = true;
         }
 

@@ -20,10 +20,16 @@ namespace Cubeglass.Unity.Rendering.PlayTests
     /// <remarks>
     /// The CLI PlayMode lane has no Game View, so each iteration renders both
     /// eyes explicitly into the shared target with <c>Camera.Render()</c> (the
-    /// same pre-cull path the late latch hooks in a normal frame). The measured
-    /// number is the wall time of one full stereo frame (both eye renders) on
-    /// the machine that ran the suite; it is evidence, not a hard CI gate, so
-    /// the test does not fail when the budget is missed.
+    /// same pre-cull path the late latch hooks in a normal frame). IMGUI
+    /// <c>OnGUI</c> never executes in the lane, so the overlay's paint cost is
+    /// not exercised here — the number is the stereo render submission plus the
+    /// scene tick, not the Game View present or IMGUI. The measurement forces
+    /// the synthetic pose provider (<see cref="PoseProviderSelector.ForceSyntheticForTests"/>)
+    /// exactly like the game-scene smoke and budget, so a live bridge region on
+    /// the machine cannot change the measured path. The measured number is the
+    /// wall time of one full stereo frame (both eye renders) on the machine that
+    /// ran the suite; it is evidence, not a hard CI gate, so the test does not
+    /// fail when the budget is missed.
     /// </remarks>
     public class FrameBudgetPlayModeTests
     {
@@ -51,9 +57,18 @@ namespace Cubeglass.Unity.Rendering.PlayTests
         private RenderTexture previousLeft;
         private RenderTexture previousRight;
 
+        [UnitySetUp]
+        public IEnumerator SetUp()
+        {
+            PoseProviderSelector.ForceSyntheticForTests = true;
+            yield return null;
+        }
+
         [UnityTearDown]
         public IEnumerator TearDown()
         {
+            PoseProviderSelector.ForceSyntheticForTests = false;
+
             if (rig != null)
             {
                 if (rig.LeftCamera != null)
@@ -103,8 +118,16 @@ namespace Cubeglass.Unity.Rendering.PlayTests
 
             rig = FindInScene<StereoRig>(calibrationScene);
             DebugOverlay overlay = FindInScene<DebugOverlay>(calibrationScene);
+            PoseProviderSelector selector = FindInScene<PoseProviderSelector>(calibrationScene);
             Assert.IsNotNull(rig, "StereoRig in the calibration scene");
             Assert.IsNotNull(overlay, "DebugOverlay in the calibration scene");
+            Assert.IsNotNull(selector, "PoseProviderSelector in the calibration scene");
+            Assert.IsFalse(
+                selector.UsingBridge,
+                "the synthetic provider must be forced for a hermetic budget lane");
+            Assert.IsFalse(
+                selector.PluginUnavailable,
+                "forcing the synthetic provider is not a plugin failure and must not be reported as one");
             Assert.IsNotNull(rig.LeftCamera, "left eye camera");
             Assert.IsNotNull(rig.RightCamera, "right eye camera");
 

@@ -1,3 +1,4 @@
+using Cubeglass.Unity.Rendering;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -107,15 +108,48 @@ namespace Cubeglass.Unity.Input.Tests
         }
 
         [Test]
-        public void HotbarAnchorSitsInFrontOfTheRig()
+        public void HotbarAnchorSitsAtEyeHeightInFrontOfTheRig()
         {
-            AssertVector(new Vector3(0f, 0f, 1.5f), WorldUi.HotbarAnchor(Vector3.zero, Quaternion.identity, 1.5f));
+            const float eye = 0.9f;
+            const float drop = 0.2f;
             AssertVector(
-                new Vector3(1.5f, 0f, 0f),
-                WorldUi.HotbarAnchor(Vector3.zero, Quaternion.Euler(0f, 90f, 0f), 1.5f));
+                new Vector3(0f, eye - drop, 1.5f),
+                WorldUi.HotbarAnchor(Vector3.zero, Quaternion.identity, eye, 1.5f, drop));
             AssertVector(
-                new Vector3(3f, 2f, 4.5f),
-                WorldUi.HotbarAnchor(new Vector3(3f, 2f, 3f), Quaternion.identity, 1.5f));
+                new Vector3(1.5f, eye - drop, 0f),
+                WorldUi.HotbarAnchor(Vector3.zero, Quaternion.Euler(0f, 90f, 0f), eye, 1.5f, drop));
+            AssertVector(
+                new Vector3(3f, 2f + eye - drop, 4.5f),
+                WorldUi.HotbarAnchor(new Vector3(3f, 2f, 3f), Quaternion.identity, eye, 1.5f, drop));
+        }
+
+        [Test]
+        public void HotbarAnchorSitsInsideTheDefaultPerEyeFov()
+        {
+            float aspect = StereoRig.PerEyeViewportAspect(
+                StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
+            float halfVerticalFov = StereoRig.VerticalFovForHorizontal(
+                StereoRigConfig.DefaultFovDegrees, aspect) * 0.5f;
+
+            float centreAngle = WorldUi.AnchorAngleBelowEyeDegrees(
+                WorldUi.DefaultAnchorDropMeters, WorldUi.DefaultAnchorDistanceMeters);
+            float bottomAngle = WorldUi.AnchorAngleBelowEyeDegrees(
+                WorldUi.DefaultAnchorDropMeters + (WorldUi.DefaultHotbarHeightMeters * 0.5f),
+                WorldUi.DefaultAnchorDistanceMeters);
+
+            Assert.Greater(centreAngle, 0f, "the world-locked anchor must sit below the eye axis");
+            Assert.Less(
+                bottomAngle,
+                halfVerticalFov,
+                "the bottom edge of the strip must stay inside the per-eye frustum at the default FOV "
+                    + "(bottom {0:F1} deg vs half-FOV {1:F1} deg)",
+                bottomAngle,
+                halfVerticalFov);
+            Assert.Less(
+                centreAngle,
+                halfVerticalFov,
+                "the anchor centre must be inside the per-eye frustum");
+            Assert.AreEqual(90f, WorldUi.AnchorAngleBelowEyeDegrees(0.2f, 0f), Tolerance, "degenerate distance");
         }
 
         [Test]
@@ -162,19 +196,22 @@ namespace Cubeglass.Unity.Input.Tests
                 WorldUi ui = hud.AddComponent<WorldUi>();
                 ui.AnchorSource = rig.transform;
                 ui.Refresh();
-                AssertVector(new Vector3(0f, 0f, 1.5f), ui.AnchorWorldPosition, "anchored 1.5 m in front of the body");
+                AssertVector(
+                    new Vector3(0f, PlayerRoot.EyeHeightMeters - WorldUi.DefaultAnchorDropMeters, 1.5f),
+                    ui.AnchorWorldPosition,
+                    "anchored at eye height 1.5 m in front of the body");
 
                 rig.transform.position = new Vector3(10f, 0f, 0f);
                 ui.Refresh();
                 AssertVector(
-                    new Vector3(10f, 0f, 1.5f),
+                    new Vector3(10f, PlayerRoot.EyeHeightMeters - WorldUi.DefaultAnchorDropMeters, 1.5f),
                     ui.AnchorWorldPosition,
                     "the anchor follows the body after the pose application");
 
                 rig.transform.localRotation = Quaternion.Euler(0f, 90f, 0f);
                 ui.Refresh();
                 AssertVector(
-                    new Vector3(11.5f, 0f, 0f),
+                    new Vector3(11.5f, PlayerRoot.EyeHeightMeters - WorldUi.DefaultAnchorDropMeters, 0f),
                     ui.AnchorWorldPosition,
                     "the anchor follows the body heading, not the head-relative rotation");
             }

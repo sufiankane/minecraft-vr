@@ -68,6 +68,7 @@ namespace Cubeglass.Unity.Rendering.Tests
         private PoseProviderSelector selector;
         private PlayerRoot playerRoot;
         private StereoRig rig;
+        private WindowManager window;
         private FakeInputProvider input;
 
         [UnitySetUp]
@@ -173,12 +174,59 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreSame(saves, bridge.SaveBatches);
             Assert.AreSame(bridge, hud.Bridge, "the HUD must read the bridge");
             Assert.AreSame(playerRoot.transform, hud.AnchorSource, "the HUD must anchor on the player root");
+            Assert.AreEqual(PlayerRoot.EyeHeightMeters, hud.AnchorEyeHeight, 1e-6f, "the HUD anchors at the rig eye height");
+            Assert.AreEqual(
+                WorldUi.DefaultAnchorDropMeters,
+                hud.AnchorDropMeters,
+                1e-6f,
+                "the HUD drops the committed world-locked offset");
+
+            Assert.IsNotNull(window, "the release scene must carry the WindowManager");
+            Assert.AreSame(rig, window.GetComponent<StereoRig>(), "the window manager shares the rig object");
+            Assert.AreEqual(0, window.TargetDisplayIndex, "the primary display is the target");
+            Assert.IsFalse(window.ApplyInEditor, "the editor preview must not switch display modes");
+            Assert.IsTrue(window.Config.BorderlessFullscreen, "the release scene requests borderless fullscreen");
+            Assert.AreEqual(90, window.Config.TargetRefresh, "the release scene requests 90 Hz");
 
             Assert.Less(
                 ExecutionOrderOf(typeof(StreamingRuntime)),
                 ExecutionOrderOf(typeof(GameplayBridge)),
                 "streaming must tick before the gameplay bridge");
 
+            yield return null;
+        }
+
+        /// <summary>
+        /// The committed scene's hotbar anchor must be in front of and inside
+        /// the left eye camera: the old feet-anchored composition put it ≈31°
+        /// below the eye, outside the ≈13.1° half-vFOV and therefore off-screen.
+        /// Also pins the documented monocular SBS presentation: the HUD pass is
+        /// projected through the left camera only.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator HotbarAnchorStaysInsideTheLeftEyeViewport()
+        {
+            yield return LoadGameScene();
+
+            hud.Refresh();
+            Assert.AreSame(playerRoot.transform, hud.AnchorSource, "the HUD must have a resolved body anchor");
+            Assert.IsTrue(hud.HotbarProjected, "the hotbar must project in front of the camera");
+
+            Camera left = rig.LeftCamera;
+            Assert.IsNotNull(left, "the left eye camera is the HUD projection camera");
+            Vector3 centre = left.WorldToViewportPoint(hud.AnchorWorldPosition);
+            Assert.Greater(centre.z, 0f, "the anchor must be in front of the left camera");
+            Assert.That(centre.x, Is.InRange(0f, 1f), "the anchor must be inside the horizontal viewport");
+            Assert.That(centre.y, Is.InRange(0f, 1f), "the anchor must be inside the vertical viewport");
+            Assert.Less(centre.y, 0.5f, "the world-locked drop must place the strip below the eye axis");
+
+            Vector3 bottomEdge = hud.AnchorWorldPosition
+                - (Vector3.up * (0.5f * WorldUi.DefaultHotbarHeightMeters));
+            Vector3 bottom = left.WorldToViewportPoint(bottomEdge);
+            Assert.That(
+                bottom.y,
+                Is.GreaterThan(0f),
+                "the strip's bottom edge must not be clipped by the per-eye frustum");
             yield return null;
         }
 
@@ -393,6 +441,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             selector = FindInScene<PoseProviderSelector>(gameScene);
             playerRoot = FindInScene<PlayerRoot>(gameScene);
             rig = FindInScene<StereoRig>(gameScene);
+            window = FindInScene<WindowManager>(gameScene);
             boot = FindInScene<GameBoot>(gameScene);
 
             Assert.IsNotNull(runtime, "the scene must carry a StreamingRuntime");
@@ -405,6 +454,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.IsNotNull(selector, "the scene must carry a PoseProviderSelector");
             Assert.IsNotNull(playerRoot, "the scene must carry a PlayerRoot");
             Assert.IsNotNull(rig, "the scene must carry a StereoRig");
+            Assert.IsNotNull(window, "the scene must carry a WindowManager");
             Assert.IsNotNull(boot, "the scene must carry a GameBoot");
 
             // Control every tick deterministically after the one scene-load

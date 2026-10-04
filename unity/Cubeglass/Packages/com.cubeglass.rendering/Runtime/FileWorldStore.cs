@@ -10,6 +10,39 @@ using UnityEngine;
 namespace Cubeglass.Unity.Rendering
 {
     /// <summary>
+    /// The outcome of a store drain: whether every queued and in-flight write
+    /// finished, and how many of them failed while draining (or since the
+    /// previous drain, when the queue was already empty). A drain with
+    /// <see cref="Completed"/> true and <see cref="FailedWrites"/> above zero
+    /// means the queue emptied but at least one delta file was not written.
+    /// </summary>
+    public readonly struct FlushResult
+    {
+        public FlushResult(bool completed, int failedWrites)
+        {
+            Completed = completed;
+            FailedWrites = failedWrites;
+        }
+
+        /// <summary>True when the write queue drained within the wait window.</summary>
+        public bool Completed { get; }
+
+        /// <summary>Writes that failed and were not reported by an earlier drain.</summary>
+        public int FailedWrites { get; }
+
+        /// <summary>True when the drain completed with no failed write.</summary>
+        public bool Succeeded
+        {
+            get { return Completed && FailedWrites == 0; }
+        }
+
+        public override string ToString()
+        {
+            return "FlushResult(completed=" + Completed + ", failedWrites=" + FailedWrites + ")";
+        }
+    }
+
+    /// <summary>
     /// The Unity-side <see cref="IWorldStore"/> (S7 Task 4b): one version-1
     /// <see cref="ChunkDeltaCodec"/> file per edited chunk, written through a
     /// background queue.
@@ -44,14 +77,17 @@ namespace Cubeglass.Unity.Rendering
     /// </para>
     /// <para>
     /// <b>Lifecycle.</b> <see cref="FlushAsync"/> completes when no queued or
-    /// in-flight write remains (failed writes count as finished), regardless of
-    /// payload versions, so a coalesced save can never satisfy a flush while an
-    /// older chunk file is still missing. <see cref="WaitForPendingWrites"/> is
-    /// the bounded synchronous form used by the quit path, where
-    /// <see cref="QueuedWrites"/> reports the writes that may be lost on
-    /// timeout. <see cref="Dispose"/> stops the pump after draining what is
-    /// already queued and force-completes any flush waiter if the pump cannot
-    /// finish within five seconds; a store must not be used after disposal.
+    /// in-flight write remains and reports the writes that failed while
+    /// draining through <see cref="FlushResult"/> (a failed write is counted,
+    /// never silently treated as a success), so a coalesced save can never
+    /// satisfy a flush while an older chunk file is still missing.
+    /// <see cref="WaitForPendingWrites"/> is the bounded synchronous form used
+    /// by the quit path, where a non-<see cref="FlushResult.Completed"/> result
+    /// reports the writes that may be lost on timeout and
+    /// <see cref="FlushResult.FailedWrites"/> the failed ones.
+    /// <see cref="Dispose"/> stops the pump after draining what is already
+    /// queued and force-completes any flush waiter if the pump cannot finish
+    /// within five seconds; a store must not be used after disposal.
     /// </para>
     /// </remarks>
     public sealed class FileWorldStore : IWorldStore, IDisposable
@@ -68,7 +104,7 @@ namespace Cubeglass.Unity.Rendering
         private readonly object gate = new object();
         private readonly Dictionary<ChunkCoord, PendingWrite> pending = new Dictionary<ChunkCoord, PendingWrite>();
         private readonly Queue<ChunkCoord> queue = new Queue<ChunkCoord>();
-        private readonly List<TaskCompletionSource<bool>> drainWaiters = new List<TaskCompletionSource<bool>>();
+        private readonly List<FlushWaiter> drainWaiters = new List<FlushWaiter>();
         private readonly SemaphoreSlim signal = new SemaphoreSlim(0);
         private readonly Task pump;
 
@@ -76,6 +112,7 @@ namespace Cubeglass.Unity.Rendering
         private int inFlightWrites;
         private long successfulWrites;
         private long failedWrites;
+        private long unreportedFailures;
         private long rejectedLoads;
         private long failedLoads;
         private int tempCounter;
@@ -274,43 +311,52 @@ namespace Cubeglass.Unity.Rendering
         }
 
         /// <summary>
-        /// Completes when every queued and in-flight write has finished
-        /// (successfully or not). Coalescing cannot make this return early:
-        /// waiters are released only when <see cref="QueuedWrites"/> reaches
-        /// zero, never when a particular payload version has been written.
-        /// Safe to await from any thread.
+        /// Completes when every queued and in-flight write has finished, and
+        /// reports how many of them failed. Coalescing cannot make this return
+        /// early: waiters are released only when <see cref="QueuedWrites"/>
+        /// reaches zero, never when a particular payload version has been
+        /// written. When the queue is already empty the result reports failures
+        /// recorded since the previous drain, so a write that failed just before
+        /// a quit is still surfaced. Safe to await from any thread.
         /// </summary>
-        public Task FlushAsync()
+        public Task<FlushResult> FlushAsync()
         {
             lock (gate)
             {
                 if (outstandingWrites == 0)
                 {
-                    return Task.CompletedTask;
+                    return Task.FromResult(new FlushResult(true, TakeUnreportedFailures()));
                 }
 
-                var waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var waiter = new FlushWaiter();
                 drainWaiters.Add(waiter);
-                return waiter.Task;
+                return waiter.Completion.Task;
             }
         }
 
         /// <summary>
         /// Synchronously waits up to <paramref name="timeout"/> for
-        /// <see cref="FlushAsync"/> to complete. Returns false on timeout; the
-        /// quit path uses this bounded wait because the process may not
-        /// survive a longer one.
+        /// <see cref="FlushAsync"/> to complete. The result's
+        /// <see cref="FlushResult.Completed"/> is false on timeout; otherwise
+        /// <see cref="FlushResult.FailedWrites"/> reports the writes that failed
+        /// while draining. The quit path uses this bounded wait because the
+        /// process may not survive a longer one.
         /// </summary>
         /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeout"/> is negative.</exception>
-        public bool WaitForPendingWrites(TimeSpan timeout)
+        public FlushResult WaitForPendingWrites(TimeSpan timeout)
         {
             if (timeout < TimeSpan.Zero)
             {
                 throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "Timeout must be non-negative.");
             }
 
-            Task drain = FlushAsync();
-            return drain.IsCompleted || drain.Wait(timeout);
+            Task<FlushResult> drain = FlushAsync();
+            if (!drain.Wait(timeout))
+            {
+                return new FlushResult(false, 0);
+            }
+
+            return drain.Result;
         }
 
         /// <summary>
@@ -474,6 +520,7 @@ namespace Cubeglass.Unity.Rendering
             catch (Exception exception)
             {
                 Interlocked.Increment(ref failedWrites);
+                Interlocked.Increment(ref unreportedFailures);
                 DeleteBestEffort(temp);
                 Debug.LogWarning(
                     "[FileWorldStore] could not write '" + path + "': " + exception.Message
@@ -487,7 +534,8 @@ namespace Cubeglass.Unity.Rendering
 
         private void FinishWrite()
         {
-            TaskCompletionSource<bool>[] ready = null;
+            FlushWaiter[] ready = null;
+            FlushResult result = default;
             lock (gate)
             {
                 inFlightWrites--;
@@ -501,6 +549,7 @@ namespace Cubeglass.Unity.Rendering
                 {
                     ready = drainWaiters.ToArray();
                     drainWaiters.Clear();
+                    result = new FlushResult(true, TakeUnreportedFailures());
                 }
             }
 
@@ -508,14 +557,15 @@ namespace Cubeglass.Unity.Rendering
             {
                 for (int i = 0; i < ready.Length; i++)
                 {
-                    ready[i].TrySetResult(true);
+                    ready[i].Completion.TrySetResult(result);
                 }
             }
         }
 
         private void CompleteAllWaiters()
         {
-            TaskCompletionSource<bool>[] ready;
+            FlushWaiter[] ready;
+            FlushResult result;
             lock (gate)
             {
                 if (drainWaiters.Count == 0)
@@ -525,12 +575,24 @@ namespace Cubeglass.Unity.Rendering
 
                 ready = drainWaiters.ToArray();
                 drainWaiters.Clear();
+                result = new FlushResult(false, TakeUnreportedFailures());
             }
 
             for (int i = 0; i < ready.Length; i++)
             {
-                ready[i].TrySetResult(true);
+                ready[i].Completion.TrySetResult(result);
             }
+        }
+
+        /// <summary>
+        /// Reads and clears the failure count a drain has not reported yet.
+        /// Must be called under <see cref="gate"/> (or when no write can be in
+        /// flight) so concurrent drains cannot both claim the same failure.
+        /// </summary>
+        private int TakeUnreportedFailures()
+        {
+            long failures = Interlocked.Exchange(ref unreportedFailures, 0);
+            return failures > int.MaxValue ? int.MaxValue : (int)failures;
         }
 
         private static void DeleteBestEffort(string path)
@@ -576,6 +638,16 @@ namespace Cubeglass.Unity.Rendering
             }
 
             public byte[] Bytes { get; set; }
+        }
+
+        private sealed class FlushWaiter
+        {
+            public FlushWaiter()
+            {
+                Completion = new TaskCompletionSource<FlushResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            public TaskCompletionSource<FlushResult> Completion { get; }
         }
     }
 }

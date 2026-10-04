@@ -1,12 +1,15 @@
 using Cubeglass.Gameplay;
+using Cubeglass.Unity.Rendering;
 using UnityEngine;
 
 namespace Cubeglass.Unity.Input
 {
     /// <summary>
     /// The in-world HUD (S7 Task 3): a gaze-centred reticle and a hotbar strip
-    /// anchored <c>1.5 m</c> in front of the player body, with the selected
-    /// slot highlighted from <see cref="PlayerState.HotbarIndex"/>.
+    /// anchored at the rig's eye height and
+    /// <see cref="DefaultAnchorDistanceMeters"/> in front of the player body,
+    /// with the selected slot highlighted from
+    /// <see cref="PlayerState.HotbarIndex"/>.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -22,6 +25,26 @@ namespace Cubeglass.Unity.Input
     /// <see cref="EventType.Repaint"/>.
     /// </para>
     /// <para>
+    /// <b>Placement.</b> The anchor is <see cref="AnchorEyeHeight"/> above the
+    /// anchor source's origin (the <see cref="PlayerRoot"/> feet), then
+    /// <see cref="DefaultAnchorDistanceMeters"/> along the body forward and
+    /// <see cref="AnchorDropMeters"/> straight down (world-locked, so it does
+    /// not track head pitch). At the ADR-0010 defaults the drop is ≈7.6° below
+    /// the eye axis and the strip's bottom edge ≈9.8°, inside the per-eye
+    /// vertical half-FOV of ≈13.1° for the 45° horizontal FOV at 16:9 per eye
+    /// (pinned by the EditMode FOV placement test). The old feet-anchored
+    /// composition put the strip ≈31° below the eye and off-screen.
+    /// </para>
+    /// <para>
+    /// <b>Monocular SBS (S7 known, deferred M2+).</b> The HUD (reticle and
+    /// hotbar) is one screen-space IMGUI pass projected through the left eye
+    /// camera only, so in the 3840×1080 side-by-side target it is composited
+    /// into the left half and the right eye sees no HUD; there is no stereo
+    /// depth. The reticle is screen-centred, so its apparent direction is the
+    /// same for both eyes. Per-eye HUD geometry is deferred; see ADR-0011 and
+    /// the s7-gate deferred minors.
+    /// </para>
+    /// <para>
     /// The layout maths (<see cref="HotbarAnchor"/>, <see cref="SlotRect"/>,
     /// <see cref="ProjectedPixelsPerMeter"/>) are static and pure so they are
     /// pinned in EditMode tests.
@@ -32,6 +55,12 @@ namespace Cubeglass.Unity.Input
     {
         /// <summary>Default world-locked anchor distance in metres.</summary>
         public const float DefaultAnchorDistanceMeters = 1.5f;
+
+        /// <summary>
+        /// Default world-locked downward offset of the strip below the eye
+        /// axis, in metres (≈7.6° at the default distance).
+        /// </summary>
+        public const float DefaultAnchorDropMeters = 0.2f;
 
         /// <summary>Default hotbar strip width in metres at the anchor.</summary>
         public const float DefaultHotbarWidthMeters = 0.9f;
@@ -46,6 +75,8 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private GameplayBridge bridge;
         [SerializeField] private bool visible = true;
         [SerializeField] private float anchorDistance = DefaultAnchorDistanceMeters;
+        [SerializeField] private float anchorEyeHeight = PlayerRoot.EyeHeightMeters;
+        [SerializeField] private float anchorDropMeters = DefaultAnchorDropMeters;
         [SerializeField] private float hotbarWidthMeters = DefaultHotbarWidthMeters;
         [SerializeField] private float hotbarHeightMeters = DefaultHotbarHeightMeters;
         [SerializeField] private float reticleSizePixels = 24f;
@@ -74,6 +105,27 @@ namespace Cubeglass.Unity.Input
         {
             get { return anchorSource; }
             set { anchorSource = value; }
+        }
+
+        /// <summary>
+        /// Eye height above the anchor source's origin, in metres; defaults to
+        /// <see cref="PlayerRoot.EyeHeightMeters"/> because the source is the
+        /// body (feet). Set 0 when the source is already at eye level.
+        /// </summary>
+        public float AnchorEyeHeight
+        {
+            get { return anchorEyeHeight; }
+            set { anchorEyeHeight = value; }
+        }
+
+        /// <summary>
+        /// World-locked downward offset of the strip below the eye axis, in
+        /// metres; defaults to <see cref="DefaultAnchorDropMeters"/>.
+        /// </summary>
+        public float AnchorDropMeters
+        {
+            get { return anchorDropMeters; }
+            set { anchorDropMeters = value; }
         }
 
         /// <summary>The bridge supplying the selected hotbar slot.</summary>
@@ -127,11 +179,12 @@ namespace Cubeglass.Unity.Input
         /// </summary>
         public void Refresh()
         {
-            Transform source = ResolveAnchorSource();
+            Transform source = ResolveAnchorSource(out float eyeHeight);
             hasAnchor = source != null;
             if (hasAnchor)
             {
-                anchorWorldPosition = HotbarAnchor(source.position, source.rotation, anchorDistance);
+                anchorWorldPosition = HotbarAnchor(
+                    source.position, source.rotation, eyeHeight, anchorDistance, anchorDropMeters);
             }
 
             GameplayBridge sourceBridge = bridge;
@@ -153,10 +206,38 @@ namespace Cubeglass.Unity.Input
                 out hotbarScreenRect);
         }
 
-        /// <summary>The body-relative anchor: position plus the body's Unity forward.</summary>
-        public static Vector3 HotbarAnchor(Vector3 rigPosition, Quaternion rigRotation, float distance)
+        /// <summary>
+        /// The body-relative anchor: <paramref name="eyeHeightMeters"/> above
+        /// the source origin (the eye), <paramref name="distanceMeters"/> along
+        /// the source's body forward, and <paramref name="dropMeters"/> straight
+        /// down in world space (not head-relative).
+        /// </summary>
+        public static Vector3 HotbarAnchor(
+            Vector3 sourcePosition,
+            Quaternion sourceRotation,
+            float eyeHeightMeters,
+            float distanceMeters,
+            float dropMeters)
         {
-            return rigPosition + (rigRotation * Vector3.forward * distance);
+            Vector3 eye = sourcePosition + (Vector3.up * eyeHeightMeters);
+            return eye + (sourceRotation * Vector3.forward * distanceMeters) + (Vector3.down * dropMeters);
+        }
+
+        /// <summary>
+        /// The angle below the eye forward axis of a world-locked point
+        /// <paramref name="dropMeters"/> below the eye at
+        /// <paramref name="distanceMeters"/> in front, in degrees. Negative when
+        /// the point is above the axis; a non-positive distance is degenerate
+        /// and reported as 90 degrees.
+        /// </summary>
+        public static float AnchorAngleBelowEyeDegrees(float dropMeters, float distanceMeters)
+        {
+            if (!(distanceMeters > 0f))
+            {
+                return 90f;
+            }
+
+            return Mathf.Atan2(dropMeters, distanceMeters) * Mathf.Rad2Deg;
         }
 
         /// <summary>
@@ -332,30 +413,31 @@ namespace Cubeglass.Unity.Input
             return anchorSource != null ? anchorSource.GetComponent<Camera>() : null;
         }
 
-        private Transform ResolveAnchorSource()
+        private Transform ResolveAnchorSource(out float eyeHeightMeters)
         {
             if (anchorSource != null)
             {
+                eyeHeightMeters = anchorEyeHeight;
                 return anchorSource;
             }
 
             GameplayBridge sourceBridge = bridge;
             if (sourceBridge == null)
             {
+                eyeHeightMeters = 0f;
                 return null;
             }
 
             if (sourceBridge.PlayerRoot != null)
             {
+                eyeHeightMeters = anchorEyeHeight;
                 return sourceBridge.PlayerRoot.transform;
             }
 
-            if (sourceBridge.Rig != null)
-            {
-                return sourceBridge.Rig.transform;
-            }
-
-            return sourceBridge.transform;
+            // The rig and bridge fallbacks are already at eye level (or have no
+            // documented eye offset), so no extra height is added.
+            eyeHeightMeters = 0f;
+            return sourceBridge.Rig != null ? sourceBridge.Rig.transform : sourceBridge.transform;
         }
 
         private void EnsureBuffers()

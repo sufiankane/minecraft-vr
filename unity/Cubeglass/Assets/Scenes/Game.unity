@@ -123,14 +123,14 @@ NavMeshSettings:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 41}
+  - {fileID: 42}
   - {fileID: 20}
-  - {fileID: 38}
-  - {fileID: 30}
-  - {fileID: 34}
-  - {fileID: 46}
+  - {fileID: 39}
+  - {fileID: 31}
+  - {fileID: 35}
+  - {fileID: 47}
   - {fileID: 5}
-  - {fileID: 25}
+  - {fileID: 26}
 --- !u!4 &5
 Transform:
   m_ObjectHideFlags: 0
@@ -202,6 +202,7 @@ GameObject:
   - component: {fileID: 23}
   - component: {fileID: 8}
   - component: {fileID: 24}
+  - component: {fileID: 25}
   m_Layer: 0
   m_Name: StereoRig
   m_TagString: Untagged
@@ -527,13 +528,34 @@ MonoBehaviour:
   m_EditorClassIdentifier: Cubeglass.Unity.Rendering::Cubeglass.Unity.Rendering.PoseProviderSelector
   lateLatch: {fileID: 8}
   syntheticFallback: {fileID: 19}
---- !u!4 &25
+--- !u!114 &25
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 9}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 85e7fb686766acb43a064ccdce07e5ed, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Cubeglass.Unity.Rendering::Cubeglass.Unity.Rendering.WindowManager
+  config:
+    ipdMeters: 0.064
+    fovDegrees: 45
+    near: 0.05
+    far: 500
+    borderlessFullscreen: 1
+    targetRefresh: 90
+  targetDisplayIndex: 0
+  applyInEditor: 0
+--- !u!4 &26
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 26}
+  m_GameObject: {fileID: 27}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -542,7 +564,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &26
+--- !u!1 &27
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -550,8 +572,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 25}
-  - component: {fileID: 27}
+  - component: {fileID: 26}
+  - component: {fileID: 28}
   m_Layer: 0
   m_Name: GameBoot
   m_TagString: Untagged
@@ -559,30 +581,30 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &27
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 26}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e7631486e4af11645b02623bf86a28e5, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.GameBoot
-  worldName: default
-  streaming: {fileID: 28}
-  saves: {fileID: 32}
-  bridge: {fileID: 35}
-  playerRoot: {fileID: 22}
 --- !u!114 &28
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 29}
+  m_GameObject: {fileID: 27}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e7631486e4af11645b02623bf86a28e5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.GameBoot
+  worldName: default
+  streaming: {fileID: 29}
+  saves: {fileID: 33}
+  bridge: {fileID: 36}
+  playerRoot: {fileID: 22}
+--- !u!114 &29
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 30}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1179943a37d363a47b9f16c7b6ebdbbd, type: 3}
@@ -599,7 +621,7 @@ MonoBehaviour:
   seed: 1
   autoUpdate: 1
   viewMaterial: {fileID: 0}
---- !u!1 &29
+--- !u!1 &30
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -607,9 +629,9 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 30}
   - component: {fileID: 31}
-  - component: {fileID: 28}
+  - component: {fileID: 32}
+  - component: {fileID: 29}
   m_Layer: 0
   m_Name: Streaming
   m_TagString: Untagged
@@ -617,13 +639,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!4 &30
+--- !u!4 &31
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 29}
+  m_GameObject: {fileID: 30}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -632,25 +654,25 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &31
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 29}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e0435a2e0b62ada4eb3b3b8d5056cfb0, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Cubeglass.Unity.Rendering::Cubeglass.Unity.Rendering.ChunkViewManager
 --- !u!114 &32
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 33}
+  m_GameObject: {fileID: 30}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e0435a2e0b62ada4eb3b3b8d5056cfb0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Cubeglass.Unity.Rendering::Cubeglass.Unity.Rendering.ChunkViewManager
+--- !u!114 &33
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 34}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1c57eab512cd40a4e8e0a1b94cc9b5ed, type: 3}
@@ -659,7 +681,7 @@ MonoBehaviour:
   editsPerFlush: 32
   flushIntervalSeconds: 2
   flushWaitMilliseconds: 2000
---- !u!1 &33
+--- !u!1 &34
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -667,11 +689,11 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 34}
   - component: {fileID: 35}
-  - component: {fileID: 39}
+  - component: {fileID: 36}
   - component: {fileID: 40}
-  - component: {fileID: 32}
+  - component: {fileID: 41}
+  - component: {fileID: 33}
   m_Layer: 0
   m_Name: Gameplay
   m_TagString: Untagged
@@ -679,13 +701,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!4 &34
+--- !u!4 &35
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 33}
+  m_GameObject: {fileID: 34}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -694,35 +716,35 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &35
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 33}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 786eb3862241d9f4489b918785527b51, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.GameplayBridge
-  streaming: {fileID: 28}
-  inputProvider: {fileID: 36}
-  lateLatch: {fileID: 8}
-  rig: {fileID: 23}
-  playerRoot: {fileID: 22}
-  gazeCamera: {fileID: 0}
-  snapTurn: {fileID: 39}
-  motionVignette: {fileID: 40}
-  saveBatches: {fileID: 32}
-  autoUpdate: 1
 --- !u!114 &36
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 37}
+  m_GameObject: {fileID: 34}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 786eb3862241d9f4489b918785527b51, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.GameplayBridge
+  streaming: {fileID: 29}
+  inputProvider: {fileID: 37}
+  lateLatch: {fileID: 8}
+  rig: {fileID: 23}
+  playerRoot: {fileID: 22}
+  gazeCamera: {fileID: 0}
+  snapTurn: {fileID: 40}
+  motionVignette: {fileID: 41}
+  saveBatches: {fileID: 33}
+  autoUpdate: 1
+--- !u!114 &37
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 38}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a3f48c48a3c763a4e92d7b100b595c92, type: 3}
@@ -732,13 +754,14 @@ MonoBehaviour:
   gamepadMoveAxisX: Gamepad Move X
   gamepadMoveAxisY: Gamepad Move Y
   gamepadTurnAxisX: Gamepad Turn X
+  gamepadSnapAxisX: Gamepad Snap X
   moveDeadzone: 0.15
   lookDeadzone: 0.15
   turnDegreesPerSecond: 90
   mouseDegreesPerPixel: 0.2
   swapGamepadButtons: 0
   invertTurn: 0
---- !u!1 &37
+--- !u!1 &38
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -746,8 +769,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 38}
-  - component: {fileID: 36}
+  - component: {fileID: 39}
+  - component: {fileID: 37}
   m_Layer: 0
   m_Name: PlayerInput
   m_TagString: Untagged
@@ -755,13 +778,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!4 &38
+--- !u!4 &39
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 37}
+  m_GameObject: {fileID: 38}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -770,13 +793,13 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &39
+--- !u!114 &40
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 33}
+  m_GameObject: {fileID: 34}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 55f5aa1cfec439a409f06df71899d295, type: 3}
@@ -784,13 +807,13 @@ MonoBehaviour:
   m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.SnapTurn
   incrementDegrees: 45
   snapEnabled: 1
---- !u!114 &40
+--- !u!114 &41
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 33}
+  m_GameObject: {fileID: 34}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: aad200fb8065ce347b56bf131dde87f8, type: 3}
@@ -800,13 +823,13 @@ MonoBehaviour:
   maxOpacity: 0.4
   minSpeed: 0.5
   fullSpeed: 2
---- !u!4 &41
+--- !u!4 &42
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 42}
+  m_GameObject: {fileID: 43}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 8.5, y: 10.98, z: 8.5}
@@ -815,7 +838,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &42
+--- !u!1 &43
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -823,9 +846,9 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 41}
-  - component: {fileID: 43}
+  - component: {fileID: 42}
   - component: {fileID: 44}
+  - component: {fileID: 45}
   m_Layer: 0
   m_Name: StarterGround
   m_TagString: Untagged
@@ -833,21 +856,21 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!33 &43
+--- !u!33 &44
 MeshFilter:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 42}
+  m_GameObject: {fileID: 43}
   m_Mesh: {fileID: 10209, guid: 0000000000000000e000000000000000, type: 0}
---- !u!23 &44
+--- !u!23 &45
 MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 42}
+  m_GameObject: {fileID: 43}
   m_Enabled: 1
   m_CastShadows: 1
   m_ReceiveShadows: 1
@@ -866,7 +889,7 @@ MeshRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 45}
+  - {fileID: 46}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -890,7 +913,7 @@ MeshRenderer:
   m_SortingOrder: 0
   m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
---- !u!21 &45
+--- !u!21 &46
 Material:
   serializedVersion: 8
   m_ObjectHideFlags: 0
@@ -919,13 +942,13 @@ Material:
     - _Color: {r: 0.24, g: 0.45, b: 0.19, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
---- !u!4 &46
+--- !u!4 &47
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 47}
+  m_GameObject: {fileID: 48}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -934,7 +957,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &47
+--- !u!1 &48
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -942,8 +965,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 46}
-  - component: {fileID: 48}
+  - component: {fileID: 47}
+  - component: {fileID: 49}
   m_Layer: 0
   m_Name: WorldUi
   m_TagString: Untagged
@@ -951,13 +974,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &48
+--- !u!114 &49
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 47}
+  m_GameObject: {fileID: 48}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 693ec82a0723b244dafa9010b90fade4, type: 3}
@@ -965,9 +988,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Cubeglass.Unity.Input::Cubeglass.Unity.Input.WorldUi
   gazeCamera: {fileID: 0}
   anchorSource: {fileID: 20}
-  bridge: {fileID: 35}
+  bridge: {fileID: 36}
   visible: 1
   anchorDistance: 1.5
+  anchorEyeHeight: 0.9
+  anchorDropMeters: 0.2
   hotbarWidthMeters: 0.9
   hotbarHeightMeters: 0.12
   reticleSizePixels: 24
