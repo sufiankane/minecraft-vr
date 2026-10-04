@@ -1,4 +1,7 @@
+using System;
 using System.Collections;
+using System.IO;
+using System.Text.RegularExpressions;
 using Cubeglass.CoreMath;
 using Cubeglass.Gameplay;
 using Cubeglass.Streaming;
@@ -8,6 +11,7 @@ using Cubeglass.Voxel;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
+using Object = UnityEngine.Object;
 
 namespace Cubeglass.Unity.Rendering.Tests
 {
@@ -496,6 +500,81 @@ namespace Cubeglass.Unity.Rendering.Tests
             }
 
             Assert.AreEqual(0, allocated, "steady frames allocated {0} bytes over 120 frames", allocated);
+        }
+
+        /// <summary>
+        /// R-4/M-1: a bridge that has not initialized when <see cref="GameBoot"/>
+        /// runs <c>Start</c> used to leave the player at the internal origin
+        /// forever. The boot must warn once, keep retrying, and seed the
+        /// authored scene spawn as soon as the bridge initializes.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator GameBootRetriesTheSpawnSeedUntilTheBridgeIsReady()
+        {
+            var bootObject = new GameObject("GameBootRetry");
+            bootObject.transform.SetParent(root.transform, false);
+            GameBoot boot = bootObject.AddComponent<GameBoot>();
+
+            // A fresh, uninitialized bridge: the SetUp bridge is already
+            // initialized and would seed at Start instead of deferring.
+            var lateBridgeObject = new GameObject("LateBridge");
+            lateBridgeObject.transform.SetParent(root.transform, false);
+            GameplayBridge lateBridge = lateBridgeObject.AddComponent<GameplayBridge>();
+            lateBridge.AutoUpdate = false;
+            lateBridge.PlayerRoot = playerRoot;
+            boot.Bridge = lateBridge;
+            boot.PlayerRoot = playerRoot;
+
+            playerRoot.transform.position = new Vector3(3f, surfaceFeetY, 4f);
+            playerRoot.transform.rotation = Quaternion.Euler(0f, 90f, 0f);
+
+            string directory = Path.Combine(Path.GetTempPath(), "cg-gameboot-" + Guid.NewGuid().ToString("N"));
+            GameBoot.WorldNameOverride = "boot-retry";
+            GameBoot.RootDirectoryOverride = directory;
+            try
+            {
+                LogAssert.Expect(LogType.Warning, new Regex("could not seed the player"));
+                yield return null;
+
+                Assert.IsFalse(lateBridge.IsInitialized, "the bridge is still uninitialized");
+                Assert.IsNull(lateBridge.Player, "nothing was seeded while the bridge was unready");
+
+                lateBridge.Streaming = runtime;
+                for (int frame = 0;
+                    frame < 10 && (lateBridge.Player == null || lateBridge.Player.Position.X != 3.0);
+                    frame++)
+                {
+                    yield return null;
+                }
+
+                Assert.IsNotNull(lateBridge.Player, "the bridge initialized and owns a player state");
+                Assert.AreEqual(3.0, lateBridge.Player.Position.X, 1e-9, "the retry seeded the authored spawn X");
+                Assert.AreEqual(
+                    (double)surfaceFeetY,
+                    lateBridge.Player.Position.Y,
+                    1e-9,
+                    "the retry seeded the spawn Y");
+                Assert.AreEqual(
+                    -4.0,
+                    lateBridge.Player.Position.Z,
+                    1e-9,
+                    "the retry seeded the mirrored internal spawn Z (ADR-0004)");
+                Assert.AreEqual(-Mathf.PI / 2f, lateBridge.Player.YawRadians, 1e-6, "yaw follows the scene forward");
+                Assert.AreEqual(3f, playerRoot.transform.position.x, 1e-4f, "the player root mirrors the seeded pose");
+                Assert.AreEqual(4f, playerRoot.transform.position.z, 1e-4f, "the scene Z survives the round trip");
+            }
+            finally
+            {
+                GameBoot.WorldNameOverride = null;
+                GameBoot.RootDirectoryOverride = null;
+                Object.Destroy(bootObject);
+            }
+
+            yield return null;
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, true);
+            }
         }
 
         private static bool IsQuiescent(StreamingRuntime streaming)
