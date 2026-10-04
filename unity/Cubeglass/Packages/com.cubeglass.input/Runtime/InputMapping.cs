@@ -261,10 +261,15 @@ namespace Cubeglass.Unity.Input
         /// <summary>
         /// Hard radial deadzone: a vector whose magnitude is at or below
         /// <paramref name="deadzone"/> becomes zero, everything else passes
-        /// through unchanged. NaN input and NaN deadzone are zero.
+        /// through unchanged. Non-finite input (NaN or infinity) is zero.
         /// </summary>
         public static Vector2f ApplyRadialDeadzone(Vector2f value, float deadzone)
         {
+            if (!float.IsFinite(value.X) || !float.IsFinite(value.Y))
+            {
+                return Vector2f.Zero;
+            }
+
             double x = value.X;
             double y = value.Y;
             double magnitude = Math.Sqrt((x * x) + (y * y));
@@ -279,11 +284,13 @@ namespace Cubeglass.Unity.Input
         /// <summary>
         /// Clamps a move vector to the unit disc, preserving its direction:
         /// vectors at or inside the disc pass through, longer ones are scaled
-        /// to length one. NaN input is zero.
+        /// to length one. Non-finite input (NaN or infinity) is zero; infinity
+        /// used to normalise into NaN, which the player state then rejected
+        /// per frame (review M-6).
         /// </summary>
         public static Vector2f ClampToUnit(Vector2f value)
         {
-            if (float.IsNaN(value.X) || float.IsNaN(value.Y))
+            if (!float.IsFinite(value.X) || !float.IsFinite(value.Y))
             {
                 return Vector2f.Zero;
             }
