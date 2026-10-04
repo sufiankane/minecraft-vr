@@ -633,13 +633,15 @@ the single source of truth in `docs/toolchains.md`.
 - `bench-dotnet`: three BenchmarkDotNet projects plus the ADR-0007 mesh p95
   harness with `--budget-ms 8` (the shared-runner CI budget; the release/local
   budget stays 2.0 ms per full 16^3 chunk, ADR-0007).
-- `bench-compare`: `depcheck benchregress` against
-  `docs/perf/nightly-baseline.json`, failing on a >10 percent regression. The
-  baseline file is **not committed yet**, so the gate currently passes with a
-  "baseline established" capture (TD-033).
-- `supply-chain`: NuGet `--vulnerable --include-transitive` and `pip-audit`.
-- `mutation`: Stryker.NET against `Cubeglass.Voxel`, break threshold 70
-  (Gameplay mutation is deferred, TD-031).
+- `bench-compare`: `depcheck benchregress` against the median of the last five
+  nightly summaries, held in the `nightly-bench-history-*` actions cache
+  (self-seeding; no committed baseline, TD-033/TD-054), failing on a >10 percent
+  regression and naming the benchmark (TD-034).
+- `supply-chain`: machine-readable NuGet `--vulnerable
+  --include-transitive --format json` (parsed by `depcheck nuget`), pinned
+  OSV-Scanner over the Python requirement files, and `pip-audit`.
+- `mutation`: Stryker.NET against `Cubeglass.Voxel`, break threshold 70, plus
+  the `mutation-gameplay` lane for `Cubeglass.Gameplay` (TD-031).
 - `soak`: 30-minute `glasses_soak` at 500 Hz, RSS growth budget 1 MiB, log
   uploaded with `if: always()`.
 
@@ -754,8 +756,7 @@ gate only; TD-012 monocular left-eye HUD with no stereo depth; TD-013 Input
 System mapping never landed; TD-014 `config.json` never loaded at runtime;
 TD-020 IMGUI paint paths have no automated coverage; TD-021 failed world-store
 writes are not retried; TD-029 clang-tidy covers only `cpp/core-math/src`;
-TD-033 nightly regression baseline not committed; TD-038 no release-artefact
-checksums; TD-046 branch protection bypassed for two CI-only PRs while hosted
+TD-046 branch protection bypassed for two CI-only PRs while hosted
 checks were blocked; TD-047 self-hosted runner is session-scoped.
 
 ### 9.3 Architecture-level limitations

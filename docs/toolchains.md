@@ -41,6 +41,16 @@ Invoke-WebRequest -UseBasicParsing -Uri 'https://public-cdn.cloud.unity3d.com/hu
 Verify with `unity --version`; the editor itself is the separately pinned
 "Unity editor" row above.
 
+The release workflow enforces both Unity CLI pins: the hosted route downloads
+the installer script and verifies its **SHA-256**
+(`b7f8003180c35d5fd5300c919bf4855359f39d87e9ced1091a71b2e960be8861`, TD-040)
+before executing it — set the `CG_UNITY_CLI_SHA256_OVERRIDE` repository variable
+after reviewing a newer script — and the self-hosted route asserts
+`unity --version` matches `1.0.0-beta.11` before any build. The `cpp-windows`
+job asserts `clang-format`/`clang-tidy` are exactly **23.1.2** (TD-037);
+`expect-red-format` installs the same version from the hash-pinned
+`python/requirements-ci.txt`.
+
 ## Format and lint scope
 
 `clang-format` covers every `cpp/**/*.{cpp,hpp,h,hh,cc,cxx}` file in the

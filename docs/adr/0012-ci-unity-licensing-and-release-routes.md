@@ -189,6 +189,31 @@ the Unity suites become mandatory in CI.
 - The v0.1.0 dispatch is the first end-to-end run of both routes and records
   the outcome in the release notes.
 
+## Amendment (2026-10-04): seat expiry, rotation runbook and hardened attach
+
+- The Unity **Student seat expires 2027-10-07**. The owner procedure is the
+  licence expiry/rotation runbook in `docs/ci.md` ("Licence expiry and rotation
+  runbook"): renew before the date, replace the `UNITY_LICENSE` (or
+  `UNITY_SERIAL`) secret if the exported `.ulf`/serial changes, re-activate the
+  Hub on the self-hosted machine, and verify with a release dispatch. Plan the
+  renewal 30 days ahead; an expired seat fails both routes at the activation
+  step (hosted) or the build guard (self-hosted), never silently.
+- **TD-036**: the attach step no longer requires `gh`.
+  `scripts/publish-release-assets.ps1` prefers `gh` and falls back to the
+  GitHub REST API with `GITHUB_TOKEN` (probe the tag, then delete-then-upload
+  per asset as the `--clobber` equivalent). The "gh is needed only for the
+  release attach, which the job skips with a warning when it is absent"
+  statement above is superseded: without `gh` the attach still happens.
+- **TD-040**: the hosted installer download is SHA-256 pinned before execution,
+  with the `CG_UNITY_CLI_SHA256_OVERRIDE` repository variable reserved for a
+  reviewed upgrade; the self-hosted route asserts `unity --version` is
+  `1.0.0-beta.11` before any build, so both routes pin the CLI.
+- **TD-055**: both attach jobs emit GitHub-signed build provenance for the
+  shipped zip (`actions/attest-build-provenance`); the checksums remain and are
+  attached as before. Verification:
+  `gh attestation verify <zip> --repo <owner>/<repo>`. Cryptographic release
+  signing with an owner-held key remains a vendor decision and is not wired.
+
 ## Links
 
 - Workflows: [release.yml](../../.github/workflows/release.yml),

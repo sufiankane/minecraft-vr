@@ -124,7 +124,7 @@ bytes. The layout tests document the padding explicitly.
 | `licence-allowlist.json` | Developers | `depcheck licences` (`python/depcheck/licences.py`) | SPDX-id and allowlist tests in `test_depcheck_licences.py` |
 | `abi-baseline.json` | `depcheck contracts --update` | `depcheck contracts` + CI | Fingerprint/refusal tests in `test_depcheck_contracts.py` |
 | Chunk delta save files | `ChunkDeltaCodec.Serialize` (tests; `FileWorldStore` in Unity writes temp+rename under the player's save dir) | `ChunkDeltaCodec.TryDeserialize` (tests; Unity load + boot replay) | Golden version-1 bytes and fuzz rejection in `ChunkDeltaCodecTests`; `PersistencePlayModeTests` round trip |
-| Benchmark JSON | Google Benchmark (C++ nightly), BenchmarkDotNet `JsonExporter` (.NET nightly) | `depcheck benchregress` in `bench-compare` | `docs/perf/nightly-baseline.json` (not committed yet; established on the first nightly run) |
+| Benchmark JSON | Google Benchmark (C++ nightly), BenchmarkDotNet `JsonExporter` (.NET nightly) | `depcheck benchregress` in `bench-compare` | the last five nightly summaries cached as `nightly-bench-history-*` (self-seeding; no committed baseline, TD-033/TD-054) |
 | Unity manifests / `ProjectVersion.txt` | Developers and the Unity editor | Unity editor/CLI, release workflow, `ci-local` Unity lane | `packages-lock.json` pins resolved versions; scene hashes pin rebuilt scenes |
 
 **Golden-fixture and test-writer roles.** `contracts/golden/transforms.json`

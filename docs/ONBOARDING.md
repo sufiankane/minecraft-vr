@@ -429,9 +429,10 @@ in the release workflow.
 | --- | --- |
 | `bench-cpp` | builds and runs `cg_core_math_benchmarks` (JSON artefact) |
 | `bench-dotnet` | runs the CoreMath/Voxel/Mesh benchmark projects and the mesh p95 budget harness (`--budget-ms 8`; 8 ms is the shared-runner CI budget, ADR-0007's 2.0 ms stays the release/local budget) |
-| `bench-compare` | 10 % regression check against `docs/perf/nightly-baseline.json`; while the baseline is missing the job captures it as an artefact (TD-033: commit that artefact to arm the gate) |
-| `supply-chain` | NuGet `--vulnerable --include-transitive` and `pip-audit` |
+| `bench-compare` | 10 % regression check against the median of the last five nightly summaries in the `nightly-bench-history-*` actions cache (self-seeding, TD-033/TD-054); the first run bootstraps |
+| `supply-chain` | machine-readable NuGet `--vulnerable --include-transitive --format json` via `depcheck nuget`, pinned OSV-Scanner over the Python requirements, and `pip-audit` |
 | `mutation` | Stryker on `Cubeglass.Voxel`, break threshold 70 |
+| `mutation-gameplay` | Stryker on `Cubeglass.Gameplay`, break threshold 70 (TD-031) |
 | `soak` | 30-minute `glasses_soak` leak gate, log always uploaded |
 
 ### Release
@@ -512,7 +513,7 @@ An S7 checklist box that fails is a finding: record the screenshot/log, reopen t
 | [`docs/notes/tech-debt.md`](notes/tech-debt.md) | The programme debt register (TD-NNN). Add rows, never delete or renumber; fixed items move to Closed with the PR |
 | [`docs/releases/v0.1.0.md`](releases/v0.1.0.md) | Release-candidate notes for M1, known issues and build/run instructions |
 | [`docs/reviews/2026-10-03-full-review.md`](reviews/2026-10-03-full-review.md) | The consolidated programme review: findings, dispositions, verification and residual owner actions |
-| [`docs/perf/README.md`](perf/README.md) | Performance methodology and budgets. Measured numbers are **not** committed; the nightly artefacts and `nightly-baseline.json` are the evidence |
+| [`docs/perf/README.md`](perf/README.md) | Performance methodology and budgets. Measured numbers are **not** committed; the nightly artefacts and the self-seeding benchmark-history cache are the evidence |
 | [`docs/ci.md`](ci.md), [`docs/ci/negative-gates.md`](ci/negative-gates.md) | Gate details, local reproduction and the dispatch-only negative self-tests |
 | [`docs/questions/`](questions/) | Escalations and HIL runbooks. Stop and ask via this directory if a gate cannot be met, a contract conflicts or hardware contradicts a recorded fact |
 | [`docs/superpowers/plans/`](superpowers/plans/) | The S0–S7 implementation plans (historical; the gate notes supersede them for results) |
