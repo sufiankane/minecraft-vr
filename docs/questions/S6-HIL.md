@@ -88,7 +88,8 @@ powershell -File scripts/sync-unity-plugins.ps1
    sizes the **main** window only: if the glasses display is not main, move the
    window to it at OS level, then confirm borderless fullscreen.
 4. Enter Play mode. Controls: **A/D** or left/right arrows yaw, **W/S** or
-   up/down arrows pitch, **Q/E** snap-turn, **R** recentre.
+   up/down arrows pitch, **F** snap right / **Shift+F** snap left (the current
+   S7 mapping; the older S6 text said Q/E, which are hotbar), **R** recentre.
 5. Tick the checklist in `docs/notes/s6-hil/checklist.md` (copy the template
    from this file below) with a screenshot/photo per observation where useful.
 
