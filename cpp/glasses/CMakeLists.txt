@@ -2,6 +2,7 @@ add_library(
     cg_glasses STATIC
     src/display_control.cpp
     src/fake_head_pose_source.cpp
+    src/file_hash.cpp
     src/replay_head_pose_source.cpp
     src/viture_loader.cpp
     src/viture_head_pose_source.cpp

@@ -1,12 +1,20 @@
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 
 #include <gtest/gtest.h>
 
+#include "cg/glasses/file_hash.hpp"
 #include "cg/glasses/viture_loader.hpp"
 #include "fake_viture_api.hpp"
 
@@ -14,6 +22,85 @@ namespace cg::glasses {
 namespace {
 
 using test::FakeVitureApi;
+
+/// The hash pin is read from the process environment; clear it once for the
+/// whole binary so a developer shell that exports it cannot change the
+/// outcome of the unrelated loader tests. Individual tests set it explicitly.
+class ClearHashPinEnvironment final : public ::testing::Environment {
+  public:
+    void SetUp() override { ClearHashPin(); }
+    void TearDown() override { ClearHashPin(); }
+
+  private:
+    static void ClearHashPin() {
+#ifdef _WIN32
+        _putenv_s("CG_VITURE_DLL_SHA256", "");
+#else
+        unsetenv("CG_VITURE_DLL_SHA256");
+#endif
+    }
+};
+
+[[maybe_unused]] const ::testing::Environment *const kClearHashPinEnvironment =
+    ::testing::AddGlobalTestEnvironment(new ClearHashPinEnvironment());
+
+/// Sets an environment variable for the enclosing scope and removes it (or
+/// restores nothing) afterwards. The tests run sequentially.
+class ScopedEnv {
+  public:
+    ScopedEnv(const char *name, const char *value) : name_(name) {
+#ifdef _WIN32
+        _putenv_s(name_.c_str(), value);
+#else
+        setenv(name_.c_str(), value, 1);
+#endif
+    }
+
+    ~ScopedEnv() {
+#ifdef _WIN32
+        _putenv_s(name_.c_str(), "");
+#else
+        unsetenv(name_.c_str());
+#endif
+    }
+
+    ScopedEnv(const ScopedEnv &) = delete;
+    ScopedEnv &operator=(const ScopedEnv &) = delete;
+
+  private:
+    std::string name_;
+};
+
+/// A unique temporary file removed on destruction. The tests never write a
+/// valid library, so the hash pin is exercised up to (and through) the open
+/// attempt.
+class TempFile {
+  public:
+    explicit TempFile(const std::string &contents) : path_(UniquePath()) {
+        std::ofstream stream(path_, std::ios::binary | std::ios::trunc);
+        stream.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    }
+
+    ~TempFile() {
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    TempFile(const TempFile &) = delete;
+    TempFile &operator=(const TempFile &) = delete;
+
+    [[nodiscard]] const std::filesystem::path &path() const noexcept { return path_; }
+
+  private:
+    static std::filesystem::path UniquePath() {
+        static std::atomic<std::uint64_t> counter{0};
+        const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+        return std::filesystem::temp_directory_path() /
+               ("cg_loader_pin_" + std::to_string(stamp) + "_" + std::to_string(counter.fetch_add(1)) + ".dll");
+    }
+
+    std::filesystem::path path_;
+};
 
 /// An absolute path outside the working directory that no build or install
 /// tree provides, so LoadLibraryExW/dlopen must fail without any vendor DLL.
@@ -37,6 +124,93 @@ TEST(VitureLoader, EmptyPathIsInvalidArgument) {
 
     ASSERT_FALSE(result.ok());
     EXPECT_EQ(result.status().code(), StatusCode::InvalidArgument);
+}
+
+// --- TD-051: self-contained SHA-256 and the optional content pin -----------
+
+TEST(FileHash, Sha256MatchesTheKnownFipsVectors) {
+    // FIPS 180-4 / NIST examples: SHA-256("abc") and SHA-256("").
+    const std::uint8_t abc[] = {'a', 'b', 'c'};
+    EXPECT_EQ(Sha256Hex(abc, sizeof(abc)), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    EXPECT_EQ(Sha256Hex(nullptr, 0), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+}
+
+TEST(FileHash, FileSha256HexReadsWholeFilesAndRejectsMissingPaths) {
+    const TempFile file("abc");
+    const std::optional<std::string> hash = FileSha256Hex(file.path());
+    ASSERT_TRUE(hash.has_value());
+    EXPECT_EQ(*hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    const std::filesystem::path path = file.path();
+    std::error_code error;
+    std::filesystem::remove(path, error);
+    EXPECT_FALSE(FileSha256Hex(path).has_value()) << "a missing file must not hash to a value";
+}
+
+TEST(VitureLoader, HashPinMismatchRefusesTheLibraryNamingBothDigests) {
+    const TempFile file("this is not a vendor library");
+    const std::string zeros(64, '0');
+    const ScopedEnv pin("CG_VITURE_DLL_SHA256", zeros.c_str());
+
+    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(file.path().string());
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), StatusCode::Unsupported);
+    const std::string message = result.status().message();
+    EXPECT_NE(message.find("hash mismatch"), std::string::npos) << "message was: " << message;
+    EXPECT_NE(message.find(zeros), std::string::npos) << "message was: " << message;
+    const std::optional<std::string> actual = FileSha256Hex(file.path());
+    ASSERT_TRUE(actual.has_value());
+    EXPECT_NE(message.find(*actual), std::string::npos) << "message was: " << message;
+}
+
+TEST(VitureLoader, MatchingHashPinProceedsToTheOpenAttempt) {
+    const TempFile file("this is not a vendor library");
+    const std::optional<std::string> hash = FileSha256Hex(file.path());
+    ASSERT_TRUE(hash.has_value());
+    // The known-vector test above pins that this helper computes real SHA-256.
+    const ScopedEnv pin("CG_VITURE_DLL_SHA256", hash->c_str());
+
+    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(file.path().string());
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), StatusCode::Unsupported);
+    const std::string message = result.status().message();
+    EXPECT_EQ(message.find("hash mismatch"), std::string::npos)
+        << "a matching pin must not be reported as a mismatch; the failure must come from the open attempt: "
+        << message;
+}
+
+TEST(VitureLoader, HashPinIsCaseInsensitive) {
+    const TempFile file("this is not a vendor library");
+    std::optional<std::string> hash = FileSha256Hex(file.path());
+    ASSERT_TRUE(hash.has_value());
+    std::transform(hash->begin(), hash->end(), hash->begin(), [](char character) {
+        return static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    });
+    const ScopedEnv pin("CG_VITURE_DLL_SHA256", hash->c_str());
+
+    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(file.path().string());
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(std::string(result.status().message()).find("hash mismatch"), std::string::npos)
+        << "an upper-case hex pin must match the lower-case digest";
+}
+
+TEST(VitureLoader, MalformedHashPinIsInvalidArgument) {
+    const TempFile file("x");
+    const ScopedEnv pin("CG_VITURE_DLL_SHA256", "not-a-hex-digest");
+
+    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(file.path().string());
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), StatusCode::InvalidArgument);
+    EXPECT_NE(std::string(result.status().message()).find("64 hex"), std::string::npos);
+}
+
+TEST(VitureLoader, HashPinOnAnUnreadablePathIsUnsupported) {
+    const ScopedEnv pin("CG_VITURE_DLL_SHA256", std::string(64, 'a').c_str());
+    const Result<std::unique_ptr<IVitureApi>> result = LoadVitureApi(MissingDllPath());
+    ASSERT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), StatusCode::Unsupported);
+    EXPECT_NE(std::string(result.status().message()).find("cannot read"), std::string::npos)
+        << "message was: " << result.status().message();
 }
 
 /// The seam tests below compile and pin the programmable fake the Task 2b

@@ -20,19 +20,24 @@
 
 #include "cg/glasses/viture_loader.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
 
+#include "cg/glasses/file_hash.hpp"
 #include "result.hpp"
 
 #ifdef _WIN32
@@ -79,25 +84,6 @@ std::wstring Utf8ToWide(const std::string &text) {
     return wide;
 }
 
-[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path) {
-    const std::wstring wide = Utf8ToWide(path);
-    if (wide.empty()) {
-        return nullptr;
-    }
-    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path and keeps the
-    // DLL's own directory available for its dependencies; DEFAULT_DIRS covers
-    // the application and user directories. Unlike the legacy search, neither
-    // flag consults the working directory or PATH, so a planted dependency
-    // next to the process cannot hijack the imports.
-    return LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-}
-
-void CloseLibrary(LibraryHandle handle) noexcept {
-    if (handle != nullptr) {
-        FreeLibrary(handle);
-    }
-}
-
 [[nodiscard]] std::string LastLibraryError() {
     const DWORD error = GetLastError();
     LPWSTR buffer = nullptr;
@@ -118,12 +104,49 @@ void CloseLibrary(LibraryHandle handle) noexcept {
     return message;
 }
 
+/// Opens `path`; on failure fills `error` with the reason for *this* call
+/// (CXX-11). A path that never reaches `LoadLibraryExW` (invalid UTF-8) gets
+/// its own message instead of a stale `GetLastError` value.
+[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path, std::string &error) {
+    const std::wstring wide = Utf8ToWide(path);
+    if (wide.empty()) {
+        error = "the DLL path is not valid UTF-8";
+        return nullptr;
+    }
+    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path and keeps the
+    // DLL's own directory available for its dependencies; DEFAULT_DIRS covers
+    // the application and user directories. Unlike the legacy search, neither
+    // flag consults the working directory or PATH, so a planted dependency
+    // next to the process cannot hijack the imports.
+    HMODULE handle =
+        LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (handle == nullptr) {
+        error = LastLibraryError();
+    }
+    return handle;
+}
+
+void CloseLibrary(LibraryHandle handle) noexcept {
+    if (handle != nullptr) {
+        FreeLibrary(handle);
+    }
+}
+
 #else
 
 using LibraryHandle = void *;
 
-[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path) noexcept {
-    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+/// Opens `path`; on failure fills `error` with the reason for *this* call
+/// (CXX-11). `dlerror()` is cleared first so a successful call cannot leave a
+/// stale message behind, and the failure message is captured immediately.
+[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path, std::string &error) noexcept {
+    (void)dlerror();
+    LibraryHandle handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr) {
+        const char *message = dlerror();
+        error = message == nullptr ? "dlopen failed" : message;
+    }
+    return handle;
 }
 
 void CloseLibrary(LibraryHandle handle) noexcept {
@@ -132,19 +155,34 @@ void CloseLibrary(LibraryHandle handle) noexcept {
     }
 }
 
-[[nodiscard]] std::string LastLibraryError() {
-    const char *error = dlerror();
-    return error == nullptr ? "dlopen failed" : error;
-}
-
 #endif
+
+/// Reads environment variable `name`, or an empty string when unset. Uses the
+/// MSVC-safe `_dupenv_s` on Windows (plain `getenv` is a C4996 error under
+/// `/W4 /WX`).
+[[nodiscard]] std::string ReadEnvironment(const char *name) {
+#ifdef _WIN32
+    char *value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, name) != 0 || value == nullptr) {
+        return {};
+    }
+    std::string result{value};
+    std::free(value);
+    return result;
+#else
+    const char *value = std::getenv(name);
+    return value == nullptr ? std::string{} : std::string{value};
+#endif
+}
 
 /// Outcome of validating a caller-supplied vendor-DLL path.
 ///
 /// A path is accepted only when it is absolute and either outside the working
 /// directory or a sibling of the running executable: the working directory is
-/// attacker-influenced, so a library there is a planted DLL. Authenticating
-/// the vendor DLL (signature/hash) remains open and is recorded as tech debt.
+/// attacker-influenced, so a library there is a planted DLL. The optional
+/// `CG_VITURE_DLL_SHA256` pin in `LoadVitureApi` additionally checks the file
+/// content; signature verification remains open (TD-051).
 [[nodiscard]] bool SamePath(const std::filesystem::path &left, const std::filesystem::path &right) {
 #ifdef _WIN32
     const std::wstring left_text = left.native();
@@ -439,10 +477,42 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
 #else
     const std::string resolved_path = resolved.string();
 #endif
-    LibraryHandle handle = OpenLibrary(resolved_path);
+
+    // TD-051: optional content pin. The path policy constrains where the
+    // library comes from; when the operator sets CG_VITURE_DLL_SHA256 the
+    // loader additionally refuses unexpected bytes before opening the file.
+    const std::string pin = ReadEnvironment("CG_VITURE_DLL_SHA256");
+    if (!pin.empty()) {
+        std::string expected = pin;
+        if (expected.size() != 64U || !std::all_of(expected.begin(), expected.end(), [](char character) {
+                return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+            })) {
+            return Err<std::unique_ptr<IVitureApi>>(
+                Status{StatusCode::InvalidArgument,
+                       InternMessage("viture_loader: CG_VITURE_DLL_SHA256 must be exactly 64 hex characters")});
+        }
+        std::transform(expected.begin(), expected.end(), expected.begin(), [](char character) {
+            return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        });
+        const std::optional<std::string> actual = FileSha256Hex(resolved);
+        if (!actual.has_value()) {
+            return Err<std::unique_ptr<IVitureApi>>(Status{
+                StatusCode::Unsupported, InternMessage("viture_loader: cannot read '" + dll_path +
+                                                       "' to verify CG_VITURE_DLL_SHA256; refusing the library")});
+        }
+        if (*actual != expected) {
+            return Err<std::unique_ptr<IVitureApi>>(Status{
+                StatusCode::Unsupported,
+                InternMessage("viture_loader: DLL hash mismatch for '" + dll_path + "': CG_VITURE_DLL_SHA256 expects " +
+                              expected + ", the file hashes to " + *actual + "; refusing the library")});
+        }
+    }
+
+    std::string open_error;
+    LibraryHandle handle = OpenLibrary(resolved_path, open_error);
     if (handle == nullptr) {
         return Err<std::unique_ptr<IVitureApi>>(
-            Status{StatusCode::Unsupported, InternMessage(dll_path + ": " + LastLibraryError())});
+            Status{StatusCode::Unsupported, InternMessage(dll_path + ": " + open_error)});
     }
 
     VitureApiFns fns{};
@@ -453,7 +523,16 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
             Status{StatusCode::Unsupported, InternMessage(std::string{missing} + ": symbol not found in " + dll_path)});
     }
 
-    std::unique_ptr<IVitureApi> api = std::make_unique<VendorVitureApi>(handle, fns);
+    // CXX-11: construct with `new (std::nothrow)` so an allocation failure
+    // cannot throw out of this function and cannot leak the library handle
+    // (the constructor is noexcept; only the allocation itself can fail).
+    std::unique_ptr<IVitureApi> api(new (std::nothrow) VendorVitureApi(handle, fns));
+    if (api == nullptr) {
+        CloseLibrary(handle);
+        return Err<std::unique_ptr<IVitureApi>>(
+            Status{StatusCode::Internal,
+                   InternMessage("viture_loader: out of memory constructing the vendor API for " + dll_path)});
+    }
     return Ok(std::move(api));
 }
 
