@@ -22,6 +22,7 @@ from depcheck.contracts import ContractError, check_contracts, update_baseline
 from depcheck.coverage_check import CoverageError, check_coverage
 from depcheck.golden import GOLDEN_FIXTURE_PARTS, GoldenError, verify_golden
 from depcheck.licences import LicenceError, check_licences, licence_report
+from depcheck.nuget import NugetError, scan_report
 from depcheck.rules import check_root
 
 _ROOT_HELP = "Repository root (default: current directory)."
@@ -240,6 +241,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Golden fixture path (default: <root>/contracts/golden/transforms.json).",
     )
+    nuget_parser = subparsers.add_parser(
+        "nuget",
+        help="Fail when a `dotnet list package --vulnerable --format json` report has findings.",
+    )
+    nuget_parser.add_argument(
+        "--report",
+        type=Path,
+        required=True,
+        help="Machine-readable report captured from dotnet list package --format json.",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "coverage":
@@ -299,6 +310,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         if golden_failures:
             return 1
         print("golden: all fixture cases match the independent Python reference")
+        return 0
+
+    if args.command == "nuget":
+        try:
+            findings = scan_report(args.report)
+        except NugetError as error:
+            print(f"nuget error: {error}")
+            return 1
+        for finding in findings:
+            print(finding)
+        if findings:
+            return 1
+        print("nuget: no vulnerable packages reported")
         return 0
 
     root: Path = args.root if args.root is not None else Path.cwd()
