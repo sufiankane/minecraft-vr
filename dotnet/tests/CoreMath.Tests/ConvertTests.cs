@@ -158,6 +158,28 @@ namespace Cubeglass.CoreMath.Tests
         }
 
         [Test]
+        public void ToNanosecondsSaturatesAtTheHostTimeRange()
+        {
+            // Mirrors the C++ time.hpp contract (M-11): every finite double and
+            // every infinity is total, independent of the runtime's float-to-long
+            // cast behaviour (Mono/IL2CPP do not saturate like CoreCLR).
+            Assert.That(HostTime.ToNanoseconds(double.NaN), Is.Zero, "NaN maps to zero");
+            Assert.That(HostTime.ToNanoseconds(double.PositiveInfinity), Is.EqualTo(long.MaxValue));
+            Assert.That(HostTime.ToNanoseconds(double.NegativeInfinity), Is.EqualTo(long.MinValue));
+            Assert.That(HostTime.ToNanoseconds(1e300), Is.EqualTo(long.MaxValue));
+            Assert.That(HostTime.ToNanoseconds(-1e300), Is.EqualTo(long.MinValue));
+            Assert.That(
+                HostTime.ToNanoseconds(HostTime.ToSeconds(long.MaxValue)),
+                Is.EqualTo(long.MaxValue),
+                "the largest representable stamp stays saturated, not wrapped");
+            Assert.That(
+                HostTime.ToNanoseconds(HostTime.ToSeconds(long.MinValue)),
+                Is.EqualTo(long.MinValue),
+                "the smallest representable stamp stays saturated, not wrapped");
+            Assert.That(HostTime.ToNanoseconds(9.2), Is.EqualTo(9_200_000_000L), "in-range values are untouched");
+        }
+
+        [Test]
         public void ToSecondsDividesByNanosecondsPerSecond()
         {
             // For this sample, division by 1e9 and multiplication by 1e-9 round differently:
