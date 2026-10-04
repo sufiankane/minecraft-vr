@@ -165,10 +165,20 @@ jobs:
       - name: Compare against the committed nightly baseline
         # Fails on >10% regression for any benchmark present in both the run
         # and docs/perf/nightly-baseline.json (dossier 9.9), naming the
-        # offender. While the baseline is missing, passes with a "baseline
-        # established" message and captures the run as the nightly-baseline
-        # artefact to be committed.
+        # offender. While the baseline is missing, the step still captures the
+        # run as the nightly-baseline artefact to be committed, and the step
+        # summary states explicitly that the comparison is not enforcing yet.
+        # Zero .NET report files is a hard error, never a silent skip.
         run: |
+          if [ ! -f docs/perf/nightly-baseline.json ]; then
+            {
+              echo "### Nightly benchmark gate"
+              echo ""
+              echo "No baseline is committed at \`docs/perf/nightly-baseline.json\`: **the regression comparison is NOT enforcing yet.**"
+              echo ""
+              echo "This run captured the measurements to the \`nightly-baseline\` artefact; commit that file (and re-run) to turn the gate on."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
           python -m depcheck benchregress \
             --baseline docs/perf/nightly-baseline.json \
             --format google --prefix cpp \
@@ -176,13 +186,15 @@ jobs:
             --capture artifacts/nightly-baseline.json
           shopt -s nullglob
           bdn=(artifacts/dotnet/results/*.json)
-          if [ ${#bdn[@]} -gt 0 ]; then
-            python -m depcheck benchregress \
-              --baseline docs/perf/nightly-baseline.json \
-              --format bdn --prefix dotnet \
-              --current "${bdn[@]}" \
-              --capture artifacts/nightly-baseline.json
+          if [ ${#bdn[@]} -eq 0 ]; then
+            echo "::error::no BenchmarkDotNet report JSON found under artifacts/dotnet/results; the .NET regression comparison did not run. The bench-dotnet job must upload BenchmarkDotNet.Artifacts/results/*.json."
+            exit 1
           fi
+          python -m depcheck benchregress \
+            --baseline docs/perf/nightly-baseline.json \
+            --format bdn --prefix dotnet \
+            --current "${bdn[@]}" \
+            --capture artifacts/nightly-baseline.json
 
       - name: Upload captured baseline
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -225,6 +237,7 @@ jobs:
         run: |
           python -m pip install pip-audit==2.10.1
           pip-audit -r python/requirements-dev.txt
+          pip-audit -r python/requirements-ci.txt
 
   mutation:
     name: mutation
