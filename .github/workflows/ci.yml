@@ -335,7 +335,7 @@ jobs:
         run: python -m ruff check .
 
       - name: mypy
-        run: python -m mypy calib depcheck
+        run: python -m mypy calib depcheck tests
 
       - name: pytest with coverage
         # Source is the project root so Cobertura filenames keep the module

@@ -48,9 +48,17 @@ python/coverage.xml
 .ctxo/
 .agents/
 .claude/
-.kilo/
+# .kilo/ holds live UI/runner state (agent-manager.json, worktrees) that must
+# never be committed, but the project rules under .kilo/rules/ are required
+# agent instructions and are version-controlled.
+.kilo/*
+!.kilo/rules/
 .mcp.json
 CLAUDE.md
+
+# Unity licence activation artefacts (machine/user specific, never commit)
+*.alf
+*.ulf
 
 # SDD workspace (never committed)
 .superpowers/

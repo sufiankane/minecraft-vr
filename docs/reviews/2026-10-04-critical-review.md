@@ -13,6 +13,11 @@ bypass on a scratch copy). Every Important/Critical fix landed with a test that
 fails pre-fix. The original reviewers verified each wave and two items were sent
 back for a second round (the contract-gate bypass and the include-scan evasions).
 
+**Source reports (committed 2026-10-04):** the four full per-domain reports are
+in [`critical/`](critical/) — `2026-10-04-critical-cpp.md`,
+`-dotnet.md`, `-unity.md`, `-security.md` — so every finding ID below is
+auditable.
+
 ## Findings and outcome
 
 | Domain | Critical | Important | Minor | Status |
@@ -70,7 +75,7 @@ back for a second round (the contract-gate bypass and the include-scan evasions)
   second round closed them; the Unity reviewer's follow-ups (R-1..R-5) were
   fixed and re-run.
 - Local gates at the branch head: C++ Debug 6/6 + `windows-release` 6/6 (+300×
-  race repeats), .NET 524/524, Python 114/114 + ruff/mypy, depcheck/contracts
+  race repeats), .NET 524/524, Python 117/117 + ruff/mypy, depcheck/contracts
   (coverage 92.96 %, floor 90), licences, Unity EditMode 152/152 + PlayMode
   50/50 with scene hashes unchanged, `ci-local -SkipUnity` ALL LANES PASS.
 - CI checks could not run on GitHub at this time (billing block, TD-045); the
