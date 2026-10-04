@@ -128,8 +128,12 @@ class FakeVitureApi final : public IVitureApi {
     }
 
     void DestroyDevice() noexcept override {
-        destroy_calls.fetch_add(1, std::memory_order_relaxed);
-        device_alive.store(false, std::memory_order_relaxed);
+        // The flag is stored before the counter increments, and both are
+        // release operations: a test that observes `destroy_calls` cannot see
+        // a stale `device_alive == true` between the two (the previous order
+        // made `WaitFor(destroy_calls >= 1)` + a flag read racy).
+        device_alive.store(false, std::memory_order_release);
+        destroy_calls.fetch_add(1, std::memory_order_release);
     }
 
     Result<void> StartPose() override {

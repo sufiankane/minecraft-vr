@@ -51,8 +51,14 @@ cg_head_sample CgSample(std::uint32_t sequence, std::int64_t sdk_time_ns, cg_tra
     return out;
 }
 
-bool WaitFor(const std::function<bool()> &predicate,
-             std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
+/// Watchdog for every wait in this suite. Predicate progress is always a
+/// published sequence/state or a manual-clock deadline, never wall-clock
+/// pacing, so the bound only stops a hung polling thread from hanging the
+/// suite: it is deliberately generous because a loaded sanitizer/coverage
+/// runner is not a test failure.
+constexpr std::chrono::milliseconds kWaitTimeout{30'000};
+
+bool WaitFor(const std::function<bool()> &predicate, std::chrono::milliseconds timeout = kWaitTimeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         if (predicate()) {
@@ -61,6 +67,27 @@ bool WaitFor(const std::function<bool()> &predicate,
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return predicate();
+}
+
+/// Clock-pumping wait for predicates whose progress the source gates on the
+/// manual clock (reconnect backoffs, quiet-state thresholds). The source
+/// derives its deadline from `clock.Now()` when it arms; advancing only after
+/// a failed probe means a deadline armed after a previous advance is still
+/// reached by a later one, so the wait never assumes that the polling thread
+/// observed a particular wall-clock instant.
+bool WaitForAdvancing(ManualHostClock &clock, Duration step, const std::function<bool()> &predicate,
+                      std::chrono::milliseconds timeout = kWaitTimeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    for (;;) {
+        if (predicate()) {
+            return true;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return false;
+        }
+        clock.Advance(step);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 bool WaitForSample(const VitureHeadPoseSource &source, HeadSample &out, std::uint32_t min_seq) {
@@ -110,29 +137,35 @@ TEST(VitureFault, PollErrorsReconnectWithDoublingBackoff) {
     ASSERT_TRUE(WaitForSample(source, first, 1U));
     EXPECT_EQ(first.seq, 1U);
 
-    // The first failure destroys the device, then waits 100 ms on the injected
-    // clock: frozen clock time means no reconnect.
+    // The first failure destroys the device and parks in the 100 ms backoff.
+    // The clock is frozen, so the reconnect deadline (armed at the current
+    // instant or later) cannot be reached by any amount of real time.
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() == 1U; }));
     EXPECT_EQ(api.create_calls.load(), 1U);
-    std::this_thread::sleep_for(std::chrono::milliseconds(60));
-    EXPECT_EQ(api.create_calls.load(), 1U);
 
-    clock.Advance(Duration{kHundredMillisecondsNs});
-    ASSERT_TRUE(WaitFor([&] { return api.create_calls.load() == 2U; }));
+    // Release the first backoff. The wait pumps the clock, so a deadline armed
+    // after an advance is reached by the next one.
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.create_calls.load() == 2U; }));
 
-    // The second consecutive failure doubles the backoff to 200 ms.
+    // The second consecutive failure doubles the backoff to 200 ms. Freeze the
+    // clock while the destroy is observed, then spend exactly half the doubled
+    // backoff: the deadline is at least 200 ms past this instant, so no create
+    // may be in flight yet.
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() == 2U; }));
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
     clock.Advance(Duration{kHundredMillisecondsNs});
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    EXPECT_EQ(api.create_calls.load(), 2U);
-    clock.Advance(Duration{kHundredMillisecondsNs});
-    ASSERT_TRUE(WaitFor([&] { return api.create_calls.load() == 3U; }));
+    EXPECT_EQ(api.create_calls.load(), 2U) << "the doubled backoff must not release after 100 ms";
 
+    // Pump the rest of the doubled backoff and wait for the reconnected sample.
+    // `state == Stable` keeps quiet synthetics (which carry the previous pose)
+    // out of the observation; the yaw pins that this is the scripted sample.
     HeadSample second = PlaceholderSample();
-    ASSERT_TRUE(WaitForSample(source, second, 2U));
-    EXPECT_EQ(second.seq, 2U);
-    EXPECT_GT(second.time, first.time);
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] {
+        return source.TryGetLatest(second, Duration{0}) && second.state == TrackState::Stable && second.seq >= 2U;
+    }));
+    EXPECT_GT(second.seq, first.seq);
+    EXPECT_NEAR(YawDegrees(second.pose), 1.0, 0.1) << "the reconnected sample must be the next scripted one";
+    EXPECT_GT(second.time, first.time) << "the reconnected sample must advance the mapped time";
     source.Stop();
 }
 
@@ -149,19 +182,29 @@ TEST(VitureFault, RemovalMidStreamDowngradesStableUnstableLost) {
     ASSERT_TRUE(WaitForSample(source, sample, 2U));
     ASSERT_EQ(sample.state, TrackState::Stable);
 
-    // Quiet for 400 ms: still Stable.
+    // The feed is exhausted: the next poll fails, destroys the device and
+    // parks in the 100 ms backoff.
+    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+
+    // Quiet for 400 ms: still Stable. The threshold is 500 ms and the clock
+    // only moves here, so no transition can have been published yet.
     clock.Advance(Duration{400 * kMillisecondNs});
-    std::this_thread::sleep_for(std::chrono::milliseconds(30));
     ASSERT_TRUE(source.TryGetLatest(sample, Duration{0}));
     EXPECT_EQ(sample.state, TrackState::Stable);
 
-    // Quiet past 500 ms: Unstable.
+    // Quiet past 500 ms: Unstable. `WaitBackoff` evaluates `PublishQuiet`
+    // every iteration, so once the clock is past the threshold the synthetic
+    // is published without a wall-clock delay; its time is the frozen instant
+    // the source observed.
     clock.Advance(Duration{200 * kMillisecondNs});
     ASSERT_TRUE(WaitForState(source, TrackState::Unstable, sample));
+    EXPECT_GE(sample.time, 500 * kMillisecondNs);
+    EXPECT_LT(sample.time, 1000 * kMillisecondNs);
 
     // Quiet past 1000 ms: Lost.
     clock.Advance(Duration{600 * kMillisecondNs});
     ASSERT_TRUE(WaitForState(source, TrackState::Lost, sample));
+    EXPECT_GE(sample.time, 1000 * kMillisecondNs);
     source.Stop();
 }
 
@@ -174,7 +217,9 @@ TEST(VitureFault, BlockingPollLeavesReadersWaitFreeAndStopPrompt) {
 
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // The counter advances before the delay starts, so this proves the polling
+    // thread is parked inside `PollPose` without a real-time sleep.
+    ASSERT_TRUE(WaitFor([&] { return api.poll_calls.load() >= 1U; }));
 
     HeadSample sample = PlaceholderSample();
     const auto read_start = std::chrono::steady_clock::now();
@@ -213,8 +258,11 @@ TEST(VitureFault, ResetFailureWithdrawsThePostedCorrection) {
 
     const Result<void> result = source.Recenter();
     ASSERT_TRUE(result.ok()) << result.status().message() << " (Recenter only posts the request)";
-    ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
-    ASSERT_TRUE(api.has_reset_pose.load(std::memory_order_acquire));
+    // `reset_origin_calls` increments before the seam body runs, so wait on the
+    // payload flag (published after the pose copy) instead; the counter then
+    // proves the seam was called exactly once.
+    ASSERT_TRUE(WaitFor([&] { return api.has_reset_pose.load(std::memory_order_acquire); }));
+    EXPECT_EQ(api.reset_origin_calls.load(), 1U);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[0]), sample.pose.position.x, 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[1]), sample.pose.position.y, 1e-6);
     EXPECT_NEAR(static_cast<double>(api.last_reset_pose[2]), sample.pose.position.z, 1e-6);
@@ -299,27 +347,24 @@ TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
     ASSERT_TRUE(source.TryGetLatest(during, Duration{0}));
     EXPECT_NEAR(YawDegrees(during.pose), 0.0, 0.1) << "the requested recentre must stay armed across the outage";
 
-    // Release the backoff on the manual clock. Advancing inside the predicate
+    // Release the backoff on the manual clock. Advancing inside the wait
     // cannot race the source's deadline computation: if the clock moves before
     // the wait arms, the next iteration advances it again.
-    ASSERT_TRUE(WaitFor([&] {
-        if (api.device_alive.load()) {
-            return true;
-        }
-        clock.Advance(Duration{kHundredMillisecondsNs});
-        return false;
-    }));
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.device_alive.load(); }));
 
     // The recreated device has not published yet, so the pending request must
     // wait for a fresh sample instead of applying the pre-loss pose.
     EXPECT_EQ(api.reset_origin_calls.load(), 0U);
     api.AllowOnePoll();
-    // Wait for the reader-visible effect, not just the seam call: the polling
-    // thread re-arms the correction after ResetOriginCarina returns.
+    // Require the seam call and the reader-visible effect together: the armed
+    // correction can zero a read before the polling thread resolves the
+    // request, so only the counter proves the resolution happened, and
+    // `state == Stable` keeps quiet synthetics out of the read.
     HeadSample recentred = PlaceholderSample();
     ASSERT_TRUE(WaitFor([&] {
-        return source.TryGetLatest(recentred, Duration{0}) && recentred.seq >= 2U &&
-               std::abs(YawDegrees(recentred.pose)) < 0.1;
+        return api.reset_origin_calls.load() == 1U && api.has_reset_pose.load(std::memory_order_acquire) &&
+               source.TryGetLatest(recentred, Duration{0}) && recentred.state == TrackState::Stable &&
+               recentred.seq >= 2U && std::abs(YawDegrees(recentred.pose)) < 0.1;
     })) << "the applied recentre must zero the newest session sample";
     EXPECT_EQ(api.reset_origin_calls.load(), 1U);
     EXPECT_TRUE(api.has_reset_pose.load(std::memory_order_acquire));
@@ -358,7 +403,7 @@ TEST(VitureFault, RecenterDoesNotStallThePollingThread) {
     EXPECT_LT(call_elapsed, std::chrono::milliseconds(250)) << "Recenter must return once the request is posted";
     ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
     // Progress is observed through the seam, never through TryGetLatest.
-    ASSERT_TRUE(WaitFor([&] { return api.poll_calls.load() > polls_before; }, std::chrono::milliseconds(1000)))
+    ASSERT_TRUE(WaitFor([&] { return api.poll_calls.load() > polls_before; }))
         << "the polling thread stalled waiting for a reader after the recentre";
     source.Stop();
 }
@@ -393,6 +438,10 @@ TEST(VitureFault, StartPoseFailureDestroysTheDeviceThenRetrySucceeds) {
     ManualHostClock clock;
     api.start_script = {Err<void>(Status{StatusCode::Device, "fake: start pose failed"})};
     api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 0.0)};
+    // Keep the retried session alive after the scripted sample: the retry must
+    // reach the feed, and the `device_alive` observation below must not race
+    // the poll loop tearing down an exhausted feed.
+    api.empty_poll_result = Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 1.0));
 
     VitureHeadPoseSource source(api, clock);
     const Result<void> first = source.Start();
@@ -475,15 +524,12 @@ TEST(VitureFault, SdkClockRestartAfterReconnectDoesNotRegressMappedTime) {
     ASSERT_TRUE(WaitForSample(source, last_before, 9U));
 
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
-    // Advance the backoff clock inside the predicate so the advance cannot
-    // race the source arming its deadline.
+    // Pump the backoff clock and require a *Stable* sample: a deadline armed
+    // after an advance is reached by a later one, and quiet synthetics cannot
+    // satisfy the predicate.
     HeadSample second = PlaceholderSample();
-    ASSERT_TRUE(WaitFor([&] {
-        if (source.TryGetLatest(second, Duration{0}) && second.seq >= 10U) {
-            return true;
-        }
-        clock.Advance(Duration{kHundredMillisecondsNs});
-        return false;
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] {
+        return source.TryGetLatest(second, Duration{0}) && second.state == TrackState::Stable && second.seq >= 10U;
     }));
     EXPECT_GT(second.time, last_before.time) << "a restarted SDK clock must not regress the mapped time";
     source.Stop();
@@ -495,7 +541,7 @@ TEST(VitureFault, SdkClockRestartAfterReconnectDoesNotRegressMappedTime) {
 TEST(VitureFault, ReconnectCapStopsRecreatingAndRecoversOnLostProbe) {
     FakeVitureApi api;
     ManualHostClock clock;
-    api.poll_delay_ns = 1'000'000; // 1 ms per poll keeps the assertions race-free.
+    api.poll_delay_ns = 1'000'000; // 1 ms per poll: paces the fake, no assertion depends on it.
     const std::int64_t kSdkStart = 1'000'000'000;
     api.poll_script.push_back(Ok(CgSample(1, kSdkStart, CG_TRACK_STABLE, 0.0)));
     for (int i = 0; i < 20; ++i) {
@@ -511,42 +557,38 @@ TEST(VitureFault, ReconnectCapStopsRecreatingAndRecoversOnLostProbe) {
     HeadSample first = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, first, 1U));
 
-    // Release every backoff (0.1+0.2+0.4+0.8+1.6+2*5 = 13.1 s). Every retry
-    // re-arms its deadline from the current clock, so advance it tick by tick.
-    for (int tick = 0; tick < 40 && api.create_calls.load() < 11U; ++tick) {
-        clock.Advance(Duration{1'000'000'000});
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    // Release every backoff (0.1+0.2+0.4+0.8+1.6+2*5 = 13.1 s) until the cap
+    // stops recreating. The wait pumps the clock in 500 ms steps: every
+    // reconnect deadline is at most 2 s away, and a deadline armed after a
+    // step is reached by a later one.
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{500 * kMillisecondNs}, [&] { return api.create_calls.load() >= 11U; }));
     ASSERT_EQ(api.create_calls.load(), 11U) << "10 recreates must have been attempted";
     HeadSample lost = PlaceholderSample();
     ASSERT_TRUE(WaitForState(source, TrackState::Lost, lost));
     EXPECT_EQ(api.create_calls.load(), 11U);
 
-    // The probe keeps running on the clock without recreating: 2 s per poll.
-    clock.Advance(Duration{2'500'000'000});
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(api.create_calls.load(), 11U);
+    // The capped thread keeps probing every 2 s on the clock without creating
+    // another device. Pair each clock release with the poll it triggers, so
+    // the negative assertion does not depend on a wall-clock delay.
+    for (int probe = 0; probe < 2; ++probe) {
+        const std::uint64_t polls_before = api.poll_calls.load();
+        ASSERT_TRUE(WaitForAdvancing(clock, VitureHeadPoseSource::kMaxBackoff,
+                                     [&] { return api.poll_calls.load() > polls_before; }));
+        EXPECT_EQ(api.create_calls.load(), 11U) << "a capped probe must not create a device";
+    }
     HeadSample still_lost = PlaceholderSample();
     ASSERT_TRUE(source.TryGetLatest(still_lost, Duration{0}));
     EXPECT_EQ(still_lost.state, TrackState::Lost);
-    clock.Advance(Duration{2'500'000'000});
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(api.create_calls.load(), 11U);
 
     // A successful poll resets the streak and continues the sequence. Each
     // capped probe re-arms its 2 s deadline from the current clock, so keep
-    // stepping the clock until the scripted success is reached.
+    // pumping until the scripted success is reached.
     HeadSample recovered = PlaceholderSample();
-    ASSERT_TRUE(WaitFor(
-        [&] {
-            if (source.TryGetLatest(recovered, Duration{0}) && recovered.state == TrackState::Stable &&
-                recovered.seq > lost.seq) {
-                return true;
-            }
-            clock.Advance(Duration{2'500'000'000});
-            return false;
-        },
-        std::chrono::milliseconds(3000)));
+    ASSERT_TRUE(WaitForAdvancing(clock, VitureHeadPoseSource::kMaxBackoff, [&] {
+        return source.TryGetLatest(recovered, Duration{0}) && recovered.state == TrackState::Stable &&
+               recovered.seq > lost.seq;
+    }));
     EXPECT_GT(recovered.time, lost.time);
     EXPECT_EQ(api.create_calls.load(), 11U);
     source.Stop();
@@ -570,10 +612,12 @@ TEST(VitureFault, NoReconnectAfterStop) {
     EXPECT_EQ(api.create_calls.load(), 1U);
 
     source.Stop();
+    // Stop joins the polling thread, so no API call can follow; advancing the
+    // clock cannot revive the cancelled backoff and no wall-clock grace period
+    // is needed.
     const std::uint64_t creates_at_stop = api.create_calls.load();
     const std::uint64_t destroys_at_stop = api.destroy_calls.load();
     clock.Advance(Duration{5'000'000'000});
-    std::this_thread::sleep_for(std::chrono::milliseconds(40));
     EXPECT_EQ(api.create_calls.load(), creates_at_stop);
     EXPECT_EQ(api.destroy_calls.load(), destroys_at_stop);
 }
@@ -592,17 +636,14 @@ TEST(VitureFault, SequenceStaysMonotonicAcrossReconnect) {
     ASSERT_TRUE(WaitForSample(source, first, 1U));
 
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
-    // Advance the backoff clock inside the predicate so the advance cannot
-    // race the source arming its deadline.
+    // Pump the backoff clock and require the next *Stable* sample: a deadline
+    // armed after an advance is reached by a later one, and quiet synthetics
+    // (which repeat the previous pose) cannot satisfy the predicate.
     HeadSample second = PlaceholderSample();
-    ASSERT_TRUE(WaitFor([&] {
-        if (source.TryGetLatest(second, Duration{0}) && second.seq >= 2U) {
-            return true;
-        }
-        clock.Advance(Duration{kHundredMillisecondsNs});
-        return false;
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] {
+        return source.TryGetLatest(second, Duration{0}) && second.state == TrackState::Stable && second.seq > first.seq;
     }));
-    EXPECT_EQ(second.seq, 2U);
+    EXPECT_NEAR(YawDegrees(second.pose), 2.0, 0.1) << "the reconnected sample must be the next scripted one";
     EXPECT_GT(second.time, first.time);
     source.Stop();
 }
