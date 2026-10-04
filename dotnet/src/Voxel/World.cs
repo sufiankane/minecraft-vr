@@ -76,7 +76,10 @@ namespace Cubeglass.Voxel
         /// Builds a read-only view of the loaded chunks around
         /// <paramref name="coord"/> for border meshing (ADR-0007). Chunks that
         /// are not loaded are absent from the view and read as
-        /// <see cref="BlockId.Air"/>.
+        /// <see cref="BlockId.Air"/>. A neighbour coordinate outside the
+        /// <see cref="int"/> range does not exist and is skipped, so the
+        /// lookup can never wrap onto a chunk at the opposite end of the
+        /// coordinate space.
         /// </summary>
         public NeighbourSnapshot CreateNeighbourSnapshot(ChunkCoord coord)
         {
@@ -93,7 +96,17 @@ namespace Cubeglass.Voxel
                             continue;
                         }
 
-                        var neighbourCoord = new ChunkCoord(coord.X + dx, coord.Y + dy, coord.Z + dz);
+                        long x = (long)coord.X + dx;
+                        long y = (long)coord.Y + dy;
+                        long z = (long)coord.Z + dz;
+                        if (x < int.MinValue || x > int.MaxValue
+                            || y < int.MinValue || y > int.MaxValue
+                            || z < int.MinValue || z > int.MaxValue)
+                        {
+                            continue;
+                        }
+
+                        var neighbourCoord = new ChunkCoord((int)x, (int)y, (int)z);
                         if (_chunks.TryGetValue(neighbourCoord, out Chunk? chunk))
                         {
                             var direction = new Int3(dx, dy, dz);
