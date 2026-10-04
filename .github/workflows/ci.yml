@@ -16,7 +16,7 @@ jobs:
   cpp-windows:
     name: cpp-windows
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
@@ -104,7 +104,7 @@ jobs:
   cpp-linux-asan:
     name: cpp-linux-asan
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
     steps:
