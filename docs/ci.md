@@ -2,15 +2,18 @@
 
 `.github/workflows/ci.yml` runs on every pull request and on every push to
 `main`. A run is cancelled when a newer commit arrives on the same ref
-(`concurrency: cancel-in-progress`). Every job below is a required status check:
-merging is blocked while any of them fails.
+(`concurrency: cancel-in-progress`). The six job contexts below are the required
+status checks: merging is blocked while any of them fails. Branch protection
+lives in the GitHub repository settings (recorded in
+[`docs/notes/s0-gate.md`](notes/s0-gate.md)), not in this repository, so verify
+it after any job rename.
 
 ## Jobs
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
 | `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over `cpp/core-math/src` (other modules deferred; see below) |
-| `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan build and `ctest` |
+| `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan `ctest`, the TSan preset and concurrency tests, plus the `linux-coverage` build and the `core-math` coverage floor |
 | `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, per-project `dotnet test` with `XPlat Code Coverage`, and the module coverage floors |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy`, `pytest` |
 | `depcheck` | `ubuntu-latest` | `python -m depcheck --root .` (inward-only dependency rules and `layers.json` completeness) and `python -m depcheck contracts --root .` (contract-compatibility gate) |
@@ -29,6 +32,12 @@ Ninja, clang-format, clang-tidy, MSVC, Python) are deliberately not
 version-locked: each relevant job prints a "Toolchain versions" step so image
 drift is visible in the run log. Local development pins live in
 [`docs/toolchains.md`](toolchains.md).
+
+Python dependencies are version-pinned in `python/requirements-dev.txt` but not
+hash-pinned (`--require-hashes`). Hash-locking every transitive dependency plus
+the inline `gcovr==8.6` install is deferred as a dedicated supply-chain task
+rather than half-implemented; the nightly `supply-chain` job audits the same
+requirements with `pip-audit` in the meantime.
 
 `cpp-linux-asan` runs the `linux-asan` test preset because the `ci` test preset
 in `cpp/CMakePresets.json` is bound to the `windows-msvc` configure preset.
@@ -149,7 +158,7 @@ Workflow syntax can be checked with
 [`actionlint`](https://github.com/rhysd/actionlint):
 
 ```powershell
-actionlint .github/workflows/ci.yml
+actionlint .github/workflows/ci.yml .github/workflows/nightly.yml .github/workflows/release.yml .github/workflows/negative-gates.yml
 ```
 
 ## Coverage floors
@@ -208,7 +217,7 @@ path: every floor above is enforced from its job's coverage report. See
 - `bench-compare`: downloads both artefacts and runs
   `python -m depcheck benchregress` against the committed
   `docs/perf/nightly-baseline.json`. A benchmark present in both the run and the
-  baseline that regresses by more than 15 percent fails the job and names the
+  baseline that regresses by more than 10 percent fails the job and names the
   offender. While the baseline file is missing, the job passes with a
   `baseline established` message and uploads the captured run as the
   `nightly-baseline` artefact; committing that file enables enforcement from the
@@ -237,15 +246,35 @@ missing one. With the secrets present it builds the managed plugins
 `scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` target from the
 pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
 `unity/Cubeglass/Assets/Plugins/win-x64/`. The staged DLLs are git-ignored, so
-`allowDirtyBuild: false` still holds. It then runs `game-ci/unity-builder@v4`
-(Unity 6000.6.3f1 from `ProjectSettings/ProjectVersion.txt`,
-`StandaloneWindows64`) with the committed build method
-`Cubeglass.Editor.BuildPlayer.BuildWindows64`, packages
+`allowDirtyBuild: false` still holds.
+
+Tagged releases are test-gated. Per-PR CI does not run Unity (the required jobs
+are secret-free and `windows-latest` has no editor), so `scripts/ci-local.ps1`
+is the only per-commit Unity lane and the release is where the suites become
+mandatory in CI: before the player build the release installs the pinned Unity
+CLI (`1.0.0-beta.11`) and Editor (`6000.6.3f1`), activates the licence from
+`UNITY_LICENSE` and runs the same
+`unity test unity/Cubeglass --mode EditMode --non-interactive` and
+`--mode PlayMode --non-interactive` suites ci-local runs locally. The release
+fails when results are missing, a required test assembly is absent, any test
+fails or any test is skipped.
+
+The player build runs `game-ci/unity-builder` **v6.0.0** (SHA-pinned) with
+`cliVersion: v0.1.72` pinned so the action cannot resolve a floating `latest`
+while the Unity secrets are in scope (Unity 6000.6.3f1 from
+`ProjectSettings/ProjectVersion.txt`, `StandaloneWindows64`) and the committed
+build method `Cubeglass.Editor.BuildPlayer.BuildWindows64`, packages
 `Cubeglass-windows-x64.zip`, uploads it as the `Cubeglass-windows-x64` artefact
-and, when `gh release view v0.1.0` succeeds, attaches the archive to the
-release. Until the secrets and the HIL playtest exist, the release notes in
-[`releases/v0.1.0.md`](releases/v0.1.0.md) describe a release candidate and the
-`stage-7-complete` tag is withheld.
+and attaches the archive to the release when `v0.1.0` exists. A missing release
+is a normal outcome: the probe captures its exit code, clears the native exit
+state, and the player stays available as the workflow artefact (the bug fixed in
+the 2026-10-03 infra review, I-1). Until the HIL playtest exists, the release
+notes in [`releases/v0.1.0.md`](releases/v0.1.0.md) describe a release candidate
+and the `stage-7-complete` tag is withheld.
+
+All four workflows pin every action to a full commit SHA with a version comment,
+and `.github/dependabot.yml` proposes grouped minor/patch updates weekly for
+GitHub Actions, NuGet and pip.
 
 ## Negative gates
 

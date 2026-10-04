@@ -28,6 +28,19 @@ Baseline recorded on 2026-10-01 (Windows x64).
 | GitHub CLI | 2.102.0 | `gh --version` | `winget install --id GitHub.cli --exact --accept-source-agreements --accept-package-agreements` |
 | Node | 24.19.0 | `node --version` | already installed (Node.js 24 LTS) |
 
+Out-of-band prerequisite (not parsed by `bootstrap-dev.ps1 -Check`): the Unity
+CLI (`unity`) **1.0.0-beta.11**, required by the `ci-local.ps1` Unity lane and
+the release test gate. Install the pinned version from a PowerShell prompt:
+
+```powershell
+$env:UNITY_CLI_CHANNEL = 'beta'
+Invoke-WebRequest -UseBasicParsing -Uri 'https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1' -OutFile "$env:TEMP\unity-cli-install.ps1"
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\unity-cli-install.ps1" -Target '1.0.0-beta.11'
+```
+
+Verify with `unity --version`; the editor itself is the separately pinned
+"Unity editor" row above.
+
 ## Format and lint scope
 
 `clang-format` covers every `cpp/**/*.{cpp,hpp,h,hh,cc,cxx}` file in the
