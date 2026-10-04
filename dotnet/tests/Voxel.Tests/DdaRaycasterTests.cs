@@ -40,6 +40,31 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
+        public void CastNormalisesAHugeFiniteDirectionInsteadOfReturningNull()
+        {
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(2, 0, 0), Stone));
+            var ray = new Ray(new Vec3(-0.5, 0.5, 0.5), new Vec3(1e200, 0.0, 0.0));
+
+            RayHit? result = new DdaRaycaster().Cast(world, ray, 10f);
+
+            Assert.That(result, Is.Not.Null, "a huge finite direction is still a direction");
+            Assert.That(result.GetValueOrDefault().Cell, Is.EqualTo(new Int3(2, 0, 0)));
+            Assert.That(result.GetValueOrDefault().Distance, Is.EqualTo(2.5f));
+        }
+
+        [Test]
+        public void CastNormalisesAHugeDiagonalDirection()
+        {
+            World world = TestWorld.CreateLoaded(Origin, (new Int3(1, 1, 0), Stone));
+            var ray = new Ray(new Vec3(0.25, 0.25, 0.5), new Vec3(1e200, 1e200, 0.0));
+
+            RayHit? result = new DdaRaycaster().Cast(world, ray, 10f);
+
+            Assert.That(result, Is.Not.Null, "a huge finite diagonal is still a direction");
+            Assert.That(result.GetValueOrDefault().Cell, Is.EqualTo(new Int3(1, 1, 0)));
+        }
+
+        [Test]
         public void CastStartingInsideASolidCellReturnsThatCellWithAZeroNormal()
         {
             World world = TestWorld.CreateLoaded(Origin, (new Int3(0, 0, 0), Stone));
