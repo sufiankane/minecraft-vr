@@ -10,3 +10,6 @@
 *.md text eol=lf
 *.pgm -text
 data/** -text
+# Unity rewrites ProjectSettings assets with CRLF; pin the working-tree EOL so
+# `git status` stops showing empty-diff modifications after Unity runs.
+unity/Cubeglass/ProjectSettings/*.asset text eol=crlf

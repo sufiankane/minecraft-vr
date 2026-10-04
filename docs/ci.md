@@ -129,7 +129,7 @@ cd python
 python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 python -m ruff check .
-python -m mypy calib depcheck
+python -m mypy calib depcheck tests
 python -m pytest
 
 # Dependency-rule gate

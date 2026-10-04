@@ -201,7 +201,7 @@ try {
         Push-Location $PythonDir
         try {
             Invoke-Checked 'python -m ruff check .' { & $VenvPython -m ruff check . }
-            Invoke-Checked 'python -m mypy calib depcheck' { & $VenvPython -m mypy calib depcheck }
+            Invoke-Checked 'python -m mypy calib depcheck tests' { & $VenvPython -m mypy calib depcheck tests }
             Invoke-Checked 'python -m pytest' { & $VenvPython -m pytest }
         }
         finally {

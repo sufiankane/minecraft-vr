@@ -42,6 +42,7 @@ def _run(
     assemblies: str = "Cubeglass.Unity.Bridge.Tests.dll",
     test_exit_code: int = 0,
 ) -> subprocess.CompletedProcess[str]:
+    assert POWERSHELL is not None  # pytestmark skips these tests otherwise
     return subprocess.run(
         [
             POWERSHELL,
