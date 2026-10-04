@@ -206,8 +206,13 @@ bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
     const RecentreState::Value recentre = recentre_state_.Load();
     const bool recentred = recentre.pending || newest.seq <= recentre.until_seq;
     const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
-    if (recentred || capped_ns > 0) {
-        const double dt_s = core_math::ToSeconds(capped_ns);
+    // Prediction is only valid for live tracking. Through a quiet synthetic
+    // (`Unstable`/`Lost`, the last pose with no new samples) there is nothing
+    // to extrapolate: return it unchanged (CXX-12), still applying any recentre
+    // correction armed for it.
+    const bool predict_enabled = newest.state == TrackState::Stable;
+    const double dt_s = predict_enabled ? core_math::ToSeconds(capped_ns) : 0.0;
+    if (recentred || dt_s > 0.0) {
         const double yaw_delta_deg =
             (recentred ? recentre.yaw_offset_deg : 0.0) + yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
         const double pitch_delta_deg = pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
@@ -217,7 +222,7 @@ bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
                 out.pose.rotation *
                 core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_delta_deg * kDegreesToRadians);
         }
-        if (capped_ns > 0) {
+        if (dt_s > 0.0) {
             out.time = newest.time + capped_ns;
         }
     }

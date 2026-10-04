@@ -674,13 +674,22 @@ SourceUnderTest MakeVitureSource() {
             raw->AllowOnePoll();
             const std::uint32_t target = last_seq->load() + 1;
             HeadSample sample = PlaceholderSample();
+            bool reached = false;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
             while (std::chrono::steady_clock::now() < deadline) {
                 if (raw->TryGetLatest(sample, Duration{0}) && sample.seq >= target) {
                     last_seq->store(sample.seq);
+                    reached = true;
                     break;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // CXX-18: a silent under-advance would make every later contract
+            // case assert against a stale sample. A step that stops early
+            // because the source was stopped mid-advance is not a failure.
+            if (!reached && !raw->stopped()) {
+                ADD_FAILURE() << "viture harness under-advanced: target seq " << target
+                              << " was not published within 2 s";
             }
         }
     };
