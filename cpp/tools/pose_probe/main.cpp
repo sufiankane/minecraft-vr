@@ -265,8 +265,11 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string &
             if (!NextValue(argc, argv, index, arg, value, error)) {
                 return ParseOutcome::Error;
             }
-            if (!ParseDouble(value, options.rate_hz) || options.rate_hz <= 0.0) {
-                error = "--rate must be a finite positive number";
+            // A period that rounds to 0 ns would spin the fake driver and make
+            // the replay fixed grid degenerate (CXX-08).
+            if (!ParseDouble(value, options.rate_hz) || options.rate_hz <= 0.0 ||
+                cg::core_math::ToNanoseconds(1.0 / options.rate_hz) <= 0) {
+                error = "--rate must be a finite positive rate whose period is at least 1 ns";
                 return ParseOutcome::Error;
             }
             options.rate_set = true;

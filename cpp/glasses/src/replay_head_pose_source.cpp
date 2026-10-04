@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -11,6 +12,7 @@
 #include "cg/core_math/quat.hpp"
 #include "cg/core_math/time.hpp"
 #include "cg/core_math/vec3.hpp"
+#include "host_time_delta.hpp"
 #include "yaw_unwrap.hpp"
 
 namespace cg::glasses {
@@ -163,6 +165,13 @@ Result<void> ReplayHeadPoseSource::Load() {
         if (have_previous_time && host_time_ns <= previous_host_time) {
             return Fail(line_number, "host_time_ns must strictly increase");
         }
+        // Reject a row whose delta from the previous row is not representable
+        // as int64 (e.g. INT64_MIN then INT64_MAX): computing that interval
+        // would be signed-overflow UB and any rate derived from it is
+        // meaningless anyway (CXX-05).
+        if (have_previous_time && !detail::RepresentablePositiveDelta(host_time_ns, previous_host_time).has_value()) {
+            return Fail(line_number, "host_time_ns delta from the previous row is out of range");
+        }
 
         double sdk_time_s = 0.0;
         if (!ParseFiniteDouble(Trim(fields[1]), sdk_time_s)) {
@@ -233,9 +242,12 @@ void ReplayHeadPoseSource::PublishNext() noexcept {
         return;
     }
     const Row &row = rows_[next_index_++];
-    const HostTime delta_ns = row.host_time_ns - clock_.Now();
-    if (delta_ns > 0) {
-        clock_.Advance(Duration{delta_ns});
+    // Advance in unsigned arithmetic through the shared helper: a recorded
+    // row time below the current clock (or a delta that cannot be represented)
+    // advances nothing instead of invoking signed-overflow UB (CXX-05).
+    const std::optional<HostTime> delta_ns = detail::RepresentablePositiveDelta(row.host_time_ns, clock_.Now());
+    if (delta_ns.has_value()) {
+        clock_.Advance(Duration{*delta_ns});
     }
     UpdateRate(row);
     const HeadSample sample{row.host_time_ns, row.pose, row.state, next_seq_++};
@@ -295,15 +307,21 @@ Result<void> ReplayHeadPoseSource::Fail(std::int64_t line_number, std::string re
 void ReplayHeadPoseSource::UpdateRate(const Row &row) noexcept {
     double yaw_deg = YawDegrees(row.pose);
     const double pitch_deg = PitchDegrees(row.pose);
-    if (has_previous_ && row.host_time_ns > previous_time_) {
-        // Keep the absolute yaw continuous across the +/-180 degree seam so
-        // the rate never spikes and `latest_yaw_deg_` stays replay-local.
-        const double delta_yaw_deg = detail::UnwrapYawDeltaDegrees(yaw_deg - previous_yaw_deg_);
-        yaw_deg = previous_yaw_deg_ + delta_yaw_deg;
-        const double dt_s = core_math::ToSeconds(row.host_time_ns - previous_time_);
-        if (dt_s > 0.0) {
-            yaw_rate_deg_per_s_.store(delta_yaw_deg / dt_s, std::memory_order_relaxed);
-            pitch_rate_deg_per_s_.store((pitch_deg - previous_pitch_deg_) / dt_s, std::memory_order_relaxed);
+    if (has_previous_) {
+        // The loader rejects unrepresentable row deltas, so this normally has
+        // a value; the helper keeps the computation overflow-free even for a
+        // dataset that bypassed `Load` (CXX-05).
+        const std::optional<HostTime> delta_ns = detail::RepresentablePositiveDelta(row.host_time_ns, previous_time_);
+        if (delta_ns.has_value()) {
+            // Keep the absolute yaw continuous across the +/-180 degree seam
+            // so the rate never spikes and `latest_yaw_deg_` stays replay-local.
+            const double delta_yaw_deg = detail::UnwrapYawDeltaDegrees(yaw_deg - previous_yaw_deg_);
+            yaw_deg = previous_yaw_deg_ + delta_yaw_deg;
+            const double dt_s = core_math::ToSeconds(*delta_ns);
+            if (dt_s > 0.0) {
+                yaw_rate_deg_per_s_.store(delta_yaw_deg / dt_s, std::memory_order_relaxed);
+                pitch_rate_deg_per_s_.store((pitch_deg - previous_pitch_deg_) / dt_s, std::memory_order_relaxed);
+            }
         }
     }
     previous_yaw_deg_ = yaw_deg;

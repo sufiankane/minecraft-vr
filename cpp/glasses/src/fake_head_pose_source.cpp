@@ -70,6 +70,12 @@ Result<void> FakeHeadPoseSource::Start() {
     if (!std::isfinite(config_.rate_hz) || config_.rate_hz <= 0.0) {
         return Err<void>(Status{StatusCode::InvalidArgument, "rate_hz must be finite and positive"});
     }
+    // A rate whose sample period rounds to 0 ns would make EmitOne divide by
+    // zero (`dt_s == 0`) and stop advancing the clock, so reject it up front
+    // (CXX-08). The same guard is applied by the soak and probe tools.
+    if (core_math::ToNanoseconds(1.0 / config_.rate_hz) <= 0) {
+        return Err<void>(Status{StatusCode::InvalidArgument, "rate_hz is too high: the sample period rounds to zero"});
+    }
     const FakeScript &script = config_.script;
     if (script.pattern == FakeScript::Pattern::Jitter && (!std::isfinite(script.value) || script.value < 0.0)) {
         return Err<void>(Status{StatusCode::InvalidArgument, "jitter amplitude must be finite and non-negative"});

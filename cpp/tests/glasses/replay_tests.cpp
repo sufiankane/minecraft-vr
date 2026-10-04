@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -163,6 +164,30 @@ TEST(ReplaySource, LoadRejectsARegressingHostTime) {
     const TempCsv csv("regressing_time",
                       std::string(kHeader) + "100,0.0,0,0,0,1,0,0,0,stable\n50,0.0,0,0,0,1,0,0,0,stable\n");
     ExpectLoadInvalid(csv.path, "row 3", __LINE__);
+}
+
+TEST(ReplaySource, LoadRejectsAHostTimeDeltaThatOverflowsInt64) {
+    // INT64_MIN then INT64_MAX is strictly increasing, but the interval is
+    // 2^64-1 ns: deriving it in signed arithmetic would be UB (CXX-05).
+    const TempCsv csv("overflow_delta", std::string(kHeader) + "-9223372036854775808,0.0,0,0,0,1,0,0,0,stable\n"
+                                                               "9223372036854775807,0.0,0,0,0,1,0,0,0,stable\n");
+    ExpectLoadInvalid(csv.path, "row 3", __LINE__);
+}
+
+TEST(ReplaySource, ExtremelyNegativeHostTimeStillLoadsAndPublishes) {
+    // The delta guard must reject only unrepresentable intervals: a single
+    // extreme-but-valid row still loads and publishes without touching the
+    // clock (its time is below the clock's zero, so nothing advances).
+    const TempCsv csv("min_time", std::string(kHeader) + "-9223372036854775808,0.0,0,0,0,1,0,0,0,stable\n");
+    ManualClock clock;
+    ReplayHeadPoseSource source(csv.path, clock);
+    ExpectLoadOk(source);
+    ASSERT_TRUE(source.Start().ok());
+
+    source.PublishNext();
+    HeadSample sample = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(sample, Duration{0}));
+    EXPECT_EQ(sample.time, std::numeric_limits<std::int64_t>::min());
 }
 
 TEST(ReplaySource, LoadRejectsAMissingFile) {
