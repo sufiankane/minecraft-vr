@@ -96,8 +96,9 @@ namespace Cubeglass.Unity.Rendering
     /// <para>
     /// <b>The probe is no longer one-shot (I-1).</b> While the fallback is
     /// active the selector re-probes on <see cref="RetryIntervalSeconds"/>
-    /// (default 2 s, up to <see cref="MaxRetryAttempts"/> when positive,
-    /// otherwise until success) from <see cref="UpdateRetries"/>, which the
+    /// (default 2 s, sanitized to [0.25, 60] so a hostile zero/NaN cannot probe
+    /// every frame, up to <see cref="MaxRetryAttempts"/> when positive,
+    /// otherwise until success) from <see cref="UpdateRetriesAt"/>, which the
     /// <c>Update</c> hook calls once per frame and which allocates nothing on
     /// the common path. A writer that appears after boot is therefore picked
     /// up instead of leaving a static forward view forever.
@@ -133,6 +134,22 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>Default seconds between recurring fallback warnings.</summary>
         public const float DefaultWarningIntervalSeconds = 10f;
+
+        /// <summary>
+        /// Smallest accepted retry interval: a zero, negative or NaN interval
+        /// must never turn the retry hook into a per-frame native probe
+        /// (review R-2).
+        /// </summary>
+        public const float MinRetryIntervalSeconds = 0.25f;
+
+        /// <summary>Largest accepted retry interval.</summary>
+        public const float MaxRetryIntervalSeconds = 60f;
+
+        /// <summary>Smallest accepted recurring-warning interval.</summary>
+        public const float MinWarningIntervalSeconds = 0.5f;
+
+        /// <summary>Largest accepted recurring-warning interval.</summary>
+        public const float MaxWarningIntervalSeconds = 3600f;
 
         [SerializeField] private LateLatchPose lateLatch;
         [SerializeField] private MonoBehaviour syntheticFallback;
@@ -191,18 +208,40 @@ namespace Cubeglass.Unity.Rendering
             get { return probeAttempts; }
         }
 
-        /// <summary>Seconds between retry probes while the fallback is active.</summary>
+        /// <summary>Seconds between retry probes while the fallback is active; hostile values are sanitized.</summary>
         public float RetryIntervalSeconds
         {
             get { return retryIntervalSeconds; }
-            set { retryIntervalSeconds = value; }
+            set { retryIntervalSeconds = SanitizeRetryInterval(value); }
         }
 
-        /// <summary>Seconds between recurring fallback warnings.</summary>
+        /// <summary>Seconds between recurring fallback warnings; hostile values are sanitized.</summary>
         public float WarningIntervalSeconds
         {
             get { return warningIntervalSeconds; }
-            set { warningIntervalSeconds = value; }
+            set { warningIntervalSeconds = SanitizeWarningInterval(value); }
+        }
+
+        /// <summary>
+        /// Resolves a requested retry interval: non-finite input (including a
+        /// serialized NaN) falls back to <see cref="DefaultRetryIntervalSeconds"/>
+        /// and everything else is clamped to
+        /// [<see cref="MinRetryIntervalSeconds"/>, <see cref="MaxRetryIntervalSeconds"/>],
+        /// so zero/negative intervals cannot probe every frame (review R-2).
+        /// </summary>
+        public static float SanitizeRetryInterval(float value)
+        {
+            return float.IsFinite(value)
+                ? Mathf.Clamp(value, MinRetryIntervalSeconds, MaxRetryIntervalSeconds)
+                : DefaultRetryIntervalSeconds;
+        }
+
+        /// <summary>Resolves a requested warning interval the same way as <see cref="SanitizeRetryInterval"/>.</summary>
+        public static float SanitizeWarningInterval(float value)
+        {
+            return float.IsFinite(value)
+                ? Mathf.Clamp(value, MinWarningIntervalSeconds, MaxWarningIntervalSeconds)
+                : DefaultWarningIntervalSeconds;
         }
 
         /// <summary>Maximum retry probes; 0 (default) keeps retrying until the bridge opens.</summary>
@@ -238,7 +277,7 @@ namespace Cubeglass.Unity.Rendering
 
         private void Update()
         {
-            UpdateRetries();
+            UpdateRetriesAt(Now());
         }
 
         /// <summary>
@@ -261,16 +300,21 @@ namespace Cubeglass.Unity.Rendering
             }
 
             probeAttempts = 0;
-            nextProbeTime = 0.0;
             lastFallbackWarningTime = Now();
 
             if (ForceSyntheticForTests)
             {
                 ApplyFallback(PoseFallbackReason.ForcedSynthetic, pluginUnavailable: false);
+                ScheduleNextProbe();
                 return;
             }
 
             ProbeBridgeNow();
+
+            // The immediate probe above already counts as this instant's
+            // attempt; schedule the next one so the first Update after Awake
+            // does not pay a second native open (review R-2).
+            ScheduleNextProbe();
         }
 
         /// <summary>
@@ -317,21 +361,25 @@ namespace Cubeglass.Unity.Rendering
         /// <summary>
         /// One timer step: while a fallback is active, emits the rate-limited
         /// recurring warning and re-probes when the retry interval has elapsed
-        /// and the attempt budget allows. Called from <c>Update</c>; a no-op
-        /// once the bridge is selected, so it allocates nothing per frame.
+        /// and the attempt budget allows. A no-op once the bridge is selected,
+        /// so it allocates nothing per frame. The clock is a parameter so
+        /// tests can simulate time deterministically.
         /// </summary>
-        public void UpdateRetries()
+        public void UpdateRetriesAt(double nowSeconds)
         {
             if (UsingBridge || lateLatch == null || FallbackReason == PoseFallbackReason.None)
             {
                 return;
             }
 
-            double now = Now();
+            // Sanitize at the point of use too: a serialized scene can carry
+            // NaN/zero in the raw field without going through the setter
+            // (review R-2).
+            double warningInterval = SanitizeWarningInterval(warningIntervalSeconds);
             if (FallbackReason != PoseFallbackReason.ForcedSynthetic
-                && now - lastFallbackWarningTime >= warningIntervalSeconds)
+                && nowSeconds - lastFallbackWarningTime >= warningInterval)
             {
-                lastFallbackWarningTime = now;
+                lastFallbackWarningTime = nowSeconds;
                 WarnFallback(recurring: true);
             }
 
@@ -345,13 +393,19 @@ namespace Cubeglass.Unity.Rendering
                 return;
             }
 
-            if (now < nextProbeTime)
+            if (nowSeconds < nextProbeTime)
             {
                 return;
             }
 
-            nextProbeTime = now + Math.Max(0.0, (double)retryIntervalSeconds);
+            double interval = SanitizeRetryInterval(retryIntervalSeconds);
+            nextProbeTime = nowSeconds + interval;
             ProbeBridgeNow();
+        }
+
+        private void ScheduleNextProbe()
+        {
+            nextProbeTime = Now() + SanitizeRetryInterval(retryIntervalSeconds);
         }
 
         private static PoseBridgeProbe ProbeBridge()
@@ -452,7 +506,8 @@ namespace Cubeglass.Unity.Rendering
                     Debug.LogWarning(
                         prefix
                             + "bridge not ready: no writer has created the region yet; retrying every "
-                            + retryIntervalSeconds + " s); this run has no real head tracking until the writer appears.",
+                            + SanitizeRetryInterval(retryIntervalSeconds)
+                            + " s); this run has no real head tracking until the writer appears.",
                         this);
                     break;
                 case PoseFallbackReason.BridgeFailed:

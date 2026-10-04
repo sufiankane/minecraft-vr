@@ -87,8 +87,8 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             selector.SelectProvider();
             selector.RetryIntervalSeconds = 0f;
-            selector.UpdateRetries();
-            selector.UpdateRetries();
+            selector.UpdateRetriesAt(0.0);
+            selector.UpdateRetriesAt(0.0);
 
             Assert.IsFalse(selector.UsingBridge, "the deliberate override must not be retried away");
             Assert.AreEqual(0, selector.ProbeAttempts, "no probe may run under ForceSyntheticForTests");
@@ -116,9 +116,10 @@ namespace Cubeglass.Unity.Rendering.Tests
             // The old one-shot behaviour stops here; the timer must probe again
             // and switch the latch to the bridge provider when it opens.
             ready = true;
-            selector.RetryIntervalSeconds = 0f;
+            selector.RetryIntervalSeconds = 1f;
             selector.WarningIntervalSeconds = 3600f;
-            selector.UpdateRetries();
+            double t0 = Time.realtimeSinceStartupAsDouble;
+            selector.UpdateRetriesAt(t0 + 2.0);
 
             Assert.IsTrue(selector.UsingBridge, "the retry must adopt the bridge once it opens");
             Assert.AreEqual(PoseFallbackReason.None, selector.FallbackReason);
@@ -127,7 +128,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(2, selector.ProbeAttempts);
 
             // Once the bridge is selected the timer is a no-op.
-            selector.UpdateRetries();
+            selector.UpdateRetriesAt(t0 + 200.0);
             Assert.AreEqual(2, selector.ProbeAttempts, "no further probes after a successful switch");
         }
 
@@ -142,18 +143,108 @@ namespace Cubeglass.Unity.Rendering.Tests
             selector.SelectProvider();
             Assert.AreEqual(1, selector.FallbackWarnings, "the entry warning is the only one so far");
 
+            double t0 = Time.realtimeSinceStartupAsDouble;
             selector.RetryIntervalSeconds = 3600f;
             selector.WarningIntervalSeconds = 3600f;
-            selector.UpdateRetries();
+            selector.UpdateRetriesAt(t0 + 1.0);
             Assert.AreEqual(
                 1,
                 selector.FallbackWarnings,
                 "the recurring warning must respect the warning interval");
 
-            selector.WarningIntervalSeconds = 0f;
+            selector.WarningIntervalSeconds = 0.5f;
             LogAssert.Expect(LogType.Warning, new Regex("still on the synthetic pose fallback.*bridge not ready"));
-            selector.UpdateRetries();
+            selector.UpdateRetriesAt(t0 + 20.0);
             Assert.AreEqual(2, selector.FallbackWarnings, "the elapsed interval emits the recurring warning");
+        }
+
+        [Test]
+        public void FirstUpdateAfterSelectionDoesNotProbeTwice()
+        {
+            PoseProviderSelector selector = CreateComponent(out _, out _);
+            PoseProviderSelector.BridgeProbeOverrideForTests =
+                () => PoseBridgeProbe.NotReady(BridgeStatus.NotReady);
+
+            LogAssert.Expect(LogType.Warning, new Regex("bridge not ready"));
+            selector.SelectProvider();
+            Assert.AreEqual(1, selector.ProbeAttempts, "the selection probe ran once");
+
+            selector.UpdateRetriesAt(0.0);
+            Assert.AreEqual(
+                1,
+                selector.ProbeAttempts,
+                "the first Update must not pay a second immediate native probe (review R-2)");
+        }
+
+        /// <summary>
+        /// R-2: a NaN/negative/zero interval used to make <see cref="Mathf.Max(float, float)"/>
+        /// collapse to 0 and probe through the native open on every frame. The
+        /// setter and the point of use both bound it.
+        /// </summary>
+        [Test]
+        public void HostileRetryIntervalCannotProbeEveryFrame()
+        {
+            PoseProviderSelector selector = CreateComponent(out _, out _);
+            PoseProviderSelector.BridgeProbeOverrideForTests =
+                () => PoseBridgeProbe.NotReady(BridgeStatus.NotReady);
+
+            selector.RetryIntervalSeconds = float.NaN;
+            Assert.IsTrue(float.IsFinite(selector.RetryIntervalSeconds), "a NaN setter value is sanitized");
+            Assert.AreEqual(
+                PoseProviderSelector.DefaultRetryIntervalSeconds,
+                selector.RetryIntervalSeconds,
+                1e-6f,
+                "NaN resolves to the default interval");
+            selector.RetryIntervalSeconds = -5f;
+            Assert.AreEqual(
+                PoseProviderSelector.MinRetryIntervalSeconds,
+                selector.RetryIntervalSeconds,
+                1e-6f,
+                "a negative interval clamps to the minimum");
+            selector.RetryIntervalSeconds = 1e9f;
+            Assert.AreEqual(
+                PoseProviderSelector.MaxRetryIntervalSeconds,
+                selector.RetryIntervalSeconds,
+                1e-6f,
+                "an absurd interval clamps to the maximum");
+
+            // Select with the sane default so the initial schedule is 2 s.
+            selector.RetryIntervalSeconds = PoseProviderSelector.DefaultRetryIntervalSeconds;
+            LogAssert.Expect(LogType.Warning, new Regex("bridge not ready"));
+            selector.SelectProvider();
+            int afterSelection = selector.ProbeAttempts;
+            Assert.AreEqual(1, afterSelection, "the selection probe");
+
+            selector.WarningIntervalSeconds = PoseProviderSelector.MaxWarningIntervalSeconds;
+            double t0 = Time.realtimeSinceStartupAsDouble;
+            for (int frame = 0; frame < 600; frame++)
+            {
+                selector.UpdateRetriesAt(t0 + (frame * 0.001));
+            }
+
+            Assert.AreEqual(
+                afterSelection,
+                selector.ProbeAttempts,
+                "600 frames inside the interval must not probe once (review R-2)");
+
+            selector.UpdateRetriesAt(t0 + PoseProviderSelector.DefaultRetryIntervalSeconds + 0.5);
+            Assert.AreEqual(
+                afterSelection + 1,
+                selector.ProbeAttempts,
+                "exactly one probe once the interval elapses");
+
+            // A deserialized scene writes the raw field without the setter; the
+            // use site must sanitize that too.
+            typeof(PoseProviderSelector)
+                .GetField(
+                    "retryIntervalSeconds",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                .SetValue(selector, float.NaN);
+            selector.UpdateRetriesAt(t0 + 200.0);
+            Assert.AreEqual(
+                afterSelection + 2,
+                selector.ProbeAttempts,
+                "the use-site sanitize bounds a poisoned serialized field");
         }
 
         [Test]
@@ -173,9 +264,9 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(1, transitions, "None -> NotReady is one transition");
 
             ready = true;
-            selector.RetryIntervalSeconds = 0f;
+            selector.RetryIntervalSeconds = 1f;
             selector.WarningIntervalSeconds = 3600f;
-            selector.UpdateRetries();
+            selector.UpdateRetriesAt(Time.realtimeSinceStartupAsDouble + 2.0);
             Assert.AreEqual(2, transitions, "NotReady -> bridge is one transition");
         }
 
@@ -193,10 +284,11 @@ namespace Cubeglass.Unity.Rendering.Tests
             LogAssert.Expect(LogType.Warning, new Regex("cg_unity_bridge could not be loaded"));
             selector.SelectProvider();
 
-            selector.RetryIntervalSeconds = 0f;
+            selector.RetryIntervalSeconds = 1f;
             selector.WarningIntervalSeconds = 3600f;
-            selector.UpdateRetries();
-            selector.UpdateRetries();
+            double t0 = Time.realtimeSinceStartupAsDouble;
+            selector.UpdateRetriesAt(t0 + 2.0);
+            selector.UpdateRetriesAt(t0 + 4.0);
 
             Assert.AreEqual(3, probes, "the plugin case is retried too");
             Assert.IsTrue(selector.PluginUnavailable);
