@@ -109,7 +109,6 @@ class PoseSlot {
   private:
     static_assert(std::is_trivially_copyable_v<HeadSample>, "the seqlock payload must be trivially copyable");
     static_assert(sizeof(HeadSample) % sizeof(std::uint64_t) == 0, "the seqlock payload must be 8-byte sized");
-    static_assert(alignof(HeadSample) <= alignof(std::uint64_t), "the seqlock payload must be 8-byte aligned");
     static_assert(std::atomic_ref<std::uint64_t>::is_always_lock_free, "the payload words must be lock-free");
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free, "the version counter must be lock-free");
 
@@ -121,6 +120,11 @@ class PoseSlot {
     inline static void *test_publish_context_ = nullptr;
 
     mutable std::uint64_t payload_[kWordCount]{};
+    // The atomic word accesses target `payload_` directly, so the storage's
+    // own alignment is what matters (CXX-07); `HeadSample`'s alignment is
+    // irrelevant to the seqlock and must not be constrained.
+    static_assert(alignof(decltype(payload_)) >= alignof(std::uint64_t),
+                  "the seqlock payload storage must be at least 8-byte aligned");
     std::atomic<std::uint64_t> sequence_{0};
     std::atomic<bool> published_{false};
 };
