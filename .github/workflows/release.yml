@@ -4,10 +4,21 @@ name: Release
 # `build_target` dispatch input chooses between two build paths:
 #
 #   hosted (default)  `windows-x64-player` on GitHub-hosted windows-latest.
-#                     Needs the UNITY_LICENSE, UNITY_EMAIL and UNITY_PASSWORD
-#                     repository secrets; without them it fails before any
-#                     build step with an actionable message instead of
-#                     silently skipping the release artefact.
+#                     Needs Unity credentials in one of two modes:
+#
+#                       - offline licence: UNITY_LICENSE alone, the contents
+#                         of a Personal/Student .ulf exported from
+#                         license.unity3d.com/manual (no account credentials
+#                         required); the release gate writes it
+#                         to Unity_lic.ulf and runs
+#                         `unity license activate --file`.
+#                       - serial: UNITY_SERIAL alone, a Plus/Pro/Education
+#                         serial; the release gate runs `unity license
+#                         activate --serial` and returns the seat afterwards.
+#
+#                     Without one of these it fails before any build step with
+#                     an actionable message instead of silently skipping the
+#                     release artefact.
 #
 #   self-hosted       `build-self-hosted` on a Windows runner installed on the
 #                     machine whose Unity editor is already activated through
@@ -18,12 +29,15 @@ name: Release
 #                     Cubeglass.Editor.BuildPlayer.BuildWindows64`.
 #
 # Why the self-hosted path exists: the owner's Unity Personal is
-# Hub-activated, and unattended CLI activation has no usable option on this
-# account. `unity license activate --serial` needs a Pro/Plus/Enterprise
-# serial, `unity license activate --floating` needs a floating licence server,
-# and the offline `unity license activate --file` (.ulf) flow is deprecated
-# for Hub-activated accounts (there is no licence file to export).
-# `--personal` does not work unattended. The licensed machine can just build.
+# Hub-activated, and the hosted route needs the licence supplied as secrets.
+# A Unity Student/Personal account can export an offline .ulf from
+# license.unity3d.com/manual and store it as UNITY_LICENSE (`unity license
+# activate --file`); the CLI explicitly rejects `unity license activate
+# --personal` when it runs with service-account tokens, so unattended
+# Personal/Student activation uses the offline file. `unity license activate
+# --serial` needs a Plus/Pro/Education serial and `--floating` needs a
+# floating licence server. The licensed machine can still build with no
+# secrets at all.
 #
 # Self-hosted runner setup (one-off, on the licensed machine):
 #   1. GitHub: repo -> Settings -> Actions -> Runners -> New self-hosted
@@ -59,7 +73,8 @@ name: Release
 # Unity project before the player build (the same files scripts/ci-local.ps1
 # stages locally). The staged DLLs are git-ignored, so the checkout stays
 # clean for the builder. On the hosted path vcpkg is cloned and installs under
-# the runner temp dir, never inside the checkout, because game-ci's dirty check
+# the runner temp dir, never inside the checkout, because the clean checkout is
+# the build's precondition
 # runs `git status --porcelain` before Unity and an untracked in-workspace
 # vcpkg would fail it. The self-hosted path keeps the dependency tree next to
 # the machine's vcpkg checkout for the same reason and so it survives between
@@ -104,22 +119,21 @@ jobs:
         shell: pwsh
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
         run: |
-          $missing = @(
-            foreach ($name in 'UNITY_LICENSE', 'UNITY_EMAIL', 'UNITY_PASSWORD') {
-              if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-                $name
-              }
-            }
-          )
-          if ($missing.Count -gt 0) {
-            $message = "Release build blocked: add the repository secret(s) {0} under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player." -f ($missing -join ', ')
-            Write-Host "::error::$message"
-            exit 1
+          $hasLicense = -not [string]::IsNullOrWhiteSpace($env:UNITY_LICENSE)
+          $hasSerial = -not [string]::IsNullOrWhiteSpace($env:UNITY_SERIAL)
+          if ($hasLicense) {
+            Write-Host 'Unity credentials present: UNITY_LICENSE (offline .ulf mode; no account credentials required).'
+            exit 0
           }
-          Write-Host 'Unity licence secrets present.'
+          if ($hasSerial) {
+            Write-Host 'Unity credentials present: UNITY_SERIAL (serial mode; no account credentials required).'
+            exit 0
+          }
+          $message = "Release build blocked: neither UNITY_LICENSE nor UNITY_SERIAL is set. Set UNITY_LICENSE to the contents of an offline .ulf (Personal/Student, from license.unity3d.com/manual, activated with 'unity license activate --file') or UNITY_SERIAL to a Plus/Pro/Education serial (activated with 'unity license activate --serial') under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player."
+          Write-Host "::error::$message"
+          exit 1
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
@@ -197,9 +211,9 @@ jobs:
             unity-library-standalonewindows64-
 
       # --- Release gate: Unity EditMode and PlayMode tests -------------------
-      # Install the pinned Unity CLI (the standalone binary, not the game-ci
-      # container) and the pinned Editor, activate the licence from the same
-      # secret game-ci consumes, and run the exact commands ci-local runs.
+      # Install the pinned Unity CLI (the standalone binary) and the pinned
+      # Editor, activate the licence from the UNITY_LICENSE offline .ulf or the
+      # UNITY_SERIAL secret, and run the exact commands ci-local runs.
       # Any failure here fails the release before the player build.
 
       - name: Install the Unity CLI (pinned 1.0.0-beta.11)
@@ -233,11 +247,17 @@ jobs:
         shell: pwsh
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
         run: |
-          $license = Join-Path $env:RUNNER_TEMP 'Unity_lic.ulf'
-          [System.IO.File]::WriteAllText($license, $env:UNITY_LICENSE)
           $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
-          & $unity license activate --file $license --non-interactive
+          if (-not [string]::IsNullOrWhiteSpace($env:UNITY_LICENSE)) {
+            $license = Join-Path $env:RUNNER_TEMP 'Unity_lic.ulf'
+            [System.IO.File]::WriteAllText($license, $env:UNITY_LICENSE)
+            & $unity license activate --file $license --non-interactive
+          }
+          else {
+            & $unity license activate --serial "$env:UNITY_SERIAL"
+          }
           if ($LASTEXITCODE -ne 0) {
             Write-Host "::error::Unity licence activation failed with exit code $LASTEXITCODE."
             exit 1
@@ -281,23 +301,25 @@ jobs:
             Write-Host "$mode tests passed: $total test(s)."
           }
 
-      - name: Build the Windows x64 player
-        uses: game-ci/unity-builder@eb1b9fba120c6e62c9fb7a7a81d6c107ce004c45 # v6.0.0
-        env:
-          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
-          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
-          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
-        with:
-          projectPath: unity/Cubeglass
-          unityVersion: auto
-          targetPlatform: StandaloneWindows64
-          buildMethod: Cubeglass.Editor.BuildPlayer.BuildWindows64
-          # Pin the game-ci CLI the action downloads: without this the action
-          # resolves `latest` at run time while the Unity secrets are in scope.
-          cliVersion: v0.1.72
-          # The staged plugins are git-ignored, so the tree is clean; a dirty
-          # checkout still fails the build.
-          allowDirtyBuild: false
+      - name: Build the Windows x64 player (pinned Unity CLI)
+        shell: pwsh
+        run: |
+          # The same pinned CLI and activated licence as the release gate above;
+          # no third-party action and no account credentials are involved.
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          & $unity run unity/Cubeglass --non-interactive -- -executeMethod Cubeglass.Editor.BuildPlayer.BuildWindows64
+          $buildExit = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          if ($buildExit -ne 0) {
+            Write-Host "::error::unity run failed with exit code $buildExit."
+            exit 1
+          }
+          $player = 'unity/Cubeglass/build/StandaloneWindows64/Cubeglass/Cubeglass.exe'
+          if (-not (Test-Path -LiteralPath $player)) {
+            Write-Host "::error::The Unity build produced no $player."
+            exit 1
+          }
+          Write-Host "Player written: $player"
 
       - name: Package the player
         shell: pwsh
@@ -345,6 +367,20 @@ jobs:
             exit 1
           }
           Write-Host 'Attached Cubeglass-windows-x64.zip to the v0.1.0 release.'
+
+      - name: Return the Unity licence seat (serial mode)
+        if: always()
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          # Serial activations are seats; return it even when the job failed or
+          # was cancelled so ephemeral runners do not leak activations. The
+          # offline .ulf mode has nothing to return, hence continue-on-error.
+          $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
+          if (Test-Path -LiteralPath $unity) {
+            & $unity license return --yes
+            $global:LASTEXITCODE = 0
+          }
 
   build-self-hosted:
     name: Build player (self-hosted Windows)
