@@ -2,10 +2,12 @@
 #
 # Regenerate with pip-tools after changing a top-level pin:
 #   python -m piptools compile --generate-hashes --output-file requirements-ci.txt <file with the pins>
-# The only top-level pin is gcovr==8.6; every transitive dependency is pinned
-# here with its SHA-256 hashes. Installs enforce the hashes: the workflow and
-# scripts/ci-local.ps1 pass --require-hashes (and this file repeats the flag, so
-# a bare `pip install -r` cannot skip it).
+# The top-level pins are gcovr==8.6 (coverage tooling) and clang-format==23.1.2
+# (the pinned format/tidy toolchain used by ci.yml and the negative gates);
+# every transitive dependency is pinned here with its SHA-256 hashes. Installs
+# enforce the hashes: the workflows and scripts/ci-local.ps1 pass
+# --require-hashes (and this file repeats the flag, so a bare
+# `pip install -r` cannot skip it).
 #
 # A regeneration is a reviewed commit. Hashes change only when an upstream
 # artefact changes; a diff that re-pins a version must be intentional.

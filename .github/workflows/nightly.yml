@@ -250,8 +250,10 @@ jobs:
             python/requirements-dev.txt
 
       - name: Python dependency audit
+        # The scanner itself is hash-pinned (requirements-audit.txt) so the
+        # audit toolchain is pinned exactly like the dependencies it audits.
         run: |
-          python -m pip install pip-audit==2.10.1
+          python -m pip install --require-hashes -r python/requirements-audit.txt
           pip-audit -r python/requirements-dev.txt
           pip-audit -r python/requirements-ci.txt
 

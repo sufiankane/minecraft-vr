@@ -39,16 +39,18 @@ clang-format from `python/requirements-ci.txt` (a hash-pinned wheel) and asserts
 the same version, so the format self-test cannot silently use a distro build.
 
 **Python dependencies are hash-pinned** (TD-028). `python/requirements-ci.txt`
-(gcovr and clang-format) and `python/requirements-dev.txt` (pytest, pytest-cov,
-mypy, ruff and every transitive dependency) carry `--hash=sha256:` hashes for
+(gcovr and clang-format), `python/requirements-dev.txt` (pytest, pytest-cov,
+mypy, ruff and every transitive dependency) and `python/requirements-audit.txt`
+(pip-audit for the nightly supply-chain job) carry `--hash=sha256:` hashes for
 every pin and declare `--require-hashes`; CI and `scripts/ci-local.ps1` install
 them with `--require-hashes`. The split the row left open is resolved by pinning
-**both** files rather than only CI: pip-compile was run on Windows but the hash
+**all** files rather than only CI: pip-compile was run on Windows but the hash
 sets cover every platform wheel, so the Windows dev flow and the Ubuntu runners
 install the same artefacts. `pip install -e python`/`.` stays unpinned by
 design: it installs the checkout, not a distribution. Regeneration is a reviewed
 commit (`python -m piptools compile --generate-hashes ...`); the nightly
-`supply-chain` job audits both files with `pip-audit` and OSV-Scanner.
+`supply-chain` job audits both dependency files with `pip-audit` and
+OSV-Scanner.
 
 `cpp-linux-asan` runs the `linux-asan` test preset because the `ci` test preset
 in `cpp/CMakePresets.json` is bound to the `windows-msvc` configure preset.
