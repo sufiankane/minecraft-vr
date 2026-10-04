@@ -394,6 +394,43 @@ def test_mask_string_literals_blanks_literal_contents() -> None:
     assert '"' not in masked
 
 
+def test_mask_string_literals_keeps_interpolation_holes_as_code() -> None:
+    masked = mask_string_literals('var s = $"{System.IO.File.ReadAllText(p)}";')
+    assert "System.IO.File.ReadAllText" in masked
+    assert "$" not in masked
+    assert '"' not in masked
+
+
+def test_mask_string_literals_keeps_verbatim_interpolation_holes_as_code() -> None:
+    masked = mask_string_literals('var s = $@"prefix {System.IO.File.Exists(p)} suffix";')
+    assert "System.IO.File.Exists" in masked
+    assert "prefix" not in masked
+    assert "suffix" not in masked
+
+
+def test_mask_string_literals_masks_interpolation_format_specifiers() -> None:
+    masked = mask_string_literals('var s = $"{value:System.IO.File}";')
+    assert "System.IO.File" not in masked
+    assert "value" in masked
+
+
+def test_mask_string_literals_handles_nested_interpolation() -> None:
+    masked = mask_string_literals('var s = $"{Outer($"{System.IO.File.Exists(p)}")}";')
+    assert "System.IO.File.Exists" in masked
+    assert "Outer" in masked
+    assert "$" not in masked
+
+
+def test_mask_string_literals_keeps_escaped_braces_literal() -> None:
+    masked = mask_string_literals('var s = $"{{System.IO.File}}";')
+    assert "System.IO.File" not in masked
+
+
+def test_mask_string_literals_does_not_close_a_hole_inside_a_nested_literal() -> None:
+    masked = mask_string_literals('var s = $"{Lookup("}")(System.IO.File.Exists)}";')
+    assert "System.IO.File.Exists" in masked
+
+
 def test_repository_contracts_match_the_committed_baseline() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "depcheck", "contracts", "--root", "."],
@@ -404,3 +441,192 @@ def test_repository_contracts_match_the_committed_baseline() -> None:
     )
     assert result.returncode == 0
     assert result.stdout.strip() == ""
+
+
+def test_new_contract_file_must_be_covered_or_exempted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise(tmp_path, capsys, monkeypatch)
+    (tmp_path / "contracts" / "new_surface.h").write_text("typedef int cg_new;\n", encoding="utf-8")
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert "contracts/new_surface.h" in lines[0]
+    assert "neither fingerprinted" in lines[0]
+
+
+def test_exempting_a_new_contract_file_with_a_reason_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise(tmp_path, capsys, monkeypatch)
+    (tmp_path / "contracts" / "notes.txt").write_text("not an ABI surface\n", encoding="utf-8")
+    monkeypatch.setattr(
+        contracts_module,
+        "EXEMPT_CONTRACT_FILES",
+        {**contracts_module.EXEMPT_CONTRACT_FILES, "contracts/notes.txt": "documentation only"},
+    )
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_contract_file_cannot_be_covered_and_exempt(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise(tmp_path, capsys, monkeypatch)
+    monkeypatch.setattr(
+        contracts_module,
+        "EXEMPT_CONTRACT_FILES",
+        {**contracts_module.EXEMPT_CONTRACT_FILES, "contracts/cg_types.h": "wrongly exempted"},
+    )
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 1
+    assert "both fingerprinted and exempt" in lines[0]
+
+
+def test_update_refuses_an_uncovered_contract_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    initialise(tmp_path, capsys, monkeypatch)
+    (tmp_path / "contracts" / "new_surface.h").write_text("typedef int cg_new;\n", encoding="utf-8")
+
+    code, output = run_update(tmp_path, capsys)
+    assert code == 1
+    assert "refusing to update" in output
+    assert "new_surface.h" in output
+
+
+def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(root), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _commit(root: Path, message: str) -> None:
+    _git(root, "add", "-A")
+    committed = _git(
+        root,
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.com",
+        "commit",
+        "-q",
+        "-m",
+        message,
+    )
+    assert committed.returncode == 0, committed.stderr
+
+
+def test_since_flags_a_surface_change_without_a_version_bump(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _git(tmp_path, "init", "-q", "-b", "main").returncode == 0
+    initialise(tmp_path, capsys, monkeypatch)
+    _commit(tmp_path, "base surface")
+    assert _git(tmp_path, "checkout", "-q", "-b", "pr").returncode == 0
+
+    write_contracts(tmp_path, field="\n  uint32_t flags;")
+    _refresh_code_constants(tmp_path, monkeypatch)
+    assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
+    capsys.readouterr()
+    _commit(tmp_path, "change surface and baseline, no bump")
+
+    code = main(["contracts", "--root", str(tmp_path), "--since", "main"])
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "stayed at 2" in output
+    assert "bump" in output
+
+
+def test_since_passes_when_the_version_was_bumped(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _git(tmp_path, "init", "-q", "-b", "main").returncode == 0
+    initialise(tmp_path, capsys, monkeypatch)
+    _commit(tmp_path, "base surface")
+    assert _git(tmp_path, "checkout", "-q", "-b", "pr").returncode == 0
+
+    write_contracts(tmp_path, version=3, field="\n  uint32_t flags;")
+    _refresh_code_constants(tmp_path, monkeypatch, version=3)
+    assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
+    capsys.readouterr()
+    _commit(tmp_path, "change surface with an ABI bump")
+
+    code = main(["contracts", "--root", str(tmp_path), "--since", "main"])
+    output = capsys.readouterr().out
+    assert code == 0
+    assert output.strip() == ""
+
+
+def test_since_is_read_from_the_environment(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _git(tmp_path, "init", "-q", "-b", "main").returncode == 0
+    initialise(tmp_path, capsys, monkeypatch)
+    _commit(tmp_path, "base surface")
+    assert _git(tmp_path, "checkout", "-q", "-b", "pr").returncode == 0
+    write_contracts(tmp_path, field="\n  uint32_t flags;")
+    _refresh_code_constants(tmp_path, monkeypatch)
+    assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
+    capsys.readouterr()
+    _commit(tmp_path, "unbumped change")
+
+    monkeypatch.setenv("CG_CONTRACT_BASE_REF", "main")
+    code = main(["contracts", "--root", str(tmp_path)])
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "stayed at 2" in output
+
+
+def test_without_since_the_local_no_git_fallback_still_passes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a base ref the bump discipline stays review-enforced (TD-049 local)."""
+
+    assert _git(tmp_path, "init", "-q", "-b", "main").returncode == 0
+    initialise(tmp_path, capsys, monkeypatch)
+    _commit(tmp_path, "base surface")
+    write_contracts(tmp_path, field="\n  uint32_t flags;")
+    _refresh_code_constants(tmp_path, monkeypatch)
+    assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
+    capsys.readouterr()
+
+    code, lines = run_check(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_since_with_an_unresolvable_ref_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _git(tmp_path, "init", "-q", "-b", "main").returncode == 0
+    initialise(tmp_path, capsys, monkeypatch)
+    _commit(tmp_path, "base surface")
+
+    code = main(["contracts", "--root", str(tmp_path), "--since", "no-such-ref"])
+    output = capsys.readouterr().out
+    assert code == 1
+    assert "cannot resolve" in output
+
+
+def test_since_skips_when_the_base_has_no_baseline(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _git(tmp_path, "init", "-q", "-b", "main").returncode == 0
+    write_contracts(tmp_path)
+    _refresh_code_constants(tmp_path, monkeypatch)
+    _commit(tmp_path, "surface without a baseline")
+    assert _git(tmp_path, "checkout", "-q", "-b", "pr").returncode == 0
+    assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
+    capsys.readouterr()
+    _commit(tmp_path, "add the baseline")
+
+    code = main(["contracts", "--root", str(tmp_path), "--since", "main"])
+    assert code == 0
+    assert capsys.readouterr().out.strip() == ""

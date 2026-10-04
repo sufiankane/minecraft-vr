@@ -41,6 +41,7 @@ class CoverageResult:
     matched_units: int
     covered_lines: int
     total_lines: int
+    allow_empty: bool = False
 
     @property
     def rate(self) -> float:
@@ -54,9 +55,18 @@ class CoverageResult:
 
     @property
     def meets_floor(self) -> bool:
-        """Whether the module matched and reached the configured floor."""
+        """Whether the module matched, had coverable lines and reached the floor.
 
-        return self.matched_units > 0 and self.rate + 1e-9 >= self.floor
+        A matched module with zero coverable lines fails unless the caller passes
+        ``allow_empty``: a floor that a module cannot miss (because it measured
+        nothing) would otherwise pass at a fake 100 percent (TD-032).
+        """
+
+        if self.matched_units == 0:
+            return False
+        if self.total_lines == 0:
+            return self.allow_empty
+        return self.rate + 1e-9 >= self.floor
 
     def summary(self) -> str:
         """Human-readable one-line result naming module, floor and observed rate."""
@@ -68,9 +78,15 @@ class CoverageResult:
                 f"{self.report}; observed 0.00%; floor {self.floor:g}%"
             )
         if self.total_lines == 0:
+            if self.allow_empty:
+                return (
+                    f"WARNING: module '{self.module}' matched {self.matched_units} units "
+                    f"but has 0 coverable lines; floor {self.floor:g}% allowed by --allow-empty"
+                )
             return (
-                f"WARNING: module '{self.module}' matched {self.matched_units} units "
-                f"but has 0 coverable lines; floor not enforced"
+                f"coverage FAIL: module '{self.module}' matched {self.matched_units} units "
+                f"but has 0 coverable lines; a zero-line module cannot satisfy floor "
+                f"{self.floor:g}% (pass --allow-empty to waive)"
             )
         return (
             f"coverage {verdict}: module '{self.module}' observed {self.rate:.2f}% "
@@ -160,9 +176,50 @@ def _parse(report: Path) -> ET.Element:
         raise CoverageError(f"coverage report could not be read: {report}: {error}") from error
 
 
-def check_coverage(report: Path, module: str, floor: float) -> CoverageResult:
-    """Evaluate ``module`` line coverage in ``report`` against ``floor`` percent."""
+_REPORT_NAMES: tuple[str, ...] = ("coverage.cobertura.xml", "coverage.xml")
 
+
+def resolve_report(path: Path) -> Path:
+    """Resolve ``path`` to exactly one Cobertura report.
+
+    A directory is searched for the Cobertura file names the CI producers use
+    (``coverage.cobertura.xml`` from gcovr/coverlet, ``coverage.xml`` from
+    coverage.py) in sorted order. Zero matches and several matches are both hard
+    errors: silently comparing the first of several reports is how a module can
+    pass against the wrong run (TD-032).
+    """
+
+    if not path.is_dir():
+        return path
+    found = sorted(candidate for name in _REPORT_NAMES for candidate in path.rglob(name) if candidate.is_file())
+    if not found:
+        raise CoverageError(
+            f"no coverage report under {path}; expected one of {', '.join(_REPORT_NAMES)}"
+        )
+    if len(found) > 1:
+        names = ", ".join(str(candidate.relative_to(path)) for candidate in found)
+        raise CoverageError(
+            f"ambiguous coverage report under {path}: {len(found)} candidates ({names}); "
+            f"keep one report per directory or pass the report file explicitly"
+        )
+    return found[0]
+
+
+def check_coverage(
+    report: Path,
+    module: str,
+    floor: float,
+    *,
+    allow_empty: bool = False,
+) -> CoverageResult:
+    """Evaluate ``module`` line coverage in ``report`` against ``floor`` percent.
+
+    ``report`` may be a file or a directory; a directory must contain exactly one
+    Cobertura report. A matched module with zero coverable lines fails unless
+    ``allow_empty`` is set (TD-032).
+    """
+
+    report = resolve_report(report)
     root = _parse(report)
     matched_units = 0
     covered_lines = 0
@@ -197,4 +254,5 @@ def check_coverage(report: Path, module: str, floor: float) -> CoverageResult:
         matched_units=matched_units,
         covered_lines=covered_lines,
         total_lines=total_lines,
+        allow_empty=allow_empty,
     )
