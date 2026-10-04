@@ -211,21 +211,23 @@ TEST(ThreadSafety, PoseSlotSaturatedWriterNeverTearsOrReordersForReaders) {
 }
 
 TEST(ThreadSafety, PoseSlotRetryExhaustionReturnsFalseDeterministically) {
-    // Mechanism: `PoseSlot::SetTestPublishHook` is a test-only seam that runs
-    // inside `Publish` between the odd version store and the payload stores.
-    // While the hook spins, the slot is mid-publish by construction, so all 64
-    // bounded read attempts observe the odd version and `TryRead` must return
-    // false (R39) without ever handing back an unvalidated sample. A saturated
-    // writer makes that timing likely but not certain; the hook makes it
-    // deterministic. The slot has already published once, so this false is the
-    // exhaustion path, not the before-first-publish path.
+    // Mechanism: `PoseSlot::SetTestPublishHook` is a test-only instance seam
+    // (TD-002) that runs inside `Publish` between the odd version store and the
+    // payload stores. While the hook spins, the slot is mid-publish by
+    // construction, so all 64 bounded read attempts observe the odd version and
+    // `TryRead` must return false (R39) without ever handing back an
+    // unvalidated sample. A saturated writer makes that timing likely but not
+    // certain; the hook makes it deterministic. The slot has already published
+    // once, so this false is the exhaustion path, not the before-first-publish
+    // path.
     PoseSlot slot;
     slot.Publish(SlotSample(1));
     PublishGate gate;
-    PoseSlot::SetTestPublishHook(&PauseWriterHook, &gate);
+    slot.SetTestPublishHook(&PauseWriterHook, &gate);
     std::thread writer([&slot] { slot.Publish(SlotSample(2)); });
 
     struct Cleanup {
+        PoseSlot *slot;
         PublishGate *gate;
         std::thread *writer;
         ~Cleanup() {
@@ -233,9 +235,9 @@ TEST(ThreadSafety, PoseSlotRetryExhaustionReturnsFalseDeterministically) {
             if (writer->joinable()) {
                 writer->join();
             }
-            PoseSlot::SetTestPublishHook(nullptr, nullptr);
+            slot->SetTestPublishHook(nullptr, nullptr);
         }
-    } cleanup{&gate, &writer};
+    } cleanup{&slot, &gate, &writer};
 
     bool reached = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -255,7 +257,7 @@ TEST(ThreadSafety, PoseSlotRetryExhaustionReturnsFalseDeterministically) {
 
     gate.release.store(true, std::memory_order_release);
     writer.join();
-    PoseSlot::SetTestPublishHook(nullptr, nullptr);
+    slot.SetTestPublishHook(nullptr, nullptr);
 
     ASSERT_TRUE(slot.TryRead(out));
     EXPECT_EQ(out.seq, 2U);

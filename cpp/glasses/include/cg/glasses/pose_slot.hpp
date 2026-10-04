@@ -87,14 +87,20 @@ class PoseSlot {
         return false;
     }
 
-    /// Test-only publish seam. When armed, `Publish` calls `hook(context)`
-    /// after storing the odd version counter (and the release fence) and before
-    /// writing the payload, so a test can hold one publish mid-flight and pin
-    /// the bounded-retry exhaustion path deterministically. Production leaves
-    /// it unset and pays one predictable null check. Not thread-safe: arm the
-    /// hook while no publish is in flight and clear it afterwards.
+    /// Test-only publish seam, scoped to this slot instance (TD-002). When
+    /// armed, `Publish` calls `hook(context)` after storing the odd version
+    /// counter (and the release fence) and before writing the payload, so a
+    /// test can hold one publish mid-flight and pin the bounded-retry
+    /// exhaustion path deterministically. Production leaves it unset and pays
+    /// one predictable null check.
+    ///
+    /// Instance-scoped: arming one slot can never affect another slot's
+    /// publishes, so parallel tests stay serial-safe. Not thread-safe with
+    /// respect to a publish in flight on this slot: arm the hook while no
+    /// publish is in flight ("arm before publish") and clear it afterwards,
+    /// before the writer may publish again.
     using TestPublishHook = void (*)(void *) noexcept;
-    static void SetTestPublishHook(TestPublishHook hook, void *context) noexcept {
+    void SetTestPublishHook(TestPublishHook hook, void *context) noexcept {
         test_publish_hook_ = hook;
         test_publish_context_ = context;
     }
@@ -114,10 +120,10 @@ class PoseSlot {
 
     static constexpr std::size_t kWordCount = sizeof(HeadSample) / sizeof(std::uint64_t);
 
-    // Test-only publish seam; null unless `SetTestPublishHook` armed it (see
-    // the public comment). The writer only reads these.
-    inline static TestPublishHook test_publish_hook_ = nullptr;
-    inline static void *test_publish_context_ = nullptr;
+    // Test-only publish seam, an instance member (TD-002; see the public
+    // comment). The writer only reads these.
+    TestPublishHook test_publish_hook_ = nullptr;
+    void *test_publish_context_ = nullptr;
 
     mutable std::uint64_t payload_[kWordCount]{};
     // The atomic word accesses target `payload_` directly, so the storage's
