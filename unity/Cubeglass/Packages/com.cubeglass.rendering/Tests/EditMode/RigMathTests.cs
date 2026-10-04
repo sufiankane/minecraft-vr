@@ -216,6 +216,51 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.IsTrue(float.IsFinite(rig.LeftCamera.farClipPlane));
         }
 
+        /// <summary>
+        /// R-5 at the point of use: a finite-but-huge serialized near whose
+        /// doubling would overflow must repair to the documented defaults on
+        /// both cameras instead of writing infinity.
+        /// </summary>
+        [Test]
+        public void HugeSerializedNearFarCannotOverflowTheCameras()
+        {
+            SetConfigField(rig.Config, "near", 3e38f);
+            SetConfigField(rig.Config, "far", 3e38f);
+
+            rig.ApplyEyeLayout(StereoRig.NominalScreenWidth, StereoRig.NominalScreenHeight);
+
+            foreach (Camera camera in new[] { rig.LeftCamera, rig.RightCamera })
+            {
+                Assert.AreEqual(StereoRigConfig.DefaultNear, camera.nearClipPlane, Tolerance, "near repaired");
+                Assert.AreEqual(StereoRigConfig.DefaultFar, camera.farClipPlane, Tolerance, "far repaired");
+                Assert.IsTrue(float.IsFinite(camera.nearClipPlane));
+                Assert.IsTrue(float.IsFinite(camera.farClipPlane));
+                Assert.Greater(camera.farClipPlane, camera.nearClipPlane);
+            }
+        }
+
+        [Test]
+        public void RefreshSanitizerMapsHostileRequestsToSafeValues()
+        {
+            Assert.AreEqual(
+                StereoRigConfig.DefaultTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(0),
+                "a default-initialised/legacy zero resolves to the documented default");
+            Assert.AreEqual(
+                StereoRigConfig.DefaultTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(-5),
+                "negative resolves to the default");
+            Assert.AreEqual(
+                StereoRigConfig.MinTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(1),
+                "a positive out-of-range low value clamps up");
+            Assert.AreEqual(
+                StereoRigConfig.MaxTargetRefresh,
+                StereoRigConfig.SanitizeTargetRefresh(10000),
+                "an out-of-range high value clamps down");
+            Assert.AreEqual(90, StereoRigConfig.SanitizeTargetRefresh(90), "a sane value passes through");
+        }
+
         private static void SetConfigField(StereoRigConfig config, string field, object value)
         {
             FieldInfo info = typeof(StereoRigConfig).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);
@@ -443,10 +488,37 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(StereoRigConfig.DefaultNear, config.Near, Tolerance, "near fallback");
             Assert.AreEqual(500f, config.Far, Tolerance, "far fallback above near");
             Assert.AreEqual(
-                StereoRigConfig.MinTargetRefresh,
+                StereoRigConfig.DefaultTargetRefresh,
                 config.TargetRefresh,
-                "a 1 Hz request must be clamped up (review M-10)");
+                "a 1 Hz request must resolve to the documented default (reviews M-10, R-1)");
             Assert.IsFalse(config.Validate(), "the second validation pass is clean");
+        }
+
+        /// <summary>
+        /// R-5: the far-repair path must not overflow when a serialized
+        /// <c>near</c> is a finite-but-huge float (doubling it reaches +inf).
+        /// The pair is repaired to the documented defaults instead.
+        /// </summary>
+        [Test]
+        public void ValidateFarRepairCannotOverflowForHugeNear()
+        {
+            var config = new StereoRigConfig();
+            SetConfigField(config, "near", 3e38f);
+            SetConfigField(config, "far", 1e38f);
+
+            Assert.IsTrue(config.Validate(), "the poisoned near/far pair must be repaired");
+            Assert.AreEqual(StereoRigConfig.DefaultNear, config.Near, Tolerance, "near falls back to the default");
+            Assert.AreEqual(StereoRigConfig.DefaultFar, config.Far, Tolerance, "far falls back to the default");
+            Assert.IsTrue(float.IsFinite(config.Near), "repaired near finite");
+            Assert.IsTrue(float.IsFinite(config.Far), "repaired far finite");
+            Assert.Greater(config.Far, config.Near, "the repair preserves far > near");
+
+            var second = new StereoRigConfig();
+            SetConfigField(second, "near", 1000f);
+            SetConfigField(second, "far", float.NaN);
+            Assert.IsTrue(second.Validate());
+            Assert.AreEqual(1000f, second.Near, Tolerance, "a usable near is kept");
+            Assert.AreEqual(2000f, second.Far, Tolerance, "the repaired far stays finite above near");
         }
 
         [Test]

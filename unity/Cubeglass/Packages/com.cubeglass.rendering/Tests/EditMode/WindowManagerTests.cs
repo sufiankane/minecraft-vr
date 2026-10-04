@@ -1,3 +1,4 @@
+using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -60,6 +61,47 @@ namespace Cubeglass.Unity.Rendering.Tests
             {
                 Object.DestroyImmediate(root);
             }
+        }
+
+        /// <summary>
+        /// R-1: a deserialized scene can carry a raw <c>targetRefresh</c> that
+        /// never passed through the setter. <see cref="WindowManager.ApplyWindowMode"/>
+        /// must validate the effective config before use so a legacy/default
+        /// zero cannot request 1 Hz (and an absurd value cannot pass through).
+        /// </summary>
+        [Test]
+        public void DeserializedStyleRefreshIsRepairedBeforeUse()
+        {
+            var root = new GameObject("HostileWindowManager");
+            try
+            {
+                var manager = root.AddComponent<WindowManager>();
+                SetConfigField(manager.Config, "targetRefresh", 0);
+
+                Assert.IsFalse(manager.ApplyWindowMode(), "editor preview still no-ops");
+                Assert.AreEqual(
+                    StereoRigConfig.DefaultTargetRefresh,
+                    manager.Config.TargetRefresh,
+                    "a legacy 0 Hz request resolves to the documented default before use");
+
+                SetConfigField(manager.Config, "targetRefresh", 100000);
+                manager.ApplyWindowMode();
+                Assert.AreEqual(
+                    StereoRigConfig.MaxTargetRefresh,
+                    manager.Config.TargetRefresh,
+                    "an absurd request clamps to the maximum");
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void SetConfigField(StereoRigConfig config, string field, object value)
+        {
+            FieldInfo info = typeof(StereoRigConfig).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.IsNotNull(info, "StereoRigConfig." + field + " must exist");
+            info.SetValue(config, value);
         }
     }
 }

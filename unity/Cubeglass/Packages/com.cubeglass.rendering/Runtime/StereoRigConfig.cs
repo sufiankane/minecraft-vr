@@ -108,7 +108,26 @@ namespace Cubeglass.Unity.Rendering
         public int TargetRefresh
         {
             get { return targetRefresh; }
-            set { targetRefresh = Mathf.Clamp(value, MinTargetRefresh, MaxTargetRefresh); }
+            set { targetRefresh = SanitizeTargetRefresh(value); }
+        }
+
+        /// <summary>
+        /// Resolves a requested refresh rate: a non-positive value is a
+        /// corrupt/legacy request (for example the 1 Hz a default-initialised
+        /// scene can carry) and maps to <see cref="DefaultTargetRefresh"/>;
+        /// anything else is clamped into
+        /// [<see cref="MinTargetRefresh"/>, <see cref="MaxTargetRefresh"/>].
+        /// Used by the setter, by <see cref="Validate"/> and by the window
+        /// manager at the point of use (review R-1).
+        /// </summary>
+        public static int SanitizeTargetRefresh(int value)
+        {
+            if (value <= 0)
+            {
+                return DefaultTargetRefresh;
+            }
+
+            return Mathf.Clamp(value, MinTargetRefresh, MaxTargetRefresh);
         }
 
         /// <summary>
@@ -147,9 +166,10 @@ namespace Cubeglass.Unity.Rendering
         /// for every field it changes. Non-finite values fall back to the
         /// ADR-0010 default (a NaN can never pass a comparison, so it must be
         /// rejected explicitly); <c>near</c> must be positive and <c>far</c>
-        /// greater than <c>near</c>; refresh is clamped to
-        /// [<see cref="MinTargetRefresh"/>, <see cref="MaxTargetRefresh"/>].
-        /// Returns true when a correction was applied.
+        /// greater than <c>near</c> (a near too large to pair with a finite far
+        /// repairs both, review R-5); refresh is resolved by
+        /// <see cref="SanitizeTargetRefresh"/> (non-positive to the default,
+        /// otherwise clamped). Returns true when a correction was applied.
         /// </summary>
         public bool Validate()
         {
@@ -185,20 +205,37 @@ namespace Cubeglass.Unity.Rendering
 
             if (!float.IsFinite(far) || far <= near)
             {
-                float original = far;
-                far = Mathf.Max(DefaultFar, near * 2f);
-                WarnCorrection("far", original, far);
+                float originalFar = far;
+                float repairedFar = near * 2f;
+
+                // near can be a finite-but-huge double-to-float survivor; its
+                // doubling then overflows to +infinity, which must not pass
+                // the finite guarantee through the repair path (review R-5).
+                if (!float.IsFinite(repairedFar) || !(repairedFar > near))
+                {
+                    float originalNear = near;
+                    near = DefaultNear;
+                    far = DefaultFar;
+                    WarnCorrection("near", originalNear, near);
+                    WarnCorrection("far", originalFar, far);
+                }
+                else
+                {
+                    far = Mathf.Max(DefaultFar, repairedFar);
+                    WarnCorrection("far", originalFar, far);
+                }
+
                 changed = true;
             }
 
-            int refresh = Mathf.Clamp(targetRefresh, MinTargetRefresh, MaxTargetRefresh);
+            int refresh = SanitizeTargetRefresh(targetRefresh);
             if (refresh != targetRefresh)
             {
                 int original = targetRefresh;
                 targetRefresh = refresh;
                 Debug.LogWarning(
                     "StereoRigConfig: targetRefresh " + original + " is outside [" +
-                    MinTargetRefresh + ", " + MaxTargetRefresh + "]; clamped to " + refresh + ".");
+                    MinTargetRefresh + ", " + MaxTargetRefresh + "]; repaired to " + refresh + ".");
                 changed = true;
             }
 

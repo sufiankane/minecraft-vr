@@ -53,6 +53,11 @@ namespace Cubeglass.Unity.Rendering
 
         private void Awake()
         {
+            // A deserialized scene can carry out-of-range or non-finite values
+            // (Unity writes serialized fields directly); repair them once
+            // before the first layout so the committed defaults are restored
+            // and the warning is logged at boot (reviews I-3, R-1).
+            Config.Validate();
             ApplyEyeLayout();
         }
 
@@ -146,9 +151,26 @@ namespace Cubeglass.Unity.Rendering
             float nearClip = float.IsFinite(config.Near) && config.Near > 0f
                 ? config.Near
                 : StereoRigConfig.DefaultNear;
-            float farClip = float.IsFinite(config.Far) && config.Far > nearClip
-                ? config.Far
-                : Mathf.Max(StereoRigConfig.DefaultFar, nearClip * 2f);
+            float farClip;
+            if (float.IsFinite(config.Far) && config.Far > nearClip)
+            {
+                farClip = config.Far;
+            }
+            else
+            {
+                // Repair the pair without overflowing: doubling a huge finite
+                // near would otherwise produce +infinity (review R-5).
+                float repairedFar = nearClip * 2f;
+                if (!float.IsFinite(repairedFar) || !(repairedFar > nearClip))
+                {
+                    nearClip = StereoRigConfig.DefaultNear;
+                    farClip = StereoRigConfig.DefaultFar;
+                }
+                else
+                {
+                    farClip = Mathf.Max(StereoRigConfig.DefaultFar, repairedFar);
+                }
+            }
             float aspect = PerEyeViewportAspect(screenWidth, screenHeight);
             if (aspect <= 0f)
             {
