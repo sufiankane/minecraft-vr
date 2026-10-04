@@ -323,7 +323,7 @@ coverage report. See [`docs/perf/README.md`](perf/README.md) for details.
 - `mutation`: `dotnet stryker` against `Cubeglass.Voxel` with the break
   threshold at 70.
 - `mutation-gameplay`: `dotnet stryker --project
-  src/Gameplay/Cubeglass.Gameplay.csproj --threshold-break 70
+  src/Gameplay/Cubeglass.Gameplay.csproj --break-at 70
   --threshold-high 90` (TD-031), with the JSON report uploaded even on failure.
   The project and thresholds are inline so `dotnet/stryker-config.json` stays
   owned by the .NET workstream. The first hosted run establishes the Gameplay

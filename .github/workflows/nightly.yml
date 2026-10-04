@@ -301,7 +301,7 @@ jobs:
         run: >-
           dotnet stryker
           --project src/Gameplay/Cubeglass.Gameplay.csproj
-          --threshold-break 70
+          --break-at 70
           --threshold-high 90
           --reporter progress
           --reporter json
