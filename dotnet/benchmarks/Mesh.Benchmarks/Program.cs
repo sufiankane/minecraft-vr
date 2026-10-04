@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Exporters.Json;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
 using Cubeglass.CoreMath;
@@ -16,27 +17,67 @@ namespace Cubeglass.Mesh.Benchmarks
     /// <remarks>
     /// The <c>p95</c> mode is the ADR-0007 budget harness: after 100 warm-up
     /// builds it runs 2,000 build/release cycles per chunk shape and prints
-    /// p50/p95/p99 in milliseconds. It always exits 0 — the numbers are
-    /// recorded and compared against the 2.0 ms budget in
-    /// <c>docs/perf/s3.md</c>, never asserted by a test.
+    /// p50/p95/p99 in milliseconds. Add <c>--budget-ms &lt;n&gt;</c> to make the
+    /// harness exit non-zero when any shape's p95 exceeds that budget; the
+    /// nightly lane runs it with the shared-runner budget and the release/local
+    /// budget remains 2.0 ms in <c>docs/perf/s3.md</c>.
     /// </remarks>
     public static class Program
     {
         public static int Main(string[] args)
         {
-            if (args.Length == 1 && args[0] == "p95")
+            if (args.Length >= 1 && args[0] == "p95")
             {
-                P95Measurement.Run();
-                return 0;
+                if (!TryParseBudget(args, out double? budgetMs, out string error))
+                {
+                    Console.Error.WriteLine(error);
+                    return 2;
+                }
+
+                return P95Measurement.Run(budgetMs);
             }
 
             _ = BenchmarkRunner.Run<MeshBenchmarks>();
             return 0;
         }
+
+        /// <summary>Parses <c>p95 [--budget-ms &lt;positive number&gt;]</c>.</summary>
+        private static bool TryParseBudget(string[] args, out double? budgetMs, out string error)
+        {
+            budgetMs = null;
+            error = string.Empty;
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (args[i] != "--budget-ms")
+                {
+                    error = $"unknown p95 argument '{args[i]}'; expected --budget-ms <milliseconds>";
+                    return false;
+                }
+
+                if (i + 1 >= args.Length)
+                {
+                    error = "--budget-ms requires a value in milliseconds";
+                    return false;
+                }
+
+                string value = args[++i];
+                if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed)
+                    || parsed <= 0.0)
+                {
+                    error = $"--budget-ms must be a positive number of milliseconds, got '{value}'";
+                    return false;
+                }
+
+                budgetMs = parsed;
+            }
+
+            return true;
+        }
     }
 
     [SimpleJob(warmupCount: 1, iterationCount: 3)]
     [MemoryDiagnoser]
+    [JsonExporter]
     public class MeshBenchmarks
     {
         private readonly GreedyMesher _mesher = new GreedyMesher();
@@ -92,7 +133,12 @@ namespace Cubeglass.Mesh.Benchmarks
         private const int WarmupBuilds = 100;
         private const int MeasuredBuilds = 2_000;
 
-        internal static void Run()
+        /// <summary>
+        /// Runs the harness and returns 0 when every shape is within
+        /// <paramref name="budgetMs"/> (or no budget was given), 1 when a shape
+        /// exceeds it.
+        /// </summary>
+        internal static int Run(double? budgetMs)
         {
             var mesher = new GreedyMesher();
             (string Name, ChunkSnapshot Chunk)[] cases =
@@ -107,15 +153,46 @@ namespace Cubeglass.Mesh.Benchmarks
                 "Mesh p95 run: {0} warm-up builds then {1} build+release cycles per shape; times in ms.",
                 WarmupBuilds,
                 MeasuredBuilds));
+            if (budgetMs is double budget)
+            {
+                Console.WriteLine(string.Format(
+                    CultureInfo.InvariantCulture, "Mesh p95 budget: {0:F3} ms per shape.", budget));
+            }
 
             var samples = new double[MeasuredBuilds];
+            bool exceeded = false;
             foreach ((string name, ChunkSnapshot chunk) in cases)
             {
-                Measure(mesher, name, chunk, samples);
+                double p95 = Measure(mesher, name, chunk, samples);
+                if (budgetMs is double limit && p95 > limit)
+                {
+                    exceeded = true;
+                    Console.WriteLine(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "BUDGET EXCEEDED: {0} p95={1:F3} ms > budget {2:F3} ms",
+                        name,
+                        p95,
+                        limit));
+                }
             }
+
+            if (budgetMs is double budgetMsValue)
+            {
+                if (exceeded)
+                {
+                    return 1;
+                }
+
+                Console.WriteLine(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Mesh p95 budget OK: every shape at or below {0:F3} ms.",
+                    budgetMsValue));
+            }
+
+            return 0;
         }
 
-        private static void Measure(GreedyMesher mesher, string name, ChunkSnapshot chunk, double[] samples)
+        private static double Measure(GreedyMesher mesher, string name, ChunkSnapshot chunk, double[] samples)
         {
             long warmupSink = 0L;
             for (int i = 0; i < WarmupBuilds; i++)
@@ -144,14 +221,16 @@ namespace Cubeglass.Mesh.Benchmarks
             }
 
             Array.Sort(samples);
+            double p95 = Percentile(samples, 0.95);
             Console.WriteLine(string.Format(
                 CultureInfo.InvariantCulture,
                 "{0}: quads={1} p50={2:F3} ms p95={3:F3} ms p99={4:F3} ms",
                 name,
                 quads,
                 Percentile(samples, 0.50),
-                Percentile(samples, 0.95),
+                p95,
                 Percentile(samples, 0.99)));
+            return p95;
         }
 
         /// <summary>Nearest-rank percentile of an ascending sample array.</summary>

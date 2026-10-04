@@ -111,11 +111,108 @@ jobs:
           dotnet run --configuration Release
           --project benchmarks/Mesh.Benchmarks/Mesh.Benchmarks.csproj
 
+      - name: Mesh p95 budget (8 ms shared-runner budget)
+        # ADR-0007: p95 <= 2.0 ms on the dev/release machine. Shared GitHub
+        # runners are noisier, so the CI gate uses 8 ms and still exits
+        # non-zero when a shape exceeds it (see docs/perf/README.md).
+        run: >-
+          dotnet run --configuration Release
+          --project benchmarks/Mesh.Benchmarks/Mesh.Benchmarks.csproj
+          -- p95 --budget-ms 8
+
       - name: Upload BenchmarkDotNet artifacts
         uses: actions/upload-artifact@v4
         with:
           name: bench-dotnet-results
           path: dotnet/BenchmarkDotNet.Artifacts
+
+  bench-compare:
+    name: bench-compare
+    runs-on: ubuntu-latest
+    needs: [bench-cpp, bench-dotnet]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install tooling
+        run: python -m pip install -e python
+
+      - name: Download C++ benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: bench-cpp-results
+          path: artifacts/cpp
+
+      - name: Download .NET benchmark results
+        uses: actions/download-artifact@v4
+        with:
+          name: bench-dotnet-results
+          path: artifacts/dotnet
+
+      - name: Compare against the committed nightly baseline
+        # Fails on >15% regression for any benchmark present in both the run
+        # and docs/perf/nightly-baseline.json, naming the offender. While the
+        # baseline is missing, passes with a "baseline established" message and
+        # captures the run as the nightly-baseline artefact to be committed.
+        run: |
+          python -m depcheck benchregress \
+            --baseline docs/perf/nightly-baseline.json \
+            --format google --prefix cpp \
+            --current artifacts/cpp/benchmark_results.json \
+            --capture artifacts/nightly-baseline.json
+          shopt -s nullglob
+          bdn=(artifacts/dotnet/results/*.json)
+          if [ ${#bdn[@]} -gt 0 ]; then
+            python -m depcheck benchregress \
+              --baseline docs/perf/nightly-baseline.json \
+              --format bdn --prefix dotnet \
+              --current "${bdn[@]}" \
+              --capture artifacts/nightly-baseline.json
+          fi
+
+      - name: Upload captured baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-baseline
+          path: artifacts/nightly-baseline.json
+
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: dotnet/global.json
+
+      - name: NuGet vulnerability scan (transitive included)
+        run: |
+          set +e
+          output=$(dotnet list dotnet/Cubeglass.sln package --vulnerable --include-transitive 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::dotnet list package --vulnerable failed (exit $status); the scan did not run."
+            exit 1
+          fi
+          if echo "$output" | grep -q "has the following vulnerable packages"; then
+            echo "::error::vulnerable NuGet package(s) found; update the pinned versions in dotnet/Directory.Packages.props."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Python dependency audit
+        run: |
+          python -m pip install pip-audit==2.10.1
+          pip-audit -r python/requirements-dev.txt
 
   mutation:
     name: mutation

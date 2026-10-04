@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using BenchmarkDotNet.Attributes;
+using BenchmarkDotNet.Exporters.Json;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Running;
 
@@ -15,6 +16,7 @@ namespace Cubeglass.CoreMath.Benchmarks
 
     [SimpleJob(warmupCount: 1, iterationCount: 3)]
     [MemoryDiagnoser]
+    [JsonExporter]
     public class AbiVersionBenchmarks
     {
         [Benchmark]
