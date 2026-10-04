@@ -1,0 +1,4 @@
+# CI-only Python tooling (not needed for local development).
+# Kept separate from requirements-dev.txt so CI installs exactly what the
+# workflows use, and so pip-audit covers it (see .github/workflows/nightly.yml).
+gcovr==8.6
