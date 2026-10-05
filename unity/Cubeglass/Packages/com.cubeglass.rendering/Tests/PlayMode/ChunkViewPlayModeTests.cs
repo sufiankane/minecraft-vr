@@ -221,9 +221,13 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(chunks.Length, manager.ActiveViews, "the fixture chunks did not upload");
 
             // Three edits in one frame in the corner, centre and opposite
-            // corner chunks; their neighbourhoods union to every loaded chunk.
+            // corner chunks; with the precise affected set (TD-016/TD-017)
+            // their unions cover seven of the nine loaded chunks, strictly
+            // fewer than the old Chebyshev-1 superset.
             long remeshesBefore = manager.RemeshedChunks;
             int[] edited = { 0, 4, 8 };
+            var expectedDirty = new HashSet<ChunkCoord>();
+            var loaded = new HashSet<ChunkCoord>(chunks);
             for (int i = 0; i < edited.Length; i++)
             {
                 Int3 cell = ChunkMath.ToWorld(chunks[edited[i]], new Int3(0, 0, 0));
@@ -232,9 +236,15 @@ namespace Cubeglass.Unity.Rendering.Tests
                     manager.World.Apply(new EditCommand(cell, new BlockId(1), BlockId.Air, 0L)),
                     "fixture break {0} was rejected",
                     i);
+                expectedDirty.UnionWith(ChunkEditPropagation.GetAffectedChunks(cell));
             }
 
-            Assert.AreEqual(chunks.Length, manager.DirtyChunks, "every loaded chunk must be dirty in the same frame");
+            expectedDirty.RemoveWhere(coord => !loaded.Contains(coord));
+            Assert.Less(expectedDirty.Count, chunks.Length, "the precise set is smaller than the superset");
+            Assert.AreEqual(
+                expectedDirty.Count,
+                manager.DirtyChunks,
+                "exactly the union of the precise affected sets is dirty in the same frame");
 
             int processed = manager.ProcessDirtyRemeshes();
             Assert.AreEqual(Budget, processed, "the per-frame upload cap is the limiter");
@@ -251,9 +261,9 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             Assert.AreEqual(0, manager.DirtyChunks, "the dirty queue did not drain");
             Assert.AreEqual(
-                chunks.Length,
+                expectedDirty.Count,
                 manager.RemeshedChunks - remeshesBefore,
-                "every dirty chunk must be remeshed exactly once");
+                "every precisely dirty chunk must be remeshed exactly once");
             Assert.LessOrEqual(manager.UploadedThisFrame, Budget, "the upload cap was exceeded on the drain frame");
         }
 

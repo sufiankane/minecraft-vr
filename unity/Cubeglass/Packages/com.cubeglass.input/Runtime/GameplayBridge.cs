@@ -61,11 +61,14 @@ namespace Cubeglass.Unity.Input
     /// <para>
     /// The bridge also forwards editing stats (<see cref="HotbarIndex"/>,
     /// <see cref="BreakProgress"/>, <see cref="TrackingState"/>) and the
-    /// planar speed for the overlay/vignette, and raises
-    /// <see cref="SaveRequested"/> once an edit lands so S7 Task 4 can persist
-    /// the world. Persistence itself listens to <see cref="EditApplied"/>
-    /// (exact edited cells) and to the optional <see cref="SaveBatches"/> sink;
-    /// the interaction service edits through a thin <c>IWorld</c> observer that
+    /// planar speed for the overlay/vignette. Persistence listens to
+    /// <see cref="EditApplied"/> (exact edited cells) and to the optional
+    /// <see cref="SaveBatches"/> sink; the write-only <c>SaveRequested</c> flag
+    /// was removed (TD-024) because the exact cell stream already drives the
+    /// save batching, and the cell-carrying <c>World.ChunkChanged</c> event
+    /// (ADR-0013) drives the view manager's precise remesh dirty tracking
+    /// directly (TD-017). The
+    /// interaction service edits through a thin <c>IWorld</c> observer that
     /// records applied commands, so the pure Gameplay module needs no change.
     /// </para>
     /// </remarks>
@@ -265,9 +268,6 @@ namespace Cubeglass.Unity.Input
         /// <summary>Number of world edits applied since scene start.</summary>
         public int EditsApplied { get; private set; }
 
-        /// <summary>Set when an edit lands; S7 Task 4 consumes and clears it.</summary>
-        public bool SaveRequested { get; set; }
-
         private void Update()
         {
             if (autoUpdate)
@@ -410,13 +410,24 @@ namespace Cubeglass.Unity.Input
             // The interaction service edits through the observer, which
             // records every applied command so persistence sees exact cells
             // without changing the pure Gameplay module.
+            // TD-015: re-resolve the live world immediately before edits land,
+            // not only at the top of the tick. A compaction between the two
+            // points (today only reachable from a future re-entrant streaming
+            // callback) would otherwise let this tick's edit land in the
+            // pre-compaction world; re-resolving here closes that gap and the
+            // compaction test pins the invariant.
             editObserver.Reset();
+            RefreshWorld();
+            if (world == null)
+            {
+                return;
+            }
+
             InteractionResult result = interaction.Update(frame, editObserver, player, dt);
             BreakProgress = result.BreakInProgress ? result.BreakProgress : 0f;
             if (result.Edited)
             {
                 EditsApplied++;
-                SaveRequested = true;
             }
 
             DispatchAppliedEdits();
@@ -569,8 +580,8 @@ namespace Cubeglass.Unity.Input
                 get { return AppliedCount < cells.Length ? AppliedCount : cells.Length; }
             }
 
-#pragma warning disable CS0067 // The observer forwards reads and Apply only; ChunkChanged stays on the inner world.
-            public event Action<ChunkCoord> ChunkChanged;
+#pragma warning disable CS0067 // The observer forwards reads and Apply only; the inner world raises ChunkChanged.
+            public event Action<ChunkEdit> ChunkChanged;
 #pragma warning restore CS0067
 
             public void Reset()

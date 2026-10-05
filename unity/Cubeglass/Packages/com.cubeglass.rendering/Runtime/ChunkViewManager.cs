@@ -1,5 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using Cubeglass.CoreMath;
 using Cubeglass.Mesh;
 using Cubeglass.Streaming;
@@ -32,26 +35,23 @@ namespace Cubeglass.Unity.Rendering
     /// at the converted chunk origin (ADR-0011, R52).
     /// </para>
     /// <para>
-    /// Edits run through <see cref="World.ChunkChanged"/>: the manager dirties
-    /// the changed chunk plus every loaded chunk in its Chebyshev-1
-    /// neighbourhood and rebuilds them on later frames through
-    /// <see cref="ProcessDirtyRemeshes"/>, sharing the upload budget with new
-    /// chunks. The event reports the chunk, not the edited cell, so the
-    /// neighbourhood is the provable superset of
-    /// <see cref="ChunkEditPropagation.GetAffectedChunks"/> over every cell the
-    /// chunk can contain; meshing a neighbour that did not actually change
-    /// rebuilds an identical mesh and is correctness-safe.
+    /// Edits are dirty-tracked precisely (TD-017): the cell-carrying
+    /// <see cref="World.ChunkChanged"/> event (ADR-0013) dirties exactly
+    /// <see cref="ChunkEditPropagation.FillAffectedChunks"/> for the edited
+    /// cell, so a neighbour whose mesh cannot change is never rebuilt. The
+    /// invocation list is a caller-owned array reused by every handler call,
+    /// so the edit path allocates nothing.
     /// </para>
     /// <para>
     /// The manager keeps its own loaded-chunk dictionary; the <see cref="World"/>
     /// used for neighbour snapshots has no unload API, so it accumulates chunks
     /// and is rebuilt from the live set once it retains about twice the live
-    /// count (see <see cref="WorldCompactions"/>). Each upload snapshots the
-    /// chunk and its 26 neighbours for the mesher, allocating transient copies
-    /// on the synchronous S7 path; caching snapshots and meshing off the main
-    /// thread are later work. Mesh data is released inside
-    /// <see cref="ChunkViewPool.Upload"/> exactly once per mesh; see that type
-    /// for the winding contract.
+    /// count (see <see cref="WorldCompactions"/>). Compaction carries the same
+    /// <see cref="Chunk"/> objects and keeps the dirty bookkeeping, so an edit
+    /// in the same frame as a compaction is neither lost nor unmeshed (TD-015).
+    /// Each upload snapshots the chunk and its 26 neighbours for the mesher,
+    /// allocating transient copies on the synchronous S7 path; caching
+    /// snapshots and meshing off the main thread are later work.
     /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
@@ -67,6 +67,9 @@ namespace Cubeglass.Unity.Rendering
         private readonly HashSet<ChunkCoord> dirtySet = new HashSet<ChunkCoord>();
         private readonly Queue<ChunkCoord> dirtyQueue = new Queue<ChunkCoord>();
         private readonly ChunkCoord[] neighbourhood = new ChunkCoord[RemeshNeighbourhoodSize];
+        private readonly ChunkCoord[] affectedBuffer = new ChunkCoord[8];
+        private readonly HashSet<ChunkCoord> pendingDeltaSet = new HashSet<ChunkCoord>();
+        private ConcurrentQueue<DeltaLoadResult> completedDeltaLoads = new ConcurrentQueue<DeltaLoadResult>();
 
         private ChunkViewPool pool;
         private MeshBufferPool bufferPool;
@@ -79,7 +82,11 @@ namespace Cubeglass.Unity.Rendering
         private long deltaEditsApplied;
         private long liveDeltasReapplied;
         private long liveEditsReapplied;
+        private long editsSkippedAlreadyApplied;
+        private long preciseEdits;
+        private long deferredDeltaLoads;
         private Material viewMaterial;
+        private Material ownedMaterial;
         private long seed;
         private int maxViews = 2048;
         private int maxMeshUploadsPerFrame = 4;
@@ -129,10 +136,11 @@ namespace Cubeglass.Unity.Rendering
         /// <summary>
         /// Optional persistence store consulted when a chunk is generated
         /// (S7 Task 4b): an existing delta is replayed over the generated
-        /// baseline through <see cref="World.Apply"/> before the chunk is
-        /// meshed, so edits survive a session. Loads happen on the main thread
-        /// once per generated chunk; a store that faults is ignored and the
-        /// chunk keeps its generated content.
+        /// baseline through <see cref="World.Apply"/> before the chunk reports
+        /// mesh-ready to the scheduler, so edits survive a session. The load is
+        /// queued on the store's background pump and applied when it completes
+        /// (TD-060 M-3): chunk generation never blocks the frame on disk IO,
+        /// and a chunk is only meshed after its stored delta has been applied.
         /// </summary>
         public IWorldStore Store { get; set; }
 
@@ -169,6 +177,38 @@ namespace Cubeglass.Unity.Rendering
         public long LiveEditsReapplied
         {
             get { return liveEditsReapplied; }
+        }
+
+        /// <summary>
+        /// Replay cells skipped because the world already held the target block
+        /// (TD-018): a merged in-memory map re-applied over a stored delta must
+        /// not double-apply or double-count anything.
+        /// </summary>
+        public long EditsSkippedAlreadyApplied
+        {
+            get { return editsSkippedAlreadyApplied; }
+        }
+
+        /// <summary>
+        /// Cell-carrying <see cref="World.ChunkChanged"/> events that dirtied the
+        /// precise <see cref="ChunkEditPropagation.FillAffectedChunks"/> set
+        /// (TD-017).
+        /// </summary>
+        public long PreciseEdits
+        {
+            get { return preciseEdits; }
+        }
+
+        /// <summary>Delta loads queued on the store's pump and not yet completed (TD-060 M-3).</summary>
+        public int DeferredDeltaLoads
+        {
+            get { return pendingDeltaSet.Count; }
+        }
+
+        /// <summary>Delta loads queued on the store's pump since initialization (TD-060 M-3).</summary>
+        public long DeltaLoadsQueued
+        {
+            get { return deferredDeltaLoads; }
         }
 
         /// <summary>The upload budget per frame, taken from the streaming config.</summary>
@@ -265,6 +305,12 @@ namespace Cubeglass.Unity.Rendering
         public int DirtyChunks
         {
             get { return dirtySet.Count; }
+        }
+
+        /// <summary>Whether <paramref name="chunk"/> is queued for a dirty remesh (TD-017 tests).</summary>
+        public bool IsDirty(ChunkCoord chunk)
+        {
+            return dirtySet.Contains(chunk);
         }
 
         /// <summary>Times the neighbour-snapshot world was rebuilt to drop unloaded chunks.</summary>
@@ -374,6 +420,18 @@ namespace Cubeglass.Unity.Rendering
             generator = worldGenerator != null ? worldGenerator : new TerrainGenerator();
             world = new World();
             world.ChunkChanged += HandleChunkChanged;
+            completedDeltaLoads = new ConcurrentQueue<DeltaLoadResult>();
+
+            // TD-060 M-5: chunks are no longer untextured. With no material
+            // assigned, generate the per-block-id colour palette atlas and its
+            // unlit vertex-colour material once; art can replace the palette by
+            // assigning ViewMaterial from a later pipeline.
+            if (viewMaterial == null)
+            {
+                ownedMaterial = ChunkPalette.CreateMaterial(blocks);
+                viewMaterial = ownedMaterial;
+            }
+
             pool = new ChunkViewPool(transform, capacity) { Material = viewMaterial };
             bufferPool = new MeshBufferPool();
             mesher = new GreedyMesher(new AtlasLayout(16, 16), bufferPool);
@@ -413,6 +471,7 @@ namespace Cubeglass.Unity.Rendering
             }
 
             deferredSet.Remove(chunk);
+            pendingDeltaSet.Remove(chunk);
             chunks.Remove(chunk);
             dirtySet.Remove(chunk);
             if (views.TryGetValue(chunk, out ChunkView view))
@@ -557,6 +616,7 @@ namespace Cubeglass.Unity.Rendering
         public int ProcessDeferredLoads()
         {
             EnsureInitialized();
+            ProcessDeltaLoads();
             if (deferredLoads.Count == 0 || Time.frameCount == lastGenerateFrame)
             {
                 return 0;
@@ -575,21 +635,18 @@ namespace Cubeglass.Unity.Rendering
                     Chunk generated = generator.Generate(chunk, seed);
                     world.LoadChunk(generated);
 
-                    // Replay a stored delta before the chunk joins the manager's
-                    // live set: HandleChunkChanged only dirties resident chunks, so
-                    // a fresh boot's replay does not schedule a remesh for a chunk
-                    // that has no view yet.
-                    ApplyStoredDelta(chunk);
-
                     chunks.Add(chunk, generated);
                     worldChunks++;
                     generatedChunks++;
                     lastGenerateFrame = Time.frameCount;
                     CompactWorldIfNeeded();
-                    if (scheduler != null)
-                    {
-                        scheduler.NotifyMeshReady(chunk);
-                    }
+
+                    // Replay a stored delta (and the in-memory map) before the
+                    // chunk reports mesh-ready: the load runs on the store's
+                    // pump and the completion applies it on the main thread in
+                    // a later ProcessDeltaLoads (TD-060 M-3). A manager with no
+                    // store reports ready immediately.
+                    BeginDeltaLoad(chunk);
 
                     return 1;
                 }
@@ -618,15 +675,119 @@ namespace Cubeglass.Unity.Rendering
             return 0;
         }
 
+        /// <summary>
+        /// Starts the stored-delta/in-memory replay for a freshly generated
+        /// chunk. A store without a completed task queues the load on the
+        /// store's pump (TD-060 M-3) and the result is applied by
+        /// <see cref="ProcessDeltaLoads"/>; a null store or a synchronously
+        /// completed load applies and reports mesh-ready in place. Calls
+        /// <see cref="ChunkStreamingScheduler.NotifyMeshReady"/> exactly once
+        /// per chunk.
+        /// </summary>
+        private void BeginDeltaLoad(ChunkCoord chunk)
+        {
+            IWorldStore activeStore = Store;
+            if (activeStore == null)
+            {
+                ApplyStoredDelta(chunk, null);
+                NotifyMeshReady(chunk);
+                return;
+            }
+
+            ValueTask<ChunkDelta> load;
+            try
+            {
+                load = activeStore.LoadAsync(chunk, CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                // A store that faults on enqueue is ignored: the chunk keeps
+                // its generated content and still reports ready.
+                Debug.LogWarning(
+                    "[ChunkViewManager] delta load could not be queued for chunk (" + chunk.X + ", "
+                        + chunk.Y + ", " + chunk.Z + "): " + exception.Message);
+                ApplyStoredDelta(chunk, null);
+                NotifyMeshReady(chunk);
+                return;
+            }
+
+            if (load.IsCompletedSuccessfully)
+            {
+                ApplyStoredDelta(chunk, load.Result);
+                NotifyMeshReady(chunk);
+                return;
+            }
+
+            deferredDeltaLoads++;
+            pendingDeltaSet.Add(chunk);
+
+            Task<ChunkDelta> task = load.AsTask();
+            task.ContinueWith(
+                completed =>
+                {
+                    ChunkDelta delta = completed.Status == TaskStatus.RanToCompletion ? completed.Result : null;
+                    completedDeltaLoads.Enqueue(new DeltaLoadResult(chunk, delta));
+                },
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        /// <summary>
+        /// Applies the deltas whose background loads completed since the last
+        /// call, then reports those chunks mesh-ready (TD-060 M-3). Safe to
+        /// call directly in tests; called every frame from
+        /// <see cref="ProcessDeferredLoads"/>.
+        /// </summary>
+        public int ProcessDeltaLoads()
+        {
+            if (!initialized)
+            {
+                return 0;
+            }
+
+            int applied = 0;
+            while (completedDeltaLoads.TryDequeue(out DeltaLoadResult result))
+            {
+                pendingDeltaSet.Remove(result.Chunk);
+                if (!chunks.ContainsKey(result.Chunk))
+                {
+                    // The chunk unloaded while its load was in flight; the
+                    // completion is dropped and the next generation reloads.
+                    continue;
+                }
+
+                ApplyStoredDelta(result.Chunk, result.Delta);
+                NotifyMeshReady(result.Chunk);
+                applied++;
+            }
+
+            return applied;
+        }
+
+        private void NotifyMeshReady(ChunkCoord chunk)
+        {
+            if (scheduler != null)
+            {
+                scheduler.NotifyMeshReady(chunk);
+            }
+        }
+
         /// <summary>True when the chunk currently has an active view.</summary>
         public bool TryGetView(ChunkCoord chunk, out ChunkView view)
         {
             return views.TryGetValue(chunk, out view);
         }
 
-        private void ApplyStoredDelta(ChunkCoord chunk)
+        /// <summary>
+        /// Replays the stored delta (already loaded by the caller, possibly
+        /// null) and then the in-memory accumulated map over the generated
+        /// baseline. Cells whose block already matches are skipped (TD-018), so
+        /// a merged map re-applied after a stored delta cannot double-apply or
+        /// double-count; only effective applications are counted.
+        /// </summary>
+        private void ApplyStoredDelta(ChunkCoord chunk, ChunkDelta stored)
         {
-            ChunkDelta stored = LoadStoredDelta(chunk);
             ChunkDelta live = null;
             bool hasLive = AppliedEdits != null
                 && AppliedEdits.TryGetAccumulatedDelta(chunk, out live)
@@ -647,32 +808,11 @@ namespace Cubeglass.Unity.Rendering
 
             if (hasLive)
             {
-                // In-session edits are newer than anything on disk and win.
+                // In-session edits are newer than anything on disk and win;
+                // cells already carrying the target block (the stored delta's
+                // cells, just replayed) are skipped and not re-counted.
                 liveDeltasReapplied++;
                 liveEditsReapplied += ApplyDelta(chunk, live);
-            }
-        }
-
-        private ChunkDelta LoadStoredDelta(ChunkCoord chunk)
-        {
-            IWorldStore activeStore = Store;
-            if (activeStore == null)
-            {
-                return null;
-            }
-
-            try
-            {
-                return activeStore.LoadAsync(chunk, System.Threading.CancellationToken.None)
-                    .GetAwaiter()
-                    .GetResult();
-            }
-            catch (Exception exception)
-            {
-                Debug.LogWarning(
-                    "[ChunkViewManager] delta load failed for chunk (" + chunk.X + ", "
-                        + chunk.Y + ", " + chunk.Z + "): " + exception.Message);
-                return null;
             }
         }
 
@@ -682,6 +822,12 @@ namespace Cubeglass.Unity.Rendering
             foreach (KeyValuePair<Int3, BlockId> edit in delta.Edits)
             {
                 Int3 cell = ChunkMath.ToWorld(chunk, edit.Key);
+                if (world.Get(cell) == edit.Value)
+                {
+                    editsSkippedAlreadyApplied++;
+                    continue;
+                }
+
                 if (world.Apply(new EditCommand(cell, world.Get(cell), edit.Value, 0L)) == EditResult.Applied)
                 {
                     applied++;
@@ -689,6 +835,14 @@ namespace Cubeglass.Unity.Rendering
             }
 
             return applied;
+        }
+
+        private void DirtyResident(ChunkCoord coord)
+        {
+            if (chunks.ContainsKey(coord) && dirtySet.Add(coord))
+            {
+                dirtyQueue.Enqueue(coord);
+            }
         }
 
         private void EnsureInitialized()
@@ -720,22 +874,29 @@ namespace Cubeglass.Unity.Rendering
             return new Vector3((float)origin.X, (float)origin.Y, (float)origin.Z);
         }
 
-        private void HandleChunkChanged(ChunkCoord changed)
+        private void HandleChunkChanged(ChunkEdit edit)
         {
-            int count = FillRemeshNeighbourhood(changed, neighbourhood);
+            // ADR-0013: the event carries the edited cell, so the precise
+            // affected set is computed directly and no fallback superset is
+            // ever needed (TD-016/TD-017). The buffer is reused, so the edit
+            // path allocates nothing.
+            preciseEdits++;
+            int count = ChunkEditPropagation.FillAffectedChunks(edit.Cell, affectedBuffer);
             for (int i = 0; i < count; i++)
             {
-                ChunkCoord chunk = neighbourhood[i];
-                if (chunks.ContainsKey(chunk) && dirtySet.Add(chunk))
-                {
-                    dirtyQueue.Enqueue(chunk);
-                }
+                DirtyResident(affectedBuffer[i]);
             }
         }
 
-        private void CompactWorldIfNeeded()
+        /// <summary>
+        /// Compacts the neighbour-snapshot world unconditionally; the
+        /// deterministic seam tests use for the same-frame edit/compaction
+        /// invariant (TD-015). Loaded chunks and the dirty bookkeeping are
+        /// carried over, and a no-op when the manager has nothing loaded.
+        /// </summary>
+        public void CompactWorldNow()
         {
-            if (worldChunks <= (2 * chunks.Count) + 64)
+            if (!initialized)
             {
                 return;
             }
@@ -751,6 +912,16 @@ namespace Cubeglass.Unity.Rendering
             world.ChunkChanged += HandleChunkChanged;
             worldChunks = chunks.Count;
             worldCompactions++;
+        }
+
+        private void CompactWorldIfNeeded()
+        {
+            if (worldChunks <= (2 * chunks.Count) + 64)
+            {
+                return;
+            }
+
+            CompactWorldNow();
         }
 
         private void OnDestroy()
@@ -777,6 +948,22 @@ namespace Cubeglass.Unity.Rendering
             deferredSet.Clear();
             dirtySet.Clear();
             dirtyQueue.Clear();
+            pendingDeltaSet.Clear();
+            completedDeltaLoads = new ConcurrentQueue<DeltaLoadResult>();
+            if (ownedMaterial != null)
+            {
+                if (Application.isPlaying)
+                {
+                    Destroy(ownedMaterial);
+                }
+                else
+                {
+                    DestroyImmediate(ownedMaterial);
+                }
+
+                ownedMaterial = null;
+            }
+
             scheduler = null;
             world = null;
             bufferPool = null;
@@ -795,8 +982,25 @@ namespace Cubeglass.Unity.Rendering
             deltaEditsApplied = 0;
             liveDeltasReapplied = 0;
             liveEditsReapplied = 0;
+            editsSkippedAlreadyApplied = 0;
+            preciseEdits = 0;
+            deferredDeltaLoads = 0;
             lastGenerateFrame = int.MinValue;
             lastUploadFrame = int.MinValue;
+        }
+
+        /// <summary>One completed background delta load: the chunk and its delta (null on failure/corruption).</summary>
+        private readonly struct DeltaLoadResult
+        {
+            public DeltaLoadResult(ChunkCoord chunk, ChunkDelta delta)
+            {
+                Chunk = chunk;
+                Delta = delta;
+            }
+
+            public ChunkCoord Chunk { get; }
+
+            public ChunkDelta Delta { get; }
         }
     }
 }

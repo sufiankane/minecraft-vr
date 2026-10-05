@@ -5,9 +5,9 @@ namespace Cubeglass.Placeholder.Tests
     public class AbiVersionTests
     {
         [Test]
-        public void AbiVersion_IsOne()
+        public void AbiVersion_IsTwo()
         {
-            Assert.AreEqual(1, AbiVersion.Value);
+            Assert.AreEqual(2, AbiVersion.Value, "the Unity mirror must track CG_ABI_VERSION 2 (ADR-0010)");
         }
     }
 }
