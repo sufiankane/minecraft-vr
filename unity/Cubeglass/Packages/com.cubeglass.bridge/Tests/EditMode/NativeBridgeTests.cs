@@ -18,13 +18,16 @@ namespace Cubeglass.Unity.Bridge.Tests
         [SetUp]
         public void CreateWriter()
         {
-            string pluginPath = Path.Combine(Application.dataPath, "Plugins", "win-x64", "cg_unity_bridge.dll");
-            if (!File.Exists(pluginPath))
+            string pluginDir = Path.Combine(Application.dataPath, "Plugins", "win-x64");
+            string pluginPath = Path.Combine(pluginDir, "cg_unity_bridge.dll");
+            string writerPath = Path.Combine(pluginDir, "cg_bridge_test_support.dll");
+            if (!File.Exists(pluginPath) || !File.Exists(writerPath))
             {
                 Assert.Fail(
-                    $"native bridge plugin not found at '{pluginPath}'; build it first " +
-                    "(cpp: cmake --build --preset windows-msvc) and copy it to Assets/Plugins/win-x64 " +
-                    "(scripts/ci-local.ps1 does this before the Unity lane)");
+                    $"native bridge plugins not found ('{pluginPath}', '{writerPath}'); build them first " +
+                    "(cpp: cmake --build --preset windows-msvc --target cg_bridge cg_bridge_test_support) and copy " +
+                    "them to Assets/Plugins/win-x64 (scripts/ci-local.ps1 does this before the Unity lane; " +
+                    "cg_bridge_test_support.dll is test-only and is never shipped)");
             }
 
             NativeBridge.cg_test_writer_close(); // safe when no writer is open

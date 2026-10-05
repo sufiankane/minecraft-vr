@@ -12,7 +12,7 @@ it after any job rename.
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `glasses` and `bridge` source (see below) |
+| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, MSVC `/analyze` over every `core-math`, `glasses` and `bridge` source (TD-030), `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `glasses` and `bridge` source (see below) |
 | `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan `ctest`, the TSan preset and concurrency tests, plus the `linux-coverage` build and the `core-math` coverage floor |
 | `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, per-project `dotnet test` with `XPlat Code Coverage`, and the module coverage floors |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy`, `pytest` |
@@ -174,6 +174,27 @@ module directories must stay clean under the repository `.clang-tidy` policy
 clang-tidy by design (the negative format fixture and any Unity C# are not
 module sources).
 
+## MSVC static analysis scope (TD-030)
+
+The `cpp-windows` job configures the `windows-analyze` preset
+(`CG_ENABLE_ANALYZE=ON`) and builds only the four native module targets:
+
+```powershell
+cmake --preset windows-analyze
+cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
+```
+
+The option adds `/analyze /analyze:external-` to those targets only, while
+`cg_warnings` keeps `/W4 /WX`, so any code-analysis warning (C6xxx) fails the
+lane. Scope is the `src` directories of the three modules
+(`cpp/core-math/src`, `cpp/glasses/src`, `cpp/bridge/src`, the last including
+the test-only writer, which the split into `cg_bridge_test_support` moved to
+its own target, TD-004/TD-067). `cpp/tests` and `cpp/tools` are deliberately
+outside the scope: they are test/tooling code, and clang-tidy covers the
+module headers they exercise. The same flag set can be applied by hand on any
+Windows MSVC host with `cmake --preset windows-analyze`; `CG_ENABLE_ANALYZE` is
+off by default, so the Debug and Release lanes are unaffected.
+
 ## Reproduce locally
 
 From the repository root, using the Python environment in `python/.venv`:
@@ -214,6 +235,8 @@ cd cpp
 cmake --preset windows-msvc
 cmake --build --preset windows-msvc
 ctest --preset ci
+cmake --preset windows-analyze
+cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
 clang-format --dry-run --Werror @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
 clang-tidy --header-filter='[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p build/windows-msvc @(git ls-files core-math/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
 ```
@@ -357,7 +380,7 @@ The licensing and test-gating decision behind the two routes is recorded in
 
 | Route | Runner | Unity licence | Unity suites |
 | --- | --- | --- | --- |
-| `hosted` (default) | `windows-latest` | `UNITY_LICENSE` alone (offline `.ulf`) **or** `UNITY_SERIAL` alone (serial) | EditMode + PlayMode before the build |
+| `hosted` (default) | `windows-latest` | `UNITY_LICENSE` alone (offline `.ulf`) **or** `UNITY_SERVICE_ACCOUNT_ID` + `UNITY_SERVICE_ACCOUNT_SECRET` with `UNITY_SERIAL` (service-account session) | EditMode + PlayMode before the build |
 | `self-hosted` | `[self-hosted, windows]` | the machine's own Unity Hub activation (no secrets) | EditMode + PlayMode before the build |
 
 The self-hosted job verifies the pinned .NET SDK (`dotnet --list-sdks` against
@@ -383,16 +406,28 @@ actionable error:
   [license.unity3d.com/manual](https://license.unity3d.com/manual).
   The release gate writes
   it to `Unity_lic.ulf` and runs `unity license activate --file`.
-- **serial** — `UNITY_SERIAL` alone,
-  a Plus/Pro/Education serial. The release gate runs
-  `unity license activate --serial` and returns the seat at the end of the job.
+- **service-account session** — `UNITY_SERVICE_ACCOUNT_ID` +
+  `UNITY_SERVICE_ACCOUNT_SECRET` (a Unity Cloud service-account key pair; the
+  owner runbook is below) together with `UNITY_SERIAL`, the Plus/Pro/Education
+  serial of the seat. The CLI reads the pair straight from the environment (the
+  mechanism `unity ci init` generates), so the release gate runs
+  `unity license activate --serial` as a signed-in service-account session and
+  returns the seat at the end of the job. A serial alone is **not** sufficient:
+  since Unity CLI 1.0.0-beta.2 a subscription serial needs a signed-in session,
+  which is why the first hosted dispatch failed with "This license requires a
+  signed-in Unity account". `unity auth login --client-id/--client-secret
+  --no-store` is deliberately not used: `--no-store` is process-local, so the
+  session would be gone before the activation command runs.
 
 With credentials present it builds the managed plugins
 (`dotnet build dotnet/Cubeglass.sln --configuration Release` and
-`scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` target from the
-pinned vcpkg baseline and copies `cg_unity_bridge.dll` into
-`unity/Cubeglass/Assets/Plugins/win-x64/`. The staged DLLs are git-ignored, so
-the checkout stays clean for the builder.
+`scripts/sync-unity-plugins.ps1`), builds the native `cg_bridge` and
+`cg_bridge_test_support` targets from the pinned vcpkg baseline and copies
+`cg_unity_bridge.dll` and the test-only `cg_bridge_test_support.dll`
+(TD-004/TD-067) into `unity/Cubeglass/Assets/Plugins/win-x64/`. The test-only
+DLL exists only for the EditMode bridge tests and is removed again before the
+player build, so it never reaches the player or the release artefact. The
+staged DLLs are git-ignored, so the checkout stays clean for the builder.
 
 Tagged releases are test-gated on both routes. Per-PR CI does not run Unity (the
 required jobs are secret-free and `windows-latest` has no editor), so
@@ -403,7 +438,8 @@ release installs the pinned Unity CLI (`1.0.0-beta.11`) and Editor
 (`6000.6.3f1`), installs the CLI's managed licensing client
 (`unity plugin install licensingClient`, required before any activation on a
 fresh runner), activates the licence from `UNITY_LICENSE` (offline `.ulf`) or
-`UNITY_SERIAL` and runs the same
+from `UNITY_SERIAL` under the service-account session
+(`UNITY_SERVICE_ACCOUNT_ID`/`UNITY_SERVICE_ACCOUNT_SECRET`) and runs the same
 `unity test unity/Cubeglass --mode EditMode --non-interactive` and
 `--mode PlayMode --non-interactive` suites ci-local runs locally. The release
 fails when results are missing, a required test assembly is absent, any test
@@ -522,15 +558,57 @@ needs neither (it uses the machine's Hub activation):
 | Mode | Secrets | Command | Needs |
 | --- | --- | --- | --- |
 | Offline licence file | `UNITY_LICENSE` only | `unity license activate --file` | a Personal/Student `.ulf` from license.unity3d.com/manual |
-| Serial | `UNITY_SERIAL` only | `unity license activate --serial` | a Plus/Pro/Education serial |
+| Service-account session + serial | `UNITY_SERVICE_ACCOUNT_ID`, `UNITY_SERVICE_ACCOUNT_SECRET` **and** `UNITY_SERIAL` | `unity license activate --serial` (the CLI reads the pair from the environment, so the command runs signed in) | a Unity Cloud service-account key pair and a Plus/Pro/Education serial |
 | Floating licence server | — | `unity license activate --floating` | a reachable Unity licence server; not wired into the workflow |
 | Self-hosted runner with Hub activation | none | — | the licensed Windows machine — the `self-hosted` route |
+
+A serial **alone** is no longer accepted: since Unity CLI 1.0.0-beta.2 a
+subscription serial needs a signed-in session, and the release gate rejects a
+serial-only dispatch with the service-account runbook. The service-account
+session is supplied through the environment (`UNITY_SERVICE_ACCOUNT_ID` /
+`UNITY_SERVICE_ACCOUNT_SECRET`) because the CLI's own `unity ci init` template
+reads them that way and `unity auth login --client-id/--client-secret
+--no-store` is process-local (the session is gone before the next command).
+`unity auth status` reports the session as `Signed in as service-account
+<id> (via env)`.
 
 Owner note: Unity Student/Personal licences use the offline `.ulf` exported
 from [license.unity3d.com/manual](https://license.unity3d.com/manual) and the
 `unity license activate --file` CLI path. The CLI explicitly rejects
 `unity license activate --personal` when it runs with service-account tokens,
-so the serial mode is for Plus/Pro/Education serials only.
+so the service-account path is for Plus/Pro/Education serial seats only.
+
+### Service-account owner runbook (TD-041)
+
+One-off, in the Unity Cloud dashboard:
+
+1. **Create the key pair.** Unity Cloud → **Administration → Service accounts**
+   → create (or pick) a service account with access to the seat's organization
+   → **Keys → Create key**. Copy the key **ID** and the **secret** immediately;
+   the secret is shown once.
+2. **Add the repository secrets.** GitHub → repo → **Settings → Secrets and
+   variables → Actions** → add `UNITY_SERVICE_ACCOUNT_ID` (the key ID) and
+   `UNITY_SERVICE_ACCOUNT_SECRET` (the secret). Add the seat's serial as
+   `UNITY_SERIAL` (Plus/Pro/Education serial format); the serial secret name is
+   unchanged.
+3. **Do not set `UNITY_SERIAL` without the pair.** The release preflight rejects
+   a serial-only dispatch, because the CLI cannot sign in without the pair and
+   `unity license activate --serial` fails with "This license requires a
+   signed-in Unity account".
+4. **Rotate.** When the key is rotated in Unity Cloud, replace both secrets in
+   the same settings session; the workflow needs no edit. The serial, when it
+   changes with the seat, replaces `UNITY_SERIAL` only.
+5. **Verify.** Dispatch `release.yml` with `build_target: hosted` and confirm
+   the `Require the Unity licence credentials` preflight reports the
+   service-account mode and the `Activate the Unity licence for the release
+   gate` step exits 0 before the EditMode/PlayMode gate. The workflow cannot be
+   verified in this repository without a real dispatch (TD-045 billing block /
+   TD-061 live-run observation).
+
+A subscription-bound serial can still be refused by Unity's licensing backend
+for lack of a user token; Unity's own `unity ci init` template uses this same
+service-account-plus-serial sequence, and the offline `.ulf` (`UNITY_LICENSE`)
+remains the fallback if the backend refuses the seat.
 
 ### Licence expiry and rotation runbook (TD-066)
 
@@ -544,8 +622,10 @@ amendment). Plan the renewal before that date:
    `.ulf` from [license.unity3d.com/manual](https://license.unity3d.com/manual)
    and replace the `UNITY_LICENSE` secret (Settings → Secrets and variables →
    Actions). A Plus/Pro/Education serial replaces the `UNITY_SERIAL` secret
-   instead. No workflow edit is needed; the release gate picks the secret up on
-   the next dispatch.
+   instead, and the service-account key pair
+   (`UNITY_SERVICE_ACCOUNT_ID`/`UNITY_SERVICE_ACCOUNT_SECRET`) must still be
+   present for the session (runbook above). No workflow edit is needed; the
+   release gate picks the secrets up on the next dispatch.
 3. **Self-hosted route.** Sign in to the Unity Hub on the runner machine as the
    licensed user and re-activate. The service account is described in the
    runbook above; verify `unity run` still builds before the next release.

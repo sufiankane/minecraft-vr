@@ -367,7 +367,10 @@ cg_status cg_bridge_open(void **out_handle) {
         CloseHandle(mapping);
         return CG_ERR_INTERNAL;
     }
-    handle = std::unique_ptr<BridgeHandle>(new (std::nothrow) BridgeHandle{});
+    // TD-030: no braces on the nothrow new. MSVC /analyze's C28182 misfires
+    // on a value-initialised nothrow new; default-initialisation is equivalent
+    // here because every BridgeHandle member has a default member initialiser.
+    handle = std::unique_ptr<BridgeHandle>(new (std::nothrow) BridgeHandle);
     if (handle == nullptr) {
         UnmapViewOfFile(command_view);
         UnmapViewOfFile(view);
@@ -407,7 +410,8 @@ cg_status cg_bridge_open(void **out_handle) {
         munmap(view, cg::bridge::kMinimumRegionSize);
         return CG_ERR_INTERNAL;
     }
-    handle = std::unique_ptr<BridgeHandle>(new (std::nothrow) BridgeHandle{});
+    // TD-030: no braces on the nothrow new (see cg_bridge_open).
+    handle = std::unique_ptr<BridgeHandle>(new (std::nothrow) BridgeHandle);
     if (handle == nullptr) {
         munmap(command_view, cg::bridge::kHeaderSize);
         munmap(view, cg::bridge::kMinimumRegionSize);

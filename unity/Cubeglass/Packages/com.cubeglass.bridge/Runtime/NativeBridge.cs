@@ -8,14 +8,17 @@ namespace Cubeglass.Unity.Bridge
 {
     /// <summary>
     /// Raw P/Invoke imports for <c>cg_unity_bridge.dll</c> (5.12 C ABI).
-    /// Production code uses <see cref="BridgeClient"/>; the <c>cg_test_writer_*</c>
+    /// Production code uses <see cref="BridgeClient"/>. The <c>cg_test_writer_*</c>
     /// imports are the test-only native writer documented in
-    /// <c>cpp/bridge/include/cg/bridge/test_writer.h</c> and must never be called
+    /// <c>cpp/bridge/include/cg/bridge/test_writer.h</c>; they live in the
+    /// separate <c>cg_bridge_test_support.dll</c> (TD-004/TD-067), which is
+    /// staged only for test runs and never shipped, and must never be called
     /// from runtime code.
     /// </summary>
     internal static class NativeBridge
     {
         private const string Library = "cg_unity_bridge";
+        private const string TestSupportLibrary = "cg_bridge_test_support";
 
         // Production bridge (contracts/cg_unity_bridge.h).
 
@@ -34,33 +37,34 @@ namespace Cubeglass.Unity.Bridge
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void cg_bridge_close(IntPtr handle);
 
-        // Test-only writer (cpp/bridge/include/cg/bridge/test_writer.h).
+        // Test-only writer (cpp/bridge/include/cg/bridge/test_writer.h),
+        // exported by cg_bridge_test_support.dll.
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_create();
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_open();
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern void cg_test_writer_close();
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_publish_head(ref BridgeHeadSample sample);
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_publish_hands(ref BridgeHandFrame frame);
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_set_heartbeat(long heartbeatNs);
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_publish_head_raw(ulong seqA, ulong seqB, ref BridgeHeadSample sample);
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_read_command(out uint command, out uint ack);
 
-        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+        [DllImport(TestSupportLibrary, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
         internal static extern BridgeStatus cg_test_writer_ack_command(uint ack);
     }
 

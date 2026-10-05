@@ -6,3 +6,5 @@ target_include_directories(cg_core_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/incl
 # TD-010: the warning flags are a usage requirement of the public headers, so
 # they propagate to every consumer instead of stopping at this target.
 target_link_libraries(cg_core_math PUBLIC cg_warnings)
+# TD-030: analyze only this module's sources, not its consumers (tests/tools).
+target_link_libraries(cg_core_math PRIVATE cg_analyze)

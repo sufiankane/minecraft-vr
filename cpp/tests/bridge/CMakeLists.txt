@@ -6,7 +6,12 @@ add_test(NAME bridge_layout COMMAND cg_bridge_layout_tests)
 
 add_executable(cg_bridge_reader_tests shm_reader_tests.cpp)
 
-target_link_libraries(cg_bridge_reader_tests PRIVATE cg::bridge GTest::gtest_main cg_warnings)
+# TD-004/TD-067: the reader tests drive the reader through the test-only writer,
+# which now lives in cg_bridge_test_support (cg_unity_bridge.dll stays
+# production-only).
+target_link_libraries(
+    cg_bridge_reader_tests PRIVATE cg::bridge cg::bridge_test_support GTest::gtest_main cg_warnings
+)
 
 add_test(NAME bridge_reader COMMAND cg_bridge_reader_tests)
 
@@ -14,7 +19,9 @@ add_executable(cg_bridge_stress_tests shm_stress_tests.cpp)
 
 find_package(Threads REQUIRED)
 
-target_link_libraries(cg_bridge_stress_tests PRIVATE cg::bridge GTest::gtest_main cg_warnings Threads::Threads)
+target_link_libraries(
+    cg_bridge_stress_tests PRIVATE cg::bridge cg::bridge_test_support GTest::gtest_main cg_warnings Threads::Threads
+)
 
 add_test(NAME bridge_stress COMMAND cg_bridge_stress_tests)
 
@@ -22,6 +29,9 @@ add_test(NAME bridge_stress COMMAND cg_bridge_stress_tests)
 # module, so a replacing test executable could not observe it. This gate
 # compiles the same bridge sources into the test binary (statically) and
 # replaces the global allocation functions there; see allocation_tests.cpp.
+# test_writer.cpp is compiled in directly (not linked from
+# cg_bridge_test_support) so the replacing operator new observes its
+# create/close allocations too.
 add_executable(
     cg_bridge_allocation_tests allocation_tests.cpp "${CMAKE_CURRENT_SOURCE_DIR}/../../bridge/src/bridge.cpp"
                                                   "${CMAKE_CURRENT_SOURCE_DIR}/../../bridge/src/test_writer.cpp"
@@ -42,9 +52,9 @@ endif()
 add_test(NAME bridge_allocation COMMAND cg_bridge_allocation_tests)
 
 if(WIN32)
-    # cg_bridge is SHARED on Windows; put the DLL next to the tests that
-    # import its symbols so ctest can run them from the build tree. The copy is
-    # a tracked output so it is refreshed whenever the DLL changes.
+    # Both native libraries are SHARED on Windows; put them next to the tests
+    # that import their symbols so ctest can run them from the build tree. The
+    # copies are tracked outputs so they are refreshed whenever a DLL changes.
     set(cg_bridge_runtime_dll "${CMAKE_CURRENT_BINARY_DIR}/cg_unity_bridge.dll")
     add_custom_command(
         OUTPUT "${cg_bridge_runtime_dll}"
@@ -53,7 +63,18 @@ if(WIN32)
         COMMENT "Copying cg_unity_bridge.dll next to the bridge tests"
         VERBATIM
     )
-    add_custom_target(cg_bridge_test_runtime ALL DEPENDS "${cg_bridge_runtime_dll}")
+    set(cg_bridge_test_support_runtime_dll "${CMAKE_CURRENT_BINARY_DIR}/cg_bridge_test_support.dll")
+    add_custom_command(
+        OUTPUT "${cg_bridge_test_support_runtime_dll}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:cg_bridge_test_support>"
+                "${cg_bridge_test_support_runtime_dll}"
+        DEPENDS cg_bridge_test_support
+        COMMENT "Copying cg_bridge_test_support.dll next to the bridge tests"
+        VERBATIM
+    )
+    add_custom_target(
+        cg_bridge_test_runtime ALL DEPENDS "${cg_bridge_runtime_dll}" "${cg_bridge_test_support_runtime_dll}"
+    )
     add_dependencies(cg_bridge_reader_tests cg_bridge_test_runtime)
     add_dependencies(cg_bridge_stress_tests cg_bridge_test_runtime)
 endif()

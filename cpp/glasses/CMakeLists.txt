@@ -19,6 +19,8 @@ target_include_directories(
 # directly; a consumer must compile them under the same /W4 /WX (MSVC) or
 # -Wall -Wextra -Wconversion -Werror (GCC/Clang) regime.
 target_link_libraries(cg_glasses PUBLIC cg::core_math cg_warnings)
+# TD-030: analyze only this module's sources, not its consumers (tests/tools).
+target_link_libraries(cg_glasses PRIVATE cg_analyze)
 if(NOT WIN32)
     target_link_libraries(cg_glasses PRIVATE ${CMAKE_DL_LIBS})
 endif()

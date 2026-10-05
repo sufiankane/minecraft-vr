@@ -214,6 +214,42 @@ the Unity suites become mandatory in CI.
   `gh attestation verify <zip> --repo <owner>/<repo>`. Cryptographic release
   signing with an owner-held key remains a vendor decision and is not wired.
 
+## Amendment (2026-10-05): service-account sign-in for the hosted serial route
+
+- The first hosted dispatch failed at activation with `Error: This license
+  requires a signed-in Unity account. Sign in with unity auth login, or
+  activate without a session using --floating, --file, or --generate-request.`
+  The serial-alone mode recorded above is **superseded**: since Unity CLI
+  1.0.0-beta.2 a subscription serial needs a signed-in session, so the hosted
+  preflight now accepts `UNITY_LICENSE` alone (offline `.ulf`, unchanged) or
+  the Unity Cloud service-account key pair `UNITY_SERVICE_ACCOUNT_ID` +
+  `UNITY_SERVICE_ACCOUNT_SECRET` together with `UNITY_SERIAL`. A serial alone
+  is rejected with an actionable message naming the service-account runbook.
+- The service-account session is supplied through the environment: the CLI
+  reads the pair directly (`unity auth status` reports `Signed in as
+  service-account <id> (via env)`), which is the mechanism Unity's own
+  `unity ci init` workflow template uses, so `unity license activate --serial`
+  runs signed in with no separate login step. `unity auth login --client-id
+  ... --client-secret ... --no-store` is deliberately not used: `--no-store`
+  credentials are process-local and would not survive to the activation
+  command (verified against CLI 1.0.0-beta.11's own generated template, which
+  reads `UNITY_SERVICE_ACCOUNT_ID`/`UNITY_SERVICE_ACCOUNT_SECRET` from the
+  environment and then runs `unity license activate --serial`).
+- Owner runbook: Unity Cloud -> **Administration -> Service accounts** ->
+  create a key; add `UNITY_SERVICE_ACCOUNT_ID` and
+  `UNITY_SERVICE_ACCOUNT_SECRET` (and keep the serial as `UNITY_SERIAL`) in
+  repository Actions secrets. The full runbook, including rotation and
+  verification, is `docs/ci.md` ("Licence options" and "Service-account owner
+  runbook (TD-041)").
+- Residual: Unity's release notes state that the licensing backend does not
+  accept service-account tokens for subscription-bound serial activation
+  (perpetual serials keep working), so a subscription seat may still be
+  refused after sign-in; the offline `.ulf` (`UNITY_LICENSE`) remains the
+  supported fallback. The hosted route remains unverified end to end while
+  TD-045 is open; the owner dispatch is the confirmation.
+- The seat-return step is unchanged (`unity license return --yes`,
+  `if: always()`), and the offline `.ulf` mode still has nothing to return.
+
 ## Links
 
 - Workflows: [release.yml](../../.github/workflows/release.yml),

@@ -25,6 +25,13 @@
     same way `scripts/ci-local.ps1` fails loudly for the native bridge DLL.
     The copied DLLs (and their generated .meta files) are git-ignored.
 
+    With `-IncludeTestSupport`, the native build outputs are staged as well:
+    `cg_unity_bridge.dll` and the test-only `cg_bridge_test_support.dll`
+    (TD-004/TD-067) from `cpp/build/windows-msvc/bridge`. The switch is for
+    Unity test runs (`scripts/ci-local.ps1`); the release workflow calls this
+    script without it, so the test-only library can never reach a release
+    artefact.
+
     `System.Text.Json.dll` is deliberately NOT copied: Cubeglass.Voxel only
     needs it for the optional `BlockRegistry` JSON path, which the Unity
     runtime never touches (Unity's runtime does not ship that assembly). The
@@ -34,9 +41,14 @@
 
 .EXAMPLE
     powershell -File scripts/sync-unity-plugins.ps1
+
+.EXAMPLE
+    powershell -File scripts/sync-unity-plugins.ps1 -IncludeTestSupport
 #>
 [CmdletBinding()]
-param()
+param(
+    [switch]$IncludeTestSupport
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -84,3 +96,23 @@ if (-not (Test-Path -LiteralPath $gameplaySource)) {
 
 Copy-Item -LiteralPath $gameplaySource -Destination (Join-Path $ManagedPluginsDir 'Cubeglass.Gameplay.dll') -Force
 Write-Host "Copied managed plugin: $gameplaySource -> $ManagedPluginsDir"
+
+if ($IncludeTestSupport) {
+    # TD-004/TD-067: stage the native build outputs for Unity test runs. The
+    # production reader lives in cg_unity_bridge.dll; the test-only writer in
+    # cg_bridge_test_support.dll. Both are git-ignored build outputs. Callers
+    # that ship a player (the release workflow) never pass this switch, so the
+    # test-only library cannot reach a release artefact.
+    $nativeBuildDir = Join-Path $RepoRoot 'cpp\build\windows-msvc\bridge'
+    $unityNativeDir = Join-Path $RepoRoot 'unity\Cubeglass\Assets\Plugins\win-x64'
+    New-Item -ItemType Directory -Path $unityNativeDir -Force | Out-Null
+    foreach ($nativeName in @('cg_unity_bridge.dll', 'cg_bridge_test_support.dll')) {
+        $nativeSource = Join-Path $nativeBuildDir $nativeName
+        if (-not (Test-Path -LiteralPath $nativeSource)) {
+            throw "native plugin not found at '$nativeSource'; build it first (cmake --build --preset windows-msvc --target cg_bridge cg_bridge_test_support)"
+        }
+
+        Copy-Item -LiteralPath $nativeSource -Destination (Join-Path $unityNativeDir $nativeName) -Force
+        Write-Host "Copied native plugin: $nativeSource -> $unityNativeDir"
+    }
+}

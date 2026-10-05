@@ -271,13 +271,19 @@ the heartbeat at least every 100 ms (5.6).
   monotonicity or sequence requirement, and the command/ack words are not part
   of the slot seqlocks.
 
-The bridge DLL also exports a **test-only native writer** (`cg_test_writer_*`,
-header `cg/bridge/test_writer.h`; the exported symbols drop the `bridge`
-infix). Rationale: the production writer is the S12 hand service and needs the
-VITURE device, so S6 C++ stress tests and Task 2 C# EditMode tests script
-samples through the same memory layout with no hardware. The test writer is
-documented as test-only in its header and is not referenced by the production
-bridge functions.
+The bridge's test-only native writer (`cg_test_writer_*`, header
+`cg/bridge/test_writer.h`) lives in a **separate test-only library**,
+`cg_bridge_test_support` (`cpp/bridge/src/test_writer.cpp`; TD-004/TD-067).
+Rationale: the production writer is the S12 hand service and needs the VITURE
+device, so S6 C++ stress tests and Task 2 C# EditMode tests script samples
+through the same memory layout with no hardware. The production
+`cg_unity_bridge.dll` exports only the frozen 5.12 surface; the test-support
+DLL carries the same C ABI and the same include layout, is linked by the C++
+bridge tests, is staged next to the Unity tests (and never shipped: the release
+workflow removes it before the player build), and is not referenced by any
+production bridge function. Both libraries are SHARED on Windows and STATIC
+elsewhere, and both use `WINDOWS_EXPORT_ALL_SYMBOLS` (R44 forbids export
+macros in the frozen header).
 
 ## Consequences
 

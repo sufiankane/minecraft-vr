@@ -12,9 +12,25 @@ name: Release
 #                         required); the release gate writes it
 #                         to Unity_lic.ulf and runs
 #                         `unity license activate --file`.
-#                       - serial: UNITY_SERIAL alone, a Plus/Pro/Education
-#                         serial; the release gate runs `unity license
-#                         activate --serial` and returns the seat afterwards.
+#                       - service-account session: UNITY_SERVICE_ACCOUNT_ID
+#                         and UNITY_SERVICE_ACCOUNT_SECRET (a Unity Cloud
+#                         service-account key pair; see the owner runbook in
+#                         docs/ci.md) together with UNITY_SERIAL, the
+#                         Plus/Pro/Education serial of the seat to activate.
+#                         The CLI reads the pair straight from the
+#                         environment (the same mechanism `unity ci init`
+#                         generates), so the gate runs
+#                         `unity license activate --serial` as a signed-in
+#                         service-account session and returns the seat
+#                         afterwards. A serial alone is NOT sufficient: since
+#                         Unity CLI 1.0.0-beta.2 a subscription serial needs a
+#                         signed-in session, which is why the first hosted
+#                         dispatch failed with "This license requires a
+#                         signed-in Unity account". `unity auth login
+#                         --client-id/--client-secret --no-store` is
+#                         deliberately not used: --no-store is process-local,
+#                         so the session would be gone before the activation
+#                         command runs.
 #
 #                     Without one of these it fails before any build step with
 #                     an actionable message instead of silently skipping the
@@ -34,8 +50,10 @@ name: Release
 # license.unity3d.com/manual and store it as UNITY_LICENSE (`unity license
 # activate --file`); the CLI explicitly rejects `unity license activate
 # --personal` when it runs with service-account tokens, so unattended
-# Personal/Student activation uses the offline file. `unity license activate
-# --serial` needs a Plus/Pro/Education serial and `--floating` needs a
+# Personal/Student activation uses the offline file. A Plus/Pro/Education seat
+# is activated with `unity license activate --serial` under a signed-in
+# service-account session (UNITY_SERVICE_ACCOUNT_ID + UNITY_SERVICE_ACCOUNT_SECRET
+# + UNITY_SERIAL; see the owner runbook in docs/ci.md), and `--floating` needs a
 # floating licence server. The licensed machine can still build with no
 # secrets at all.
 #
@@ -73,7 +91,11 @@ name: Release
 # The player compiles the managed Cubeglass plugins and P/Invokes the native
 # cg_unity_bridge.dll, so both are built on the runner and staged into the
 # Unity project before the player build (the same files scripts/ci-local.ps1
-# stages locally). The staged DLLs are git-ignored, so the checkout stays
+# stages locally). The EditMode bridge tests also need the test-only native
+# writer in cg_bridge_test_support.dll (TD-004/TD-067), so both native DLLs are
+# staged for the release test gate and the test-only DLL is removed again
+# before the player build so it never reaches the shipped artefact. The staged
+# DLLs are git-ignored, so the checkout stays
 # clean for the builder. On the hosted path vcpkg is cloned and installs under
 # the runner temp dir, never inside the checkout, because the clean checkout is
 # the build's precondition
@@ -118,23 +140,34 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Require the Unity licence secrets
+      - name: Require the Unity licence credentials
         shell: pwsh
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_SERVICE_ACCOUNT_ID: ${{ secrets.UNITY_SERVICE_ACCOUNT_ID }}
+          UNITY_SERVICE_ACCOUNT_SECRET: ${{ secrets.UNITY_SERVICE_ACCOUNT_SECRET }}
         run: |
           $hasLicense = -not [string]::IsNullOrWhiteSpace($env:UNITY_LICENSE)
           $hasSerial = -not [string]::IsNullOrWhiteSpace($env:UNITY_SERIAL)
+          $hasServiceAccount = (-not [string]::IsNullOrWhiteSpace($env:UNITY_SERVICE_ACCOUNT_ID)) -and
+                               (-not [string]::IsNullOrWhiteSpace($env:UNITY_SERVICE_ACCOUNT_SECRET))
           if ($hasLicense) {
             Write-Host 'Unity credentials present: UNITY_LICENSE (offline .ulf mode; no account credentials required).'
             exit 0
           }
-          if ($hasSerial) {
-            Write-Host 'Unity credentials present: UNITY_SERIAL (serial mode; no account credentials required).'
+          if ($hasServiceAccount) {
+            Write-Host 'Unity credentials present: UNITY_SERVICE_ACCOUNT_ID/UNITY_SERVICE_ACCOUNT_SECRET (service-account session); UNITY_SERIAL is used for activation.'
+            if (-not $hasSerial) {
+              Write-Host '::warning::The service-account session is present but UNITY_SERIAL is not set; the activation step cannot activate a seat and will fail.'
+            }
             exit 0
           }
-          $message = "Release build blocked: neither UNITY_LICENSE nor UNITY_SERIAL is set. Set UNITY_LICENSE to the contents of an offline .ulf (Personal/Student, from license.unity3d.com/manual, activated with 'unity license activate --file') or UNITY_SERIAL to a Plus/Pro/Education serial (activated with 'unity license activate --serial') under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player."
+          if ($hasSerial) {
+            Write-Host "::error::Release build blocked: UNITY_SERIAL alone is no longer sufficient. Since Unity CLI 1.0.0-beta.2 a subscription serial needs a signed-in session, so also add the Unity Cloud service-account key pair as UNITY_SERVICE_ACCOUNT_ID and UNITY_SERVICE_ACCOUNT_SECRET (Unity Cloud -> Administration -> Service accounts -> Keys; Settings > Secrets and variables > Actions). Alternatively set UNITY_LICENSE to an offline .ulf."
+            exit 1
+          }
+          $message = "Release build blocked: no Unity licence credentials are set. Set UNITY_LICENSE to the contents of an offline .ulf (Personal/Student, from license.unity3d.com/manual, activated with 'unity license activate --file'), or set the Unity Cloud service-account key pair UNITY_SERVICE_ACCOUNT_ID + UNITY_SERVICE_ACCOUNT_SECRET together with UNITY_SERIAL (a Plus/Pro/Education serial, activated with 'unity license activate --serial' under the service-account session) under Settings > Secrets and variables > Actions so the Unity editor can activate and build the Windows x64 player."
           Write-Host "::error::$message"
           exit 1
 
@@ -186,24 +219,28 @@ jobs:
           VCPKG_ROOT: ${{ runner.temp }}/vcpkg
         run: cmake --preset windows-msvc -DCMAKE_BUILD_TYPE=Release "-DVCPKG_INSTALLED_DIR=${{ runner.temp }}/vcpkg-installed"
 
-      - name: Build the native bridge
+      - name: Build the native bridge and the test-only writer
         working-directory: cpp
         env:
           VCPKG_ROOT: ${{ runner.temp }}/vcpkg
-        run: cmake --build --preset windows-msvc --target cg_bridge
+        run: cmake --build --preset windows-msvc --target cg_bridge cg_bridge_test_support
 
-      - name: Stage the native bridge into the Unity project
+      - name: Stage the native bridge plugins into the Unity project
         shell: pwsh
         run: |
-          $source = 'cpp/build/windows-msvc/bridge/cg_unity_bridge.dll'
           $destination = 'unity/Cubeglass/Assets/Plugins/win-x64'
-          if (-not (Test-Path -LiteralPath $source)) {
-            Write-Host "::error::The native bridge build did not produce $source."
-            exit 1
-          }
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          Copy-Item -LiteralPath $source -Destination (Join-Path $destination 'cg_unity_bridge.dll') -Force
-          Write-Host "Copied native bridge DLL: $source -> $destination"
+          # Both native DLLs feed the EditMode bridge tests below; the
+          # test-only writer is removed again before the player build.
+          foreach ($nativeName in @('cg_unity_bridge.dll', 'cg_bridge_test_support.dll')) {
+            $source = Join-Path 'cpp/build/windows-msvc/bridge' $nativeName
+            if (-not (Test-Path -LiteralPath $source)) {
+              Write-Host "::error::The native bridge build did not produce $source."
+              exit 1
+            }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $destination $nativeName) -Force
+            Write-Host "Copied native bridge plugin: $source -> $destination"
+          }
 
       - name: Cache the Unity Library folder
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -215,8 +252,10 @@ jobs:
 
       # --- Release gate: Unity EditMode and PlayMode tests -------------------
       # Install the pinned Unity CLI (the standalone binary) and the pinned
-      # Editor, activate the licence from the UNITY_LICENSE offline .ulf or the
-      # UNITY_SERIAL secret, and run the exact commands ci-local runs.
+      # Editor, activate the licence from the UNITY_LICENSE offline .ulf or
+      # from UNITY_SERIAL under a service-account session
+      # (UNITY_SERVICE_ACCOUNT_ID/UNITY_SERVICE_ACCOUNT_SECRET), and run the
+      # exact commands ci-local runs.
       # Any failure here fails the release before the player build.
 
       - name: Install the Unity CLI (pinned 1.0.0-beta.11, SHA-256 verified)
@@ -283,6 +322,8 @@ jobs:
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_SERVICE_ACCOUNT_ID: ${{ secrets.UNITY_SERVICE_ACCOUNT_ID }}
+          UNITY_SERVICE_ACCOUNT_SECRET: ${{ secrets.UNITY_SERVICE_ACCOUNT_SECRET }}
         run: |
           $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
           if (-not [string]::IsNullOrWhiteSpace($env:UNITY_LICENSE)) {
@@ -291,10 +332,21 @@ jobs:
             & $unity license activate --file $license --non-interactive
           }
           else {
-            & $unity license activate --serial "$env:UNITY_SERIAL"
+            # Service-account session: the CLI reads UNITY_SERVICE_ACCOUNT_ID
+            # and UNITY_SERVICE_ACCOUNT_SECRET straight from the environment
+            # (the mechanism `unity ci init` generates) and treats `unity
+            # license activate` as a signed-in service-account session, so no
+            # separate `unity auth login` step is needed. `unity auth login
+            # --no-store` is deliberately not used: its credentials are
+            # process-local and would not survive to this command.
+            if ([string]::IsNullOrWhiteSpace($env:UNITY_SERIAL)) {
+              Write-Host "::error::The Unity service-account session is signed in but UNITY_SERIAL is not set, so there is no seat to activate. Add the Plus/Pro/Education serial as UNITY_SERIAL, or use UNITY_LICENSE (offline .ulf) instead."
+              exit 1
+            }
+            & $unity license activate --serial "$env:UNITY_SERIAL" --non-interactive
           }
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::Unity licence activation failed with exit code $LASTEXITCODE."
+            Write-Host "::error::Unity licence activation failed with exit code $LASTEXITCODE. For a subscription serial, Unity's licensing backend may reject a service-account session; use UNITY_LICENSE (offline .ulf) or a perpetual serial."
             exit 1
           }
 
@@ -319,6 +371,22 @@ jobs:
               exit 1
             }
             $global:LASTEXITCODE = 0
+          }
+
+      - name: Remove the test-only native writer before the player build
+        shell: pwsh
+        run: |
+          # TD-004/TD-067: cg_bridge_test_support.dll exists only for the
+          # EditMode bridge tests above. Unity includes every matching plugin
+          # under Assets/Plugins in the player, so it must be gone before the
+          # player build; the production bridge does not reference its symbols.
+          $plugins = 'unity/Cubeglass/Assets/Plugins/win-x64'
+          foreach ($artifact in @('cg_bridge_test_support.dll', 'cg_bridge_test_support.dll.meta')) {
+            $path = Join-Path $plugins $artifact
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Force
+              Write-Host "Removed test-only native writer artifact: $path"
+            }
           }
 
       - name: Build the Windows x64 player (pinned Unity CLI)
@@ -373,9 +441,10 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          # Serial activations are seats; return it even when the job failed or
-          # was cancelled so ephemeral runners do not leak activations. The
-          # offline .ulf mode has nothing to return, hence continue-on-error.
+          # A serial activation (offline .ulf mode aside) is a seat; return it
+          # even when the job failed or was cancelled so ephemeral runners do
+          # not leak activations. The offline .ulf mode has nothing to return,
+          # hence continue-on-error.
           $unity = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
           if (Test-Path -LiteralPath $unity) {
             & $unity license return --yes
@@ -544,23 +613,27 @@ jobs:
         working-directory: cpp
         run: cmake --preset windows-msvc -DCMAKE_BUILD_TYPE=Release "-DVCPKG_INSTALLED_DIR=$env:VCPKG_INSTALLED_DIR"
 
-      - name: Build the native bridge
+      - name: Build the native bridge and the test-only writer
         shell: powershell
         working-directory: cpp
-        run: cmake --build --preset windows-msvc --target cg_bridge
+        run: cmake --build --preset windows-msvc --target cg_bridge cg_bridge_test_support
 
-      - name: Stage the native bridge into the Unity project
+      - name: Stage the native bridge plugins into the Unity project
         shell: powershell
         run: |
-          $source = 'cpp/build/windows-msvc/bridge/cg_unity_bridge.dll'
           $destination = 'unity/Cubeglass/Assets/Plugins/win-x64'
-          if (-not (Test-Path -LiteralPath $source)) {
-            Write-Host "::error::The native bridge build did not produce $source."
-            exit 1
-          }
           New-Item -ItemType Directory -Path $destination -Force | Out-Null
-          Copy-Item -LiteralPath $source -Destination (Join-Path $destination 'cg_unity_bridge.dll') -Force
-          Write-Host "Copied native bridge DLL: $source -> $destination"
+          # Both native DLLs feed the EditMode bridge tests below; the
+          # test-only writer is removed again before the player build.
+          foreach ($nativeName in @('cg_unity_bridge.dll', 'cg_bridge_test_support.dll')) {
+            $source = Join-Path 'cpp/build/windows-msvc/bridge' $nativeName
+            if (-not (Test-Path -LiteralPath $source)) {
+              Write-Host "::error::The native bridge build did not produce $source."
+              exit 1
+            }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $destination $nativeName) -Force
+            Write-Host "Copied native bridge plugin: $source -> $destination"
+          }
 
       # Same release gate as the hosted route: the EditMode and PlayMode suites
       # run before the player build and the shared scripts/check-unity-results.ps1
@@ -587,6 +660,22 @@ jobs:
               exit 1
             }
             $global:LASTEXITCODE = 0
+          }
+
+      - name: Remove the test-only native writer before the player build
+        shell: powershell
+        run: |
+          # TD-004/TD-067: cg_bridge_test_support.dll exists only for the
+          # EditMode bridge tests above. Unity includes every matching plugin
+          # under Assets/Plugins in the player, so it must be gone before the
+          # player build; the production bridge does not reference its symbols.
+          $plugins = 'unity/Cubeglass/Assets/Plugins/win-x64'
+          foreach ($artifact in @('cg_bridge_test_support.dll', 'cg_bridge_test_support.dll.meta')) {
+            $path = Join-Path $plugins $artifact
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Force
+              Write-Host "Removed test-only native writer artifact: $path"
+            }
           }
 
       # The machine's Hub activation is the licence: no secret, no `unity

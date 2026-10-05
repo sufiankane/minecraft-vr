@@ -162,7 +162,10 @@ cg_status cg_test_writer_create(void) {
         CloseHandle(mapping);
         return CG_ERR_INTERNAL;
     }
-    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
+    // TD-030: no braces on the nothrow new. MSVC /analyze's C28182 misfires
+    // on a value-initialised nothrow new; default-initialisation is equivalent
+    // here because every WriterHandle member has a default member initialiser.
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle);
     if (writer == nullptr) {
         UnmapViewOfFile(view);
         CloseHandle(mapping);
@@ -184,7 +187,8 @@ cg_status cg_test_writer_create(void) {
         close(fd);
         return CG_ERR_INTERNAL;
     }
-    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
+    // TD-030: no braces on the nothrow new (see cg_test_writer_create).
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle);
     if (writer == nullptr) {
         munmap(view, cg::bridge::kTestRegionSize);
         close(fd);
@@ -218,7 +222,10 @@ cg_status cg_test_writer_open(void) {
         CloseHandle(mapping);
         return CG_ERR_INTERNAL;
     }
-    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
+    // TD-030: no braces on the nothrow new. MSVC /analyze's C28182 misfires
+    // on a value-initialised nothrow new; default-initialisation is equivalent
+    // here because every WriterHandle member has a default member initialiser.
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle);
     if (writer == nullptr) {
         UnmapViewOfFile(view);
         CloseHandle(mapping);
@@ -247,7 +254,8 @@ cg_status cg_test_writer_open(void) {
         close(fd);
         return CG_ERR_INTERNAL;
     }
-    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle{});
+    // TD-030: no braces on the nothrow new (see cg_test_writer_create).
+    writer = std::unique_ptr<WriterHandle>(new (std::nothrow) WriterHandle);
     if (writer == nullptr) {
         munmap(view, cg::bridge::kTestRegionSize);
         close(fd);

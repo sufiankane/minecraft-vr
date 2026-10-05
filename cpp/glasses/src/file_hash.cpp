@@ -17,6 +17,7 @@
 #include <fstream>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace cg::glasses {
 
@@ -195,12 +196,14 @@ std::optional<std::string> FileSha256Hex(const std::filesystem::path &path) {
         return std::nullopt;
     }
     Sha256 hasher;
-    std::array<char, kReadChunkBytes> buffer{};
+    // TD-030 (C6262): a 64 KiB chunk on the stack trips MSVC /analyze's stack
+    // threshold; the buffer is heap-allocated per file instead.
+    std::vector<char> buffer(kReadChunkBytes);
     while (stream) {
         stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
         const std::streamsize read = stream.gcount();
         if (read > 0) {
-            hasher.Update(std::as_bytes(std::span{buffer}.first(static_cast<std::size_t>(read))));
+            hasher.Update(std::as_bytes(std::span{buffer}).first(static_cast<std::size_t>(read)));
         }
     }
     if (!stream.eof()) {

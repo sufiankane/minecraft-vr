@@ -137,8 +137,11 @@ assemblies as auto-referenced managed plugins staged by
 `scripts/sync-unity-plugins.ps1` into
 `unity/Cubeglass/Assets/Plugins/managed/`, and the native bridge as
 `cg_unity_bridge.dll` under `unity/Cubeglass/Assets/Plugins/win-x64/`; the
-inward-only rule for them is a review convention plus their EditMode/PlayMode
-tests.
+test-only native writer (`cg_bridge_test_support.dll`, TD-004/TD-067) is
+staged there only for test runs (`scripts/sync-unity-plugins.ps1
+-IncludeTestSupport` / `scripts/ci-local.ps1`) and is removed before any player
+build. The inward-only rule for them is a review convention plus their
+EditMode/PlayMode tests.
 
 ### 2.2 Module graph (mirrors `contracts/layers.json`)
 
@@ -546,7 +549,7 @@ contract sources are the files under `contracts/`; the table below indexes them.
 | Contract / format | Source | Version / key facts | Consumers |
 | --- | --- | --- | --- |
 | Shared C types and C ABI | `contracts/cg_types.h` | `CG_ABI_VERSION 2`; `cg_time_ns` int64; `cg_vec3/cg_quat/cg_pose` float; `cg_status` 0..6; `cg_track_state` 0..2; `cg_head_sample` (48 B); `cg_hand`/`cg_hand_frame` (576 B) | C++ `cg-glasses`, `cpp/bridge`, C# `Cubeglass.Unity.Bridge` |
-| Bridge C ABI | `contracts/cg_unity_bridge.h` | `cg_bridge_open/read_head/read_hands/send_command/close`, dossier 5.12 verbatim, no export macros (R44); Windows SHARED with `WINDOWS_EXPORT_ALL_SYMBOLS` | native `cg_unity_bridge.dll`, test-only writer |
+| Bridge C ABI | `contracts/cg_unity_bridge.h` | `cg_bridge_open/read_head/read_hands/send_command/close`, dossier 5.12 verbatim, no export macros (R44); Windows SHARED with `WINDOWS_EXPORT_ALL_SYMBOLS` | native `cg_unity_bridge.dll`; test-only writer in the separate `cg_bridge_test_support.dll` (TD-004/TD-067) |
 | Shared-memory region | `cpp/bridge/include/cg/bridge/shm_layout.hpp` | name `Local\cubeglass.v1.state`; magic `CGSHM001`; region ABI **2**; header 64 B (heartbeat at 24, command at 32, ack at 36); HeadSlot at 64 (64 B), HandSlot at 256 (592 B); min region 848 B; 250 ms exclusive staleness; magic published last | S12 writer, Unity reader, C++ tests |
 | C++ port vocabulary | `contracts/cpp/ports.hpp`, `contracts/cpp/result.hpp` | `Duration`, `TrackState`, `HeadSample`, `IHeadPoseSource` (5.2 verbatim); `StatusCode`/`Status`/`Result<T>` (no exceptions, no allocation) | `cg-glasses`, future `cg-handservice` |
 | Golden fixture | `contracts/golden/transforms.json` | schema 1; 28 cases over 17 ops; tolerance `1e-6`; `clock_map` compared exactly as `int64` | C++ `cpp/tests/core-math/golden_test.cpp`, C# `dotnet/tests/CoreMath.Tests/GoldenFixtureTests.cs` |
@@ -567,7 +570,8 @@ Format rules worth knowing:
 - The save payload carries no coordinate: `IWorldStore` keys deltas by
   `ChunkCoord`, so the loader re-keys edits to the asked-for chunk.
 - The production writer is `cg-handservice` (future); the `cg_test_writer_*`
-  exports are test-only and documented as such.
+  exports are test-only and live in the separate `cg_bridge_test_support`
+  library (TD-004/TD-067), never in the production `cg_unity_bridge.dll`.
 
 ---
 
@@ -718,9 +722,9 @@ required checks would invert the red semantics (`docs/ci/negative-gates.md`).
 | Unity 6000.6.3f1 on the Built-in Render Pipeline; two SBS cameras with config IPD 64 mm and 45 degree per-eye horizontal FOV | URP; one wide camera with an SBS blit; distortion correction now | Built-in RP needs no extra package for two explicit viewports; per-eye offsets stay visible and late-latch applies to camera transforms | distortion off and FOV provisional until U-09 HIL | ADR-0010 |
 | Region ABI 2 with a command word in reserved header bytes 32/36, magic published last, exclusive 250 ms staleness | bump `CG_ABI_VERSION` only; wire commands into a slot | mixed v1/v2 pairs fail closed; pre-existing readers ignore the reserved window; a reader never sees a half-initialised header | any payload-shape change must bump the region ABI too | ADR-0010 |
 | `SliceBlockRegistry`, a code-built copy of the six `blocks.json` entries, instead of shipping `System.Text.Json` into Unity | ship `System.Text.Json.dll`; move definitions to a Unity asset | Unity's runtime does not ship the assembly and the runtime never touches `BlockRegistry`; a drift test keeps values equal | a slice that grows past six blocks must ship the JSON closure or reseat the definitions (S7 gate section 12) | none (S7 gate) |
-| Release auth: one credential per mode (`UNITY_LICENSE` or `UNITY_SERIAL`, never an email/password pair); self-hosted Hub-activated route as the second path | game-ci/unity-builder with the account-token trio; `--personal` with service accounts; floating licence server | no third-party build action between the repo and the pinned CLI; unattended activation needs no account creds; Hub-activated Personal licence already exists on the owner machine | one hosted secret must exist; serial is a seat and must be returned; self-hosted depends on one machine's per-user licence | ADR-0012 |
+| Release auth: `UNITY_LICENSE` alone (offline `.ulf`) or the Unity Cloud service-account pair `UNITY_SERVICE_ACCOUNT_ID`/`UNITY_SERVICE_ACCOUNT_SECRET` with `UNITY_SERIAL`; self-hosted Hub-activated route as the second path | game-ci/unity-builder with the account-token trio; `--personal` with service accounts; floating licence server | no third-party build action between the repo and the pinned CLI; the service-account session is read from the environment (the `unity ci init` mechanism) so a serial activation runs signed in; Hub-activated Personal licence already exists on the owner machine | the service-account pair and serial must exist; serial is a seat and must be returned; a subscription serial may still be refused by the licensing backend (offline `.ulf` fallback); self-hosted depends on one machine's per-user licence | ADR-0012 (2026-10-05 amendment) |
 | Pinned Unity CLI 1.0.0-beta.11 driving `unity test`/`unity run` directly | `game-ci/unity-builder` | editor and CLI stay pinned with the project; build method is the committed one | workflow carries the activation plumbing (licensing client, serial return) | ADR-0012 |
-| Test-only native writer (`cg_test_writer_*`) inside the production `cg_unity_bridge.dll` | a separate test DLL; compile-gating the writer | lets C++ and C# tests script the real region layout without hardware; the frozen 5.12 header forbids export macros | test exports ship in the production DLL (TD-004) | ADR-0010 |
+| Test-only native writer (`cg_test_writer_*`) in the separate `cg_bridge_test_support` library | keep it inside the production `cg_unity_bridge.dll`; compile-gating the writer | production exports exactly the frozen 5.12 ABI (TD-004/TD-067); C++ and C# tests still script the real region layout without hardware; the frozen 5.12 header forbids export macros | the test-support DLL must be staged for test runs and removed before a player build | ADR-0010 (2026-10-05 amendment) |
 | Test pyramid enforced by required jobs plus dispatch-only negative gates; contract-compatibility gate against `abi-baseline.json` | unit tests only; review-only contract checks | every merge is gated by the same commands a human runs; negative gates prove rejection still works | the contract gate arrived late (2026-10-03); S1-S7 were review-checked only | ADR-0003 |
 
 ---
