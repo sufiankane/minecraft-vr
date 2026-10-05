@@ -11,6 +11,26 @@ Every entry below is derived from `git log --oneline --decorate`, `git tag -l`,
 and PR number shown in the log; no dates or PRs are invented. The verified tree
 for this document is `docs/full-docs` / `main` = `0d3ecb6` (#50).
 
+## [Unreleased] - 2026-10-05 tech-debt resolution waves
+
+**Head:** after PR #61. Four parallel worktree waves resolved the register:
+C++/native (#57), CI/gates (#58), Unity + .NET (#59), follow-ups (#60:
+test-support DLL split, MSVC /analyze lane, Unity service-account release auth),
+plus the register consolidation (#61).
+
+### Changed
+- 59 register rows closed with outcomes and commit refs; 17 residual rows added
+  (TD-069..TD-085); open debt is now **23 rows - High 4, Medium 6, Low 13**, of
+  which the four High rows are owner-gated (HIL playtests and the v0.1.0 tag).
+- Contract evolution: ADR-0013 cell-carrying ChunkChanged (managed-only), the
+  bridge test-support DLL split (production exports verified by dumpbin), and
+  the hosted release service-account auth path.
+
+### Verified
+- Every wave merged with all six hosted checks green (runs 37285368799,
+  37291376806, 37293376168, 37301193538, 37302016541); local gates included
+  Debug+Release ctest 8/8, .NET 534/534 with coverage floors, Python 117 with
+  hash-pinned requirements, Unity EditMode 199 + PlayMode 51.
 ## [Unreleased] - 2026-10-04 second critical review
 
 **Head:** `fix/critical-review` (merged after this entry's commit). The second,
