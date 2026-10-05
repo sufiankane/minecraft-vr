@@ -125,6 +125,17 @@ namespace Cubeglass.Unity.Rendering
     /// disposed with this component. This is a calibration/scene helper, not a
     /// per-frame path.
     /// </para>
+    /// <para>
+    /// <b>Honest tracking on the fallback (TD-057).</b> A synthetic fallback is
+    /// not real head tracking, so unless it was chosen deliberately by
+    /// <see cref="ForceSyntheticForTests"/> the selector wraps it in
+    /// <see cref="FallbackTrackingState"/> (default <see cref="TrackState.Lost"/>)
+    /// instead of letting the scripted provider's <c>Stable</c> default flow to
+    /// gameplay; the overlay's track row then reads <c>Lost</c> and the bridge
+    /// degrades interaction quality. A test or a HIL calibration run can script
+    /// the wrapper's state through <see cref="FallbackTrackingState"/>. The
+    /// ADR-0011 addendum records the contract.
+    /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
     public sealed class PoseProviderSelector : MonoBehaviour
@@ -246,6 +257,16 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>Maximum retry probes; 0 (default) keeps retrying until the bridge opens.</summary>
         public int MaxRetryAttempts { get; set; }
+
+        /// <summary>
+        /// The tracking state the non-deliberate synthetic fallback reports
+        /// (TD-057). Default <see cref="TrackState.Lost"/>: a run with no real
+        /// writer must not claim stable tracking, so the overlay and gameplay
+        /// see the honest state. <see cref="ForceSyntheticForTests"/> bypasses
+        /// the override because a scripted test source is not a deployment
+        /// fallback.
+        /// </summary>
+        public TrackState FallbackTrackingState { get; set; } = TrackState.Lost;
 
         /// <summary>Fallback warnings emitted (entry plus rate-limited recurring); test/diagnostic.</summary>
         public int FallbackWarnings
@@ -442,7 +463,7 @@ namespace Cubeglass.Unity.Rendering
 
         private void ApplyFallback(PoseFallbackReason reason, bool pluginUnavailable)
         {
-            SelectSyntheticFallback();
+            SelectSyntheticFallback(reason);
             PluginUnavailable = pluginUnavailable;
             bool changed = SetState(usingBridge: false, reason);
             if (changed)
@@ -473,11 +494,17 @@ namespace Cubeglass.Unity.Rendering
             return true;
         }
 
-        private void SelectSyntheticFallback()
+        private void SelectSyntheticFallback(PoseFallbackReason reason)
         {
             if (syntheticFallback is IPoseProvider fallback)
             {
-                lateLatch.Provider = fallback;
+                // TD-057: a deployment fallback reports the honest
+                // FallbackTrackingState instead of the synthetic source's own
+                // (usually Stable) script; a deliberate test selection keeps
+                // the raw provider so tests can script any state.
+                lateLatch.Provider = reason == PoseFallbackReason.ForcedSynthetic
+                    ? fallback
+                    : new TrackingOverridePoseProvider(fallback, FallbackTrackingState);
             }
             else
             {
@@ -526,6 +553,49 @@ namespace Cubeglass.Unity.Rendering
             if (lease != null)
             {
                 lease.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// Rewrites the tracking state of a wrapped fallback provider (TD-057):
+        /// the sample data flows through unchanged (a scripted or HIL pose is
+        /// still useful for calibration) but the reported
+        /// <see cref="TrackState"/> is the honest deployment fallback state.
+        /// </summary>
+        private sealed class TrackingOverridePoseProvider : IPoseProvider, IRecenterablePoseProvider
+        {
+            private readonly IPoseProvider inner;
+            private readonly TrackState state;
+
+            public TrackingOverridePoseProvider(IPoseProvider inner, TrackState state)
+            {
+                this.inner = inner;
+                this.state = state;
+            }
+
+            public bool TryGetLatest(out BridgeHeadSample sample)
+            {
+                if (!inner.TryGetLatest(out sample))
+                {
+                    return false;
+                }
+
+                sample = new BridgeHeadSample
+                {
+                    HostTime = sample.HostTime,
+                    Pose = sample.Pose,
+                    State = state,
+                    Sequence = sample.Sequence,
+                };
+                return true;
+            }
+
+            void IRecenterablePoseProvider.Recentre()
+            {
+                if (inner is IRecenterablePoseProvider recenterable)
+                {
+                    recenterable.Recentre();
+                }
             }
         }
 

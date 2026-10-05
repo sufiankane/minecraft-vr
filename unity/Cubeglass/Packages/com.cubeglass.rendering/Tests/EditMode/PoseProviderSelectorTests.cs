@@ -60,7 +60,11 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.IsFalse(selector.UsingBridge, "no bridge is available");
             Assert.IsTrue(selector.PluginUnavailable, "the missing plugin must be exposed to the overlay/tests");
             Assert.AreEqual(PoseFallbackReason.PluginUnavailable, selector.FallbackReason);
-            Assert.AreSame(fallback, latch.Provider, "the synthetic fallback is still selected");
+            Assert.IsFalse(ReferenceEquals(fallback, latch.Provider), "the deployment fallback is wrapped for honest tracking (TD-057)");
+
+            // TD-057: the fallback must not report the synthetic script's Stable.
+            latch.TickOnce();
+            Assert.AreEqual(PoseTrackingState.Lost, latch.TrackingState, "a non-deliberate fallback reports Lost");
         }
 
         [Test]
@@ -110,7 +114,7 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             Assert.IsFalse(selector.UsingBridge, "the first probe is NotReady");
             Assert.AreEqual(PoseFallbackReason.NotReady, selector.FallbackReason);
-            Assert.AreSame(fallback, latch.Provider);
+            Assert.IsFalse(ReferenceEquals(fallback, latch.Provider), "the fallback is wrapped (TD-057)");
             Assert.AreEqual(1, selector.ProbeAttempts);
 
             // The old one-shot behaviour stops here; the timer must probe again
@@ -293,7 +297,42 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.AreEqual(3, probes, "the plugin case is retried too");
             Assert.IsTrue(selector.PluginUnavailable);
             Assert.AreEqual(PoseFallbackReason.PluginUnavailable, selector.FallbackReason);
-            Assert.AreSame(fallback, latch.Provider, "the fallback stays selected while the plugin is missing");
+            Assert.IsFalse(
+                ReferenceEquals(fallback, latch.Provider),
+                "the fallback stays wrapped while the plugin is missing (TD-057)");
+        }
+
+        /// <summary>
+        /// TD-057: the deployment fallback reports an honest tracking state
+        /// instead of the scripted provider's Stable, while a deliberate
+        /// <see cref="PoseProviderSelector.ForceSyntheticForTests"/> selection —
+        /// test scaffolding, not a deployment fallback — keeps the raw script.
+        /// </summary>
+        [Test]
+        public void FallbackReportsLostTrackingUnlessDeliberatelyForced()
+        {
+            PoseProviderSelector selector = CreateComponent(out LateLatchPose latch, out FakePoseProvider fallback);
+            PoseProviderSelector.BridgeProbeOverrideForTests =
+                () => PoseBridgeProbe.NotReady(BridgeStatus.NotReady);
+
+            LogAssert.Expect(LogType.Warning, new Regex("bridge not ready"));
+            selector.SelectProvider();
+            latch.TickOnce();
+            Assert.AreEqual(PoseTrackingState.Lost, latch.TrackingState, "the writerless fallback must report Lost");
+            Assert.AreEqual(TrackState.Lost, selector.FallbackTrackingState, "the contract default is Lost");
+
+            // A HIL/calibration caller can retune the contract state.
+            selector.FallbackTrackingState = TrackState.Unstable;
+            selector.ProbeBridgeNow();
+            latch.TickOnce();
+            Assert.AreEqual(PoseTrackingState.Unstable, latch.TrackingState, "the retuned contract state is honoured");
+
+            // Deliberate test selection keeps the raw scripted provider.
+            PoseProviderSelector.ForceSyntheticForTests = true;
+            selector.SelectProvider();
+            latch.TickOnce();
+            Assert.AreSame(fallback, latch.Provider, "ForcedSynthetic is test scaffolding, not a deployment fallback");
+            Assert.AreEqual(PoseTrackingState.Stable, latch.TrackingState, "the scripted state flows through");
         }
 
         private sealed class FakePoseProvider : MonoBehaviour, IPoseProvider
