@@ -40,20 +40,79 @@ jobs:
 
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
 
-      - name: Toolchain versions (pinned clang assertions)
-        # TD-037: the format/tidy gates must run the documented LLVM, not
-        # whatever the runner image happens to ship. Fail with an actionable
-        # message before any source is checked.
+      - name: Cache LLVM 23.1.2 (clang-format/clang-tidy)
+        id: llvm-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # TD-037: the pinned tools come from the official LLVM release
+          # archive, never from the runner image. The key embeds the archive
+          # SHA-256 prefix so a deliberate pin bump naturally misses it.
+          path: ${{ runner.tool_cache }}/llvm-23.1.2
+          key: llvm-23.1.2-win64-8fb91cdc44fc
+
+      - name: Install LLVM 23.1.2 (clang-format/clang-tidy)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        # TD-037: install the documented LLVM instead of asserting against
+        # whatever the image ships (windows-latest moved to clang-format
+        # 20.1.8 while the repo pins 23.1.2). Source archive and SHA-256:
+        #   https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.2/clang+llvm-23.1.2-x86_64-pc-windows-msvc.tar.xz
+        #   sha256 8fb91cdc44fcbbdcf6b3ffd0a1f9859abd14a3c3aae4423c2b6d4a4f90bf0095
+        # The hash is sigstore-attested in the release's .jsonl sidecar and
+        # was recomputed from the downloaded asset; a mismatch fails here
+        # before extraction. Bumping the pin is one deliberate edit here
+        # (version, URL and hash, plus the cache key above and
+        # docs/toolchains.md).
         run: |
-          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $ProgressPreference = 'SilentlyContinue'
+          $url = 'https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.2/clang+llvm-23.1.2-x86_64-pc-windows-msvc.tar.xz'
+          $expected = '8fb91cdc44fcbbdcf6b3ffd0a1f9859abd14a3c3aae4423c2b6d4a4f90bf0095'
+          $archive = Join-Path $env:RUNNER_TEMP 'clang+llvm-23.1.2-x86_64-pc-windows-msvc.tar.xz'
+          $dest = Join-Path $env:RUNNER_TOOL_CACHE 'llvm-23.1.2'
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "LLVM archive SHA-256 mismatch for $url (expected $expected, got $actual). The release asset changed; review it and update the pin in .github/workflows/ci.yml (and docs/toolchains.md) deliberately."
+          }
+          Write-Host "Verified SHA-256 $actual for the pinned LLVM 23.1.2 archive."
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          # Only the two statically linked tools are needed; the full bin
+          # tree is 3.4 GB and neither tool needs the release DLLs
+          # (smoke-tested against the 23.1.2 archive).
+          tar -xf $archive -C $dest 'clang+llvm-23.1.2-x86_64-pc-windows-msvc/bin/clang-format.exe' 'clang+llvm-23.1.2-x86_64-pc-windows-msvc/bin/clang-tidy.exe'
+          $bin = Join-Path $dest 'clang+llvm-23.1.2-x86_64-pc-windows-msvc/bin'
+          foreach ($tool in @('clang-format.exe', 'clang-tidy.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $bin $tool))) {
+              throw "$tool was not extracted under $bin; the pinned archive layout changed."
+            }
+          }
+
+      - name: Toolchain versions (pinned clang assertions)
+        # TD-037: the format/tidy gates must run the documented LLVM 23.1.2,
+        # installed from the SHA-256-pinned archive above, not the image's
+        # clang. Fail with an actionable message before any source is checked.
+        run: |
+          $bin = Join-Path $env:RUNNER_TOOL_CACHE 'llvm-23.1.2/clang+llvm-23.1.2-x86_64-pc-windows-msvc/bin'
+          if (-not (Test-Path -LiteralPath $bin)) {
+            throw "The pinned LLVM 23.1.2 tools are missing from $bin; the install step or its cache restore failed."
+          }
+          $env:PATH = "$bin;$env:PATH"
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           $expected = '23.1.2'
           cmake --version
           ninja --version
           foreach ($tool in @('clang-format', 'clang-tidy')) {
-            $line = (& $tool --version | Select-Object -First 1)
-            Write-Host "$line"
-            if ($line -notmatch [regex]::Escape($expected)) {
-              throw "$tool is not LLVM $expected (got: $line). Install the pinned toolchain (winget install --id LLVM.LLVM --version $expected --exact --accept-source-agreements --accept-package-agreements) or bump the pin in .github/workflows/ci.yml and docs/toolchains.md together (TD-037)."
+            $resolved = (Get-Command $tool -ErrorAction SilentlyContinue).Source
+            if (-not $resolved) {
+              throw "$tool was not found on PATH after installing the pinned LLVM 23.1.2 (TD-037)."
+            }
+            $output = (& $tool --version | Out-String).Trim()
+            Write-Host "${tool}: $resolved"
+            Write-Host $output
+            if (-not $resolved.StartsWith($bin, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "$tool resolved to $resolved, not the pinned LLVM 23.1.2 under $bin; the runner image's clang must not satisfy the format/tidy gates (TD-037)."
+            }
+            if ($output -notmatch [regex]::Escape($expected)) {
+              throw "$tool is not LLVM $expected. clang-tidy prints its version on the second line, so the whole output is checked here; bump the pin in .github/workflows/ci.yml and docs/toolchains.md together (TD-037)."
             }
           }
 
@@ -86,7 +145,10 @@ jobs:
 
       - name: clang-format (warnings as errors)
         run: |
-          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $version = (& clang-format --version | Out-String).Trim()
+          if ($version -notmatch '23\.1\.2') {
+            throw "clang-format is not the pinned LLVM 23.1.2 (got: $version); the pinned install step must have run first (TD-037)."
+          }
           # Every C++ source and header under cpp/. contracts/ is deliberately
           # excluded: those headers are dossier-verbatim.
           $files = @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
@@ -101,7 +163,10 @@ jobs:
         # recorded in docs/ci.md ("clang-tidy scope").
         working-directory: cpp
         run: |
-          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          $version = (& clang-tidy --version | Out-String).Trim()
+          if ($version -notmatch '23\.1\.2') {
+            throw "clang-tidy is not the pinned LLVM 23.1.2 (got: $version); the pinned install step must have run first (TD-037)."
+          }
           $files = @(git ls-files core-math/src | Where-Object { $_ -match '\.cpp$' })
           if ($files.Count -eq 0) {
             throw "clang-tidy selector found no core-math sources; the tidy gate would pass vacuously (TD-063)."
@@ -120,10 +185,44 @@ jobs:
       - name: Install build tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      - name: Toolchain versions
+      - name: Install pinned LLVM 23.1.2 (clang-format/clang-tidy)
+        # TD-037: no image LLVM. The 23.1.2 release publishes only the 2 GB
+        # all-tools Linux bundle, so install just the two tools from
+        # apt.llvm.org with the exact version pinned; the assertion below
+        # fails loudly if the pool stops serving that exact build. Both
+        # .debs are published with SHA-256 in the signed index at
+        # https://apt.llvm.org/noble/dists/llvm-toolchain-noble-23/main/binary-amd64/Packages
+        # (the runner image is ubuntu-24.04/noble):
+        #   clang-format-23 94b39c8c9bb7ad59388591bf6560c86c0b48478643245229b69884468c6d2a74
+        #   clang-tidy-23   767ea250128c55d51e5e3a8b295e8c72865904cee1a5adc379276cea6d832319
+        run: |
+          set -euo pipefail
+          version='1:23.1.2~++20260919103626+4b1925210476-1~exp1~20260919223755.77'
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+          echo 'deb https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main' | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list > /dev/null
+          sudo apt-get update
+          for package in clang-format-23 clang-tidy-23; do
+            if ! apt-cache madison "$package" | grep -qF "$version"; then
+              echo "::error::$package $version is no longer offered by apt.llvm.org; review the pool and update the pin in .github/workflows/ci.yml (and docs/toolchains.md) deliberately before re-running."
+              exit 1
+            fi
+          done
+          sudo apt-get install -y "clang-format-23=$version" "clang-tidy-23=$version"
+
+      - name: Toolchain versions (pinned clang assertions)
+        # TD-037: clang-format/clang-tidy must be exactly 23.1.2. clang-tidy
+        # prints its version on the second line, so the whole output is matched.
         run: |
           cmake --version
           ninja --version
+          for tool in clang-format-23 clang-tidy-23; do
+            output=$("$tool" --version)
+            echo "$output"
+            if ! echo "$output" | grep -q '23\.1\.2'; then
+              echo "::error::$tool is not the pinned LLVM 23.1.2; bump the exact version in .github/workflows/ci.yml and docs/toolchains.md together (TD-037)."
+              exit 1
+            fi
+          done
 
       - name: Clone and bootstrap vcpkg at the pinned baseline
         run: |
