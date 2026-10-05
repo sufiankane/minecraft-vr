@@ -209,6 +209,13 @@ namespace Cubeglass.Unity.Rendering.Tests
             manager.OnLoad(coord);
 
             Assert.AreEqual(1, manager.LoadedChunks, "the chunk generated despite the corrupt delta");
+            Assert.GreaterOrEqual(manager.DeferredDeltaLoads, 1, "the delta load must be queued on the store pump (TD-060 M-3)");
+            for (int frame = 0; frame < 240 && manager.DeferredDeltaLoads > 0; frame++)
+            {
+                manager.ProcessDeltaLoads();
+                yield return null;
+            }
+
             Assert.AreEqual(1, store.RejectedLoads, "the codec rejection is counted");
             Assert.AreEqual(0, manager.DeltasLoaded, "no delta was applied");
             Assert.AreEqual(
@@ -221,7 +228,14 @@ namespace Cubeglass.Unity.Rendering.Tests
             var missing = new ChunkCoord(5, 0, 5);
             manager.OnLoad(missing);
             Assert.AreEqual(2, manager.LoadedChunks, "a chunk with no save file generates");
+            for (int frame = 0; frame < 240 && manager.DeferredDeltaLoads > 0; frame++)
+            {
+                manager.ProcessDeltaLoads();
+                yield return null;
+            }
+
             Assert.AreEqual(1, store.RejectedLoads, "a missing file is not a rejection");
+            Assert.AreEqual(0, manager.DeltasLoaded, "a missing file applies nothing");
         }
 
         [UnityTest]
@@ -322,6 +336,12 @@ namespace Cubeglass.Unity.Rendering.Tests
             var saves2 = CreateSaveBatches();
             var manager2 = NewManager(saves2);
             manager2.OnLoad(coord);
+            for (int frame = 0; frame < 240 && manager2.DeltasLoaded == 0; frame++)
+            {
+                manager2.ProcessDeltaLoads();
+                yield return null;
+            }
+
             Assert.AreEqual(wood, manager2.World.Get(cellA), "session 2 must boot the stored edit");
             Assert.AreEqual(1, manager2.DeltasLoaded, "session 2 loaded the stored delta");
             TrackedEditOn(manager2.World, saves2, cellB, sand);
@@ -331,6 +351,12 @@ namespace Cubeglass.Unity.Rendering.Tests
             var saves3 = CreateSaveBatches();
             var manager3 = NewManager(saves3);
             manager3.OnLoad(coord);
+            for (int frame = 0; frame < 240 && manager3.DeltasLoaded == 0; frame++)
+            {
+                manager3.ProcessDeltaLoads();
+                yield return null;
+            }
+
             Assert.AreEqual(wood, manager3.World.Get(cellA), "the earlier session's edit was overwritten by the new flush");
             Assert.AreEqual(sand, manager3.World.Get(cellB));
 
@@ -374,6 +400,49 @@ namespace Cubeglass.Unity.Rendering.Tests
             Assert.IsTrue(recovered.Succeeded, "the store must recover after the lock is released: {0}", recovered);
             Assert.AreEqual(0, recovered.FailedWrites, "the recovered drain has no failures");
             yield return null;
+        }
+
+        /// <summary>
+        /// TD-021: a write the store gives up on (bounded retries exhausted)
+        /// raises <see cref="FileWorldStore.WriteFailed"/>; the batch layer must
+        /// re-dirty the chunk and the next flush must retry it, so a transient
+        /// refusal cannot silently drop a batch.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator FailedWriteIsReDirtiedAndRetriedOnTheNextFlush()
+        {
+            CreateSaveBatches();
+            var coord = new ChunkCoord(0, 0, 0);
+            saves.TrackEdit(CellIn(coord, 0), new BlockId(1));
+            Assert.AreEqual(1, saves.Flush(), "the fixture flush queues one chunk");
+            Assert.IsTrue(store.HasSavedChunk(coord), "the fixture write lands");
+
+            FileWorldStore.SwapAttemptForTests = (temp, path) => false;
+            try
+            {
+                saves.TrackEdit(CellIn(coord, 1), new BlockId(2));
+                LogAssert.Expect(LogType.Error, new Regex("write\\(s\\) failed during the quit flush"));
+                Assert.AreEqual(1, saves.Flush(), "the failed flush still queues the dirty chunk");
+                Assert.AreEqual(1, saves.FailedFlushes, "the failure is counted loudly");
+            }
+            finally
+            {
+                FileWorldStore.SwapAttemptForTests = null;
+            }
+
+            // The pump raised WriteFailed before the drain completed; the next
+            // Tick drains it and re-dirties the chunk, and the next flush
+            // retries the complete map.
+            saves.Tick();
+            Assert.AreEqual(1, saves.ReDirtiedChunks, "the failed chunk is re-dirtied (TD-021)");
+            Assert.AreEqual(1, saves.Flush(), "the retry re-queues the chunk");
+            Assert.IsTrue(store.HasSavedChunk(coord));
+
+            ChunkDelta reloaded = null;
+            yield return LoadDelta(coord, value => reloaded = value);
+            Assert.IsNotNull(reloaded, "the retried delta must load");
+            Assert.AreEqual(new BlockId(2), reloaded.Edits[CellIn(coord, 1)], "the retried write landed the edit");
+            Assert.AreEqual(new BlockId(1), reloaded.Edits[CellIn(coord, 0)], "the complete map was rewritten");
         }
 
         /// <summary>
@@ -656,6 +725,11 @@ namespace Cubeglass.Unity.Rendering.Tests
             manager.OnUnload(coord);
             yield return null;
             manager.OnLoad(coord);
+            for (int frame = 0; frame < 240 && manager.LiveDeltasReapplied == 0; frame++)
+            {
+                manager.ProcessDeltaLoads();
+                yield return null;
+            }
 
             Chunk second = manager.World.TryGetChunk(coord);
             Assert.IsFalse(ReferenceEquals(first, second), "the chunk must have been regenerated");
@@ -676,12 +750,19 @@ namespace Cubeglass.Unity.Rendering.Tests
             var saves = CreateSaveBatches();
             var manager = NewManager(saves);
             manager.OnLoad(coord);
+            for (int frame = 0; frame < 240 && manager.DeltasLoaded == 0; frame++)
+            {
+                manager.ProcessDeltaLoads();
+                yield return null;
+            }
 
             Int3 worldCell = ChunkMath.ToWorld(coord, local);
             Assert.AreEqual(new Int3(35, 4, -11), worldCell, "fixture assumption: a local cell distinct from its world cell");
             Assert.AreEqual(block, manager.World.Get(worldCell), "the stored delta must be applied at world coordinates");
             Assert.AreEqual(1, manager.DeltasLoaded);
             Assert.AreEqual(1, manager.DeltaEditsApplied, "a wrong chunk->world mapping would apply zero edits");
+            Assert.AreEqual(0, manager.LiveEditsReapplied, "a fresh manager has no merged live map");
+            Assert.AreEqual(0, manager.EditsSkippedAlreadyApplied, "the first application is not skipped");
         }
 
         [UnityTest]
