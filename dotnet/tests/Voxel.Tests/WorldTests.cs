@@ -48,7 +48,7 @@ namespace Cubeglass.Voxel.Tests
         {
             World world = TestWorld.CreateLoaded(Origin);
             var changed = new List<ChunkCoord>();
-            world.ChunkChanged += changed.Add;
+            world.ChunkChanged += edit => changed.Add(edit.Chunk);
             var command = new EditCommand(new Int3(3, 4, 5), BlockId.Air, Stone, 7);
 
             EditResult result = world.Apply(in command);
@@ -56,6 +56,74 @@ namespace Cubeglass.Voxel.Tests
             Assert.That(result, Is.EqualTo(EditResult.Applied));
             Assert.That(world.Get(new Int3(3, 4, 5)), Is.EqualTo(Stone));
             Assert.That(changed, Is.EqualTo(new[] { Origin }));
+        }
+
+        [Test]
+        public void ChunkChangedCarriesTheChunkCellAndBlockTransition()
+        {
+            World world = TestWorld.CreateLoaded(Origin);
+            var edits = new List<ChunkEdit>();
+            world.ChunkChanged += edits.Add;
+            var command = new EditCommand(new Int3(3, 4, 5), BlockId.Air, Stone, 7);
+
+            Assert.That(world.Apply(in command), Is.EqualTo(EditResult.Applied));
+
+            Assert.That(edits, Has.Count.EqualTo(1));
+            Assert.That(edits[0].Chunk, Is.EqualTo(Origin));
+            Assert.That(edits[0].Cell, Is.EqualTo(new Int3(3, 4, 5)));
+            Assert.That(edits[0].Previous, Is.EqualTo(BlockId.Air));
+            Assert.That(edits[0].New, Is.EqualTo(Stone));
+        }
+
+        [Test]
+        public void AThrowingSubscriberDoesNotAbortTheEditOrLaterSubscribers()
+        {
+            World world = TestWorld.CreateLoaded(Origin);
+            var faults = new List<Exception>();
+            int laterCalls = 0;
+            world.ChunkChanged += _ => throw new InvalidOperationException("subscriber one");
+            world.ChunkChanged += _ => laterCalls++;
+            world.SubscriberFaulted += faults.Add;
+            var command = new EditCommand(new Int3(0, 0, 0), BlockId.Air, Stone, 1);
+
+            EditResult result = world.Apply(in command);
+
+            Assert.That(result, Is.EqualTo(EditResult.Applied), "the edit itself must still succeed");
+            Assert.That(world.Get(new Int3(0, 0, 0)), Is.EqualTo(Stone));
+            Assert.That(laterCalls, Is.EqualTo(1), "the later subscriber must still observe the edit");
+            Assert.That(world.SubscriberFaultCount, Is.EqualTo(1));
+            Assert.That(faults, Has.Count.EqualTo(1));
+            Assert.That(faults[0], Is.TypeOf<InvalidOperationException>());
+            Assert.That(faults[0].Message, Is.EqualTo("subscriber one"));
+        }
+
+        [Test]
+        public void AFaultHookThatThrowsIsAlsoIsolated()
+        {
+            World world = TestWorld.CreateLoaded(Origin);
+            world.ChunkChanged += _ => throw new InvalidOperationException("subscriber");
+            world.SubscriberFaulted += _ => throw new InvalidOperationException("fault hook");
+            var command = new EditCommand(new Int3(0, 0, 0), BlockId.Air, Stone, 1);
+
+            Assert.DoesNotThrow(() => world.Apply(in command));
+            Assert.That(world.SubscriberFaultCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void UnsubscribedHandlerStopsReceivingChunkChanged()
+        {
+            World world = TestWorld.CreateLoaded(Origin);
+            int calls = 0;
+            Action<ChunkEdit> handler = _ => calls++;
+            world.ChunkChanged += handler;
+            var first = new EditCommand(new Int3(0, 0, 0), BlockId.Air, Stone, 1);
+            Assert.That(world.Apply(in first), Is.EqualTo(EditResult.Applied));
+            Assert.That(calls, Is.EqualTo(1));
+
+            world.ChunkChanged -= handler;
+            var second = new EditCommand(new Int3(0, 0, 0), Stone, Dirt, 2);
+            Assert.That(world.Apply(in second), Is.EqualTo(EditResult.Applied));
+            Assert.That(calls, Is.EqualTo(1));
         }
 
         [Test]
@@ -93,7 +161,7 @@ namespace Cubeglass.Voxel.Tests
         {
             World world = TestWorld.CreateLoaded(Origin);
             var changed = new List<ChunkCoord>();
-            world.ChunkChanged += changed.Add;
+            world.ChunkChanged += edit => changed.Add(edit.Chunk);
             var toStone = new EditCommand(new Int3(0, 0, 0), BlockId.Air, Stone, 1);
             var toDirt = new EditCommand(new Int3(0, 0, 0), Stone, Dirt, 2);
             var staleStone = new EditCommand(new Int3(0, 0, 0), Stone, Dirt, 3);
@@ -111,7 +179,7 @@ namespace Cubeglass.Voxel.Tests
             var corner = new ChunkCoord(-1, -1, -1);
             World world = TestWorld.CreateLoaded(corner, (new Int3(15, 15, 15), Stone));
             var changed = new List<ChunkCoord>();
-            world.ChunkChanged += changed.Add;
+            world.ChunkChanged += edit => changed.Add(edit.Chunk);
             var command = new EditCommand(new Int3(-1, -1, -1), Stone, Dirt, 4);
 
             Assert.That(world.Apply(in command), Is.EqualTo(EditResult.Applied));

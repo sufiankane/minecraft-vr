@@ -354,7 +354,9 @@ benchmark (`docs/notes/s5-gate.md` section 5).
 
 `InputFrame` is the frozen S4 boundary (ADR-0008); the Unity adapters produce
 the same frame as the pure `ScriptedInputProvider`. Edits reach the world
-through `IWorld.Apply` only, and the `ChunkChanged` event drives the dirty set.
+through `IWorld.Apply` only, and the `ChunkChanged` event carries the edit
+context (`ChunkEdit`: chunk, cell, previous/new block, ADR-0013) and drives
+the dirty set.
 The `GameplayBridge` re-resolves the live world by reference every tick because
 `ChunkViewManager` replaces the world when it compacts.
 
@@ -375,8 +377,8 @@ sequenceDiagram
     GB->>PC: Step move, gravity, per-axis collision
     GB->>IS: Update frame, world, player, dt
     IS->>W: EditCommand cell, expected, new, tick 0
-    W-->>CVM: ChunkChanged(changedChunk)
-    CVM->>CVM: dirty Chebyshev-1 set
+    W-->>CVM: ChunkChanged(ChunkEdit chunk, cell, previous, new)
+    CVM->>CVM: dirty exact affected set from the cell
     Note over CVM: remesh on later frames, sharing the 4/frame upload budget
     IS-->>GB: EditApplied via the EditObserver
     GB->>SB: TrackEdit(cell, block)
@@ -770,9 +772,11 @@ while hosted checks were blocked; TD-047 self-hosted runner is session-scoped.
   meshing is synchronous; each upload snapshots the chunk plus 26 neighbours,
   about 213 KB of transient allocation on the main thread. Off-thread meshing
   and snapshot caching are deferred (`docs/notes/s7-gate.md` section 12).
-- **Conservative remesh fan-out.** `ChunkChanged` carries the chunk, not the
-  edited cell, so an edit dirties all 27 chunks in the Chebyshev-1
-  neighbourhood and unchanged neighbours are remeshed (TD-016/TD-017).
+- **Conservative remesh fan-out.** `ChunkChanged` now carries the edit cell
+  (ADR-0013), so the adapter can dirty the exact
+  `ChunkEditPropagation.FillAffectedChunks` set; the Unity `ChunkViewManager`
+  still uses the Chebyshev-1 neighbourhood until the consumer update that
+  consumes the cell lands (TD-017).
 - **Boot double-apply.** The boot path replays a stored delta and then the
   in-memory merged map; idempotent, but overlay counters count both (TD-018).
 - **Compaction one-tick race.** An edit in the same frame as a

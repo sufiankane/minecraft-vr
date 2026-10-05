@@ -3,7 +3,8 @@
   "rootNamespace": "Cubeglass.Unity.Input",
   "references": [
     "Cubeglass.Unity.Rendering",
-    "Cubeglass.Unity.Bridge"
+    "Cubeglass.Unity.Bridge",
+    "Unity.InputSystem"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],

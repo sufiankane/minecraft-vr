@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace Cubeglass.Voxel
@@ -27,9 +28,52 @@ namespace Cubeglass.Voxel
         /// Returns every chunk that must be remeshed after the cell at
         /// <paramref name="cell"/> changes.
         /// </summary>
+        /// <remarks>
+        /// Convenience wrapper over <see cref="FillAffectedChunks"/> that
+        /// allocates a result array of exactly the returned count. Hot paths
+        /// should call <see cref="FillAffectedChunks"/> with a caller-owned
+        /// buffer instead.
+        /// </remarks>
         public static IReadOnlyList<ChunkCoord> GetAffectedChunks(Int3 cell)
         {
-            var chunks = new ChunkCoord[MaxAffectedChunks];
+            Span<ChunkCoord> buffer = stackalloc ChunkCoord[MaxAffectedChunks];
+            int count = FillAffectedChunks(cell, buffer);
+
+            var result = new ChunkCoord[count];
+            for (int i = 0; i < count; i++)
+            {
+                result[i] = buffer[i];
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Writes every chunk that must be remeshed after the cell at
+        /// <paramref name="cell"/> changes into the first
+        /// <paramref name="destination"/> slots, sorted by <c>(X, Y, Z)</c>,
+        /// and returns how many were written.
+        /// </summary>
+        /// <remarks>
+        /// Allocation-free: the caller owns <paramref name="destination"/> and
+        /// the method writes only the first <c>N</c> slots. At most
+        /// <see cref="MaxAffectedChunks"/> (8) chunks can be affected, so the
+        /// buffer must hold at least that many; a smaller buffer is rejected
+        /// up front rather than partially filled.
+        /// </remarks>
+        /// <exception cref="ArgumentException">
+        /// <paramref name="destination"/> is shorter than
+        /// <see cref="MaxAffectedChunks"/>.
+        /// </exception>
+        public static int FillAffectedChunks(Int3 cell, Span<ChunkCoord> destination)
+        {
+            if (destination.Length < MaxAffectedChunks)
+            {
+                throw new ArgumentException(
+                    $"destination must provide room for {MaxAffectedChunks} chunks.",
+                    nameof(destination));
+            }
+
             int count = 0;
 
             for (int dz = -1; dz <= 1; dz += 2)
@@ -53,7 +97,7 @@ namespace Cubeglass.Voxel
                         bool seen = false;
                         for (int i = 0; i < count; i++)
                         {
-                            if (chunks[i] == chunk)
+                            if (destination[i] == chunk)
                             {
                                 seen = true;
                                 break;
@@ -62,25 +106,17 @@ namespace Cubeglass.Voxel
 
                         if (!seen)
                         {
-                            chunks[count++] = chunk;
+                            destination[count++] = chunk;
                         }
                     }
                 }
             }
 
-            SortByXyz(chunks, count);
-
-            if (count == MaxAffectedChunks)
-            {
-                return chunks;
-            }
-
-            var result = new ChunkCoord[count];
-            System.Array.Copy(chunks, result, count);
-            return result;
+            SortByXyz(destination, count);
+            return count;
         }
 
-        private static void SortByXyz(ChunkCoord[] chunks, int count)
+        private static void SortByXyz(Span<ChunkCoord> chunks, int count)
         {
             for (int i = 1; i < count; i++)
             {

@@ -1,6 +1,8 @@
 using Cubeglass.Unity.Rendering;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools.Constraints;
+using Is = UnityEngine.TestTools.Constraints.Is;
 
 namespace Cubeglass.Unity.Input.Tests
 {
@@ -236,6 +238,69 @@ namespace Cubeglass.Unity.Input.Tests
             {
                 Object.DestroyImmediate(hud);
             }
+        }
+
+        [Test]
+        public void VisibilityRequiresBothEyes()
+        {
+            var rig = new GameObject("VisRig");
+            try
+            {
+                Camera left = CreateEye(rig.transform, new Vector3(-0.032f, 0f, 0f));
+                Camera right = CreateEye(rig.transform, new Vector3(0.032f, 0f, 0f));
+                Vector3 inFront = new Vector3(0f, 0f, 1.5f);
+
+                Assert.IsTrue(WorldUi.IsVisibleFrom(left, inFront), "left eye sees the anchor");
+                Assert.IsTrue(WorldUi.IsVisibleFrom(right, inFront), "right eye sees the anchor");
+                Assert.IsFalse(WorldUi.IsVisibleFrom(left, new Vector3(0f, 0f, -1.5f)), "behind the left eye");
+                Assert.IsFalse(WorldUi.IsVisibleFrom(right, new Vector3(0f, 0f, -1.5f)), "behind the right eye");
+
+                // A point only one eye can see must not count as visible: the
+                // HUD is the AND of both eye viewports (TD-012).
+                right.transform.localRotation = Quaternion.Euler(0f, 180f, 0f);
+                Assert.IsTrue(WorldUi.IsVisibleFrom(left, inFront), "left still sees it");
+                Assert.IsFalse(WorldUi.IsVisibleFrom(right, inFront), "the turned right eye does not");
+            }
+            finally
+            {
+                Object.DestroyImmediate(rig);
+            }
+        }
+
+        [Test]
+        public void SteadyStateRefreshIsAllocationFree()
+        {
+            var rigObject = new GameObject("AllocRig");
+            var hudObject = new GameObject("AllocHud");
+            try
+            {
+                StereoRig stereo = rigObject.AddComponent<StereoRig>();
+                stereo.ApplyEyeLayout(3840, 1080);
+                WorldUi ui = hudObject.AddComponent<WorldUi>();
+                ui.AnchorSource = rigObject.transform;
+                ui.GazeCamera = stereo.LeftCamera;
+                ui.Visible = true;
+                ui.Refresh();
+                ui.Refresh();
+
+                Assert.That(
+                    () => ui.Refresh(),
+                    Is.Not.AllocatingGCMemory(),
+                    "the steady-state HUD refresh must not allocate (TD-012)");
+            }
+            finally
+            {
+                Object.DestroyImmediate(hudObject);
+                Object.DestroyImmediate(rigObject);
+            }
+        }
+
+        private static Camera CreateEye(Transform parent, Vector3 localPosition)
+        {
+            var eye = new GameObject("Eye");
+            eye.transform.SetParent(parent, false);
+            eye.transform.localPosition = localPosition;
+            return eye.AddComponent<Camera>();
         }
 
         private static void AssertVector(Vector3 expected, Vector3 actual, string message = null)

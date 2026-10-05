@@ -97,6 +97,51 @@ namespace Cubeglass.Unity.Rendering.Tests
             }
         }
 
+        [Test]
+        public void RefreshReadBackToleratesQuantisationAndDescribesRealMismatches()
+        {
+            Assert.IsTrue(
+                WindowManager.ModeMatchesRequest(
+                    FullScreenMode.FullScreenWindow, 89.7, FullScreenMode.FullScreenWindow, 90),
+                "a quantised rate inside the tolerance counts as honoured (M-10)");
+            Assert.IsFalse(
+                WindowManager.ModeMatchesRequest(
+                    FullScreenMode.FullScreenWindow, 60.0, FullScreenMode.FullScreenWindow, 90),
+                "a wrong rate is a mismatch");
+            Assert.IsFalse(
+                WindowManager.ModeMatchesRequest(
+                    FullScreenMode.Windowed, 90.0, FullScreenMode.FullScreenWindow, 90),
+                "a wrong mode is a mismatch");
+
+            Assert.IsNull(
+                WindowManager.DescribeMismatch(
+                    FullScreenMode.FullScreenWindow, 90.0, FullScreenMode.FullScreenWindow, 90),
+                "no mismatch text when honoured");
+            StringAssert.Contains(
+                "Windowed",
+                WindowManager.DescribeMismatch(
+                    FullScreenMode.Windowed, 90.0, FullScreenMode.FullScreenWindow, 90),
+                "the mode mismatch names the actual mode");
+            StringAssert.Contains(
+                "60",
+                WindowManager.DescribeMismatch(
+                    FullScreenMode.FullScreenWindow, 60.0, FullScreenMode.FullScreenWindow, 90),
+                "the refresh mismatch names the actual rate");
+        }
+
+        [Test]
+        public void CenteredWindowPositionNeverGoesNegative()
+        {
+            Assert.AreEqual(
+                new Vector2Int(960, 540),
+                WindowManager.CenteredWindowPosition(3840, 1080, 1920, 0),
+                "half of the horizontal surplus, zero vertical surplus");
+            Assert.AreEqual(
+                new Vector2Int(0, 0),
+                WindowManager.CenteredWindowPosition(1280, 720, 3840, 1080),
+                "a window larger than the display clamps to the origin");
+        }
+
         private static void SetConfigField(StereoRigConfig config, string field, object value)
         {
             FieldInfo info = typeof(StereoRigConfig).GetField(field, BindingFlags.Instance | BindingFlags.NonPublic);

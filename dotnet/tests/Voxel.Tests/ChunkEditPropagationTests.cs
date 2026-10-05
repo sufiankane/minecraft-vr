@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using NUnit.Framework;
 
@@ -6,6 +7,67 @@ namespace Cubeglass.Voxel.Tests
     [TestFixture]
     public sealed class ChunkEditPropagationTests
     {
+        [Test]
+        public void FillAffectedChunksReturnsTheCountAndSortedOrder()
+        {
+            var buffer = new ChunkCoord[8];
+
+            int count = ChunkEditPropagation.FillAffectedChunks(new Int3(0, 0, 0), buffer);
+
+            Assert.That(count, Is.EqualTo(8));
+            Assert.That(
+                buffer.AsSpan(0, count).ToArray(),
+                Is.EqualTo(new[]
+                {
+                    new ChunkCoord(-1, -1, -1),
+                    new ChunkCoord(-1, -1, 0),
+                    new ChunkCoord(-1, 0, -1),
+                    new ChunkCoord(-1, 0, 0),
+                    new ChunkCoord(0, -1, -1),
+                    new ChunkCoord(0, -1, 0),
+                    new ChunkCoord(0, 0, -1),
+                    new ChunkCoord(0, 0, 0),
+                }));
+        }
+
+        [Test]
+        public void FillAffectedChunksMatchesTheWrapperForRepresentativeCells()
+        {
+            Int3[] cells =
+            {
+                new Int3(8, 8, 8),
+                new Int3(0, 8, 8),
+                new Int3(15, 8, 8),
+                new Int3(0, 0, 8),
+                new Int3(15, 15, 15),
+                new Int3(-1, -1, -1),
+                new Int3(0, 15, 0),
+                new Int3(int.MaxValue, 0, 0),
+                new Int3(int.MinValue, 0, 0),
+                new Int3(int.MaxValue, int.MaxValue, int.MaxValue),
+                new Int3(int.MinValue, int.MinValue, int.MinValue),
+            };
+            var buffer = new ChunkCoord[8];
+
+            foreach (Int3 cell in cells)
+            {
+                int count = ChunkEditPropagation.FillAffectedChunks(cell, buffer);
+                IReadOnlyList<ChunkCoord> expected = ChunkEditPropagation.GetAffectedChunks(cell);
+
+                Assert.That(count, Is.EqualTo(expected.Count), "count for " + cell);
+                Assert.That(buffer.AsSpan(0, count).ToArray(), Is.EqualTo(expected), "order for " + cell);
+            }
+        }
+
+        [Test]
+        public void FillAffectedChunksRejectsADestinationSmallerThanTheMaximum()
+        {
+            var tooSmall = new ChunkCoord[7];
+
+            Assert.Throws<ArgumentException>(
+                () => ChunkEditPropagation.FillAffectedChunks(new Int3(0, 0, 0), tooSmall));
+        }
+
         [Test]
         public void CentreCellAffectsOnlyItsOwnChunk()
         {

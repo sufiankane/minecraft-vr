@@ -22,11 +22,24 @@ namespace Cubeglass.CoreMath.Tests
         /// </summary>
         internal static string GoldenFixturePath()
         {
+            return ContractFile("contracts", "golden", "transforms.json");
+        }
+
+        /// <summary>
+        /// Walks up from <see cref="AppContext.BaseDirectory"/> at most
+        /// <see cref="MaxLevelsUp"/> levels and returns the first repository
+        /// file at <paramref name="relativeSegments"/>. When the file is absent
+        /// the test fails with every searched path, so contract-pinning tests
+        /// can never silently skip their check.
+        /// </summary>
+        internal static string ContractFile(params string[] relativeSegments)
+        {
+            string relative = Path.Combine(relativeSegments);
             string? directory = AppContext.BaseDirectory;
             List<string> searched = new List<string>();
             for (int level = 0; level <= MaxLevelsUp && !string.IsNullOrEmpty(directory); ++level)
             {
-                string candidate = Path.Combine(directory, "contracts", "golden", "transforms.json");
+                string candidate = Path.Combine(directory, relative);
                 searched.Add(candidate);
                 if (File.Exists(candidate))
                 {
@@ -37,7 +50,7 @@ namespace Cubeglass.CoreMath.Tests
             }
 
             Assert.Fail(
-                "cannot find contracts/golden/transforms.json; searched:" + Environment.NewLine +
+                "cannot find " + relative + "; searched:" + Environment.NewLine +
                 string.Join(Environment.NewLine, searched));
             return string.Empty;
         }

@@ -34,11 +34,12 @@ half is a review responsibility recorded in the pull-request checklist
 | [`0010`](0010-unity-version-pipeline-and-bridge-layout.md) | Unity version, stereo pipeline and the bridge layout | proposed (U-09 answer pending HIL; the rest accepted for S6 software) | Unity 6000.6.3f1 on the Built-in Render Pipeline with two SBS eye cameras and config-driven IPD/FOV, `CG_ABI_VERSION` 1 -> 2 and region ABI 1 -> 2, the command/ack word in reserved header bytes 32/36, magic published last, and a test-only native writer. | 2026-10-02 |
 | [`0011`](0011-unity-input-mapping-and-rig-composition.md) | Unity input mapping and rig composition | accepted | Ruling R52: the scene is built in Unity space with one mirror plus a mesh winding flip at the adapter, `PlayerRoot` owns the body pose while the head contributes a recentred rotation, `TurnSnap` stays degrees per second, and snap turn is a separate one-shot edge. | 2026-10-03 |
 | [`0012`](0012-ci-unity-licensing-and-release-routes.md) | CI Unity licensing and the release build routes | accepted | A dispatch-only release with two routes: hosted (pinned Unity CLI, exactly one credential mode: `UNITY_LICENSE` or `UNITY_SERIAL`) and self-hosted (the machine's Hub activation, no secrets), both test-gated by the EditMode and PlayMode suites before building. | 2026-10-04 |
+| [`0013`](0013-cell-carrying-world-edit-event.md) | Cell-carrying world edit event | accepted | `IWorld.ChunkChanged` becomes `Action<ChunkEdit>` (chunk, cell, previous/new block) so consumers can dirty the exact affected chunks; subscriber exceptions are isolated per handler with a `SubscriberFaulted` hook and counter, and the C ABI/save format stay unchanged. | 2026-10-04 |
 
 ## Numbering conventions
 
 - `0000` is the template and is never used for a decision. The next free number
-  at this snapshot is `0013`.
+  at this snapshot is `0014`.
 - Numbers are assigned in blocks by subject, and the block boundaries are
   historical, not thematic:
   - `0001-0004` — foundation: layering, shared-memory IPC, test strategy,
@@ -50,6 +51,7 @@ half is a review responsibility recorded in the pull-request checklist
   - `0010` — Unity and the native bridge.
   - `0011` — input mapping and rig composition (S7).
   - `0012` — CI licensing and release routes (S7 release plumbing).
+  - `0013` — cell-carrying world edit event (S7/TD-016 contract fix).
 - Numbers are append-only: never renumber a merged ADR. Supersede or amend with
   a new ADR that links back, or record an explicit amendment in the existing
   file (ADR-0006 carries a dated "Amended (pre-release)" note; ADR-0003 and

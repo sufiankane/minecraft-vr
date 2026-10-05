@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -39,6 +40,15 @@ namespace Cubeglass.Unity.Rendering
     /// <see cref="FlushResult"/> carrying the failure count).
     /// </para>
     /// <para>
+    /// <b>Failed writes (TD-021).</b> The store retries a write with a bounded
+    /// backoff first; if it still fails it raises
+    /// <see cref="FileWorldStore.WriteFailed"/>. This component re-dirties the
+    /// chunk on its next <see cref="Tick"/>/<see cref="Flush"/> (the complete
+    /// edit map is retained, so the retry rewrites the same payload) and counts
+    /// it in <see cref="ReDirtiedChunks"/>. A quit flush therefore gives a
+    /// failed batch one immediate retry instead of silently dropping the edits.
+    /// </para>
+    /// <para>
     /// <b>Memory.</b> A chunk's edit map is retained after a flush so the next
     /// flush can write the complete delta; the retained state is one
     /// <see cref="ChunkDelta"/>-sized dictionary per edited chunk, which is the
@@ -77,6 +87,8 @@ namespace Cubeglass.Unity.Rendering
 
         private readonly List<ChunkCoord> readyChunks = new List<ChunkCoord>();
 
+        private readonly ConcurrentQueue<ChunkCoord> failedWrites = new ConcurrentQueue<ChunkCoord>();
+
         private FileWorldStore store;
         private Func<double> clock;
 
@@ -84,7 +96,19 @@ namespace Cubeglass.Unity.Rendering
         public FileWorldStore Store
         {
             get { return store; }
-            set { store = value; }
+            set
+            {
+                if (store != null)
+                {
+                    store.WriteFailed -= OnStoreWriteFailed;
+                }
+
+                store = value;
+                if (store != null)
+                {
+                    store.WriteFailed += OnStoreWriteFailed;
+                }
+            }
         }
 
         /// <summary>Edits accumulated per chunk before a count flush; defaults to 32.</summary>
@@ -139,6 +163,13 @@ namespace Cubeglass.Unity.Rendering
 
         /// <summary>Times a completed drain reported at least one failed write.</summary>
         public long FailedFlushes { get; private set; }
+
+        /// <summary>
+        /// Chunks re-dirtied after the store gave up on a write (TD-021): the
+        /// chunk is queued for the next <see cref="Tick"/>/<see cref="Flush"/>
+        /// instead of being silently treated as saved.
+        /// </summary>
+        public long ReDirtiedChunks { get; private set; }
 
         /// <summary>Calls to <see cref="Flush"/> or <see cref="FlushAsync"/> since scene start.</summary>
         public long FlushCalls { get; private set; }
@@ -229,6 +260,7 @@ namespace Cubeglass.Unity.Rendering
         public int Flush()
         {
             FlushCalls++;
+            DrainFailedWrites();
             int flushed = FlushDirtyChunks();
             if (store == null)
             {
@@ -264,6 +296,7 @@ namespace Cubeglass.Unity.Rendering
         public Task<FlushResult> FlushAsync()
         {
             FlushCalls++;
+            DrainFailedWrites();
             FlushDirtyChunks();
             return store != null
                 ? store.FlushAsync()
@@ -277,6 +310,7 @@ namespace Cubeglass.Unity.Rendering
         /// </summary>
         public void Tick()
         {
+            DrainFailedWrites();
             if (pending.Count == 0)
             {
                 return;
@@ -369,6 +403,33 @@ namespace Cubeglass.Unity.Rendering
             }
 
             return state;
+        }
+
+        /// <summary>
+        /// Store callback (pump thread): records the chunk whose write failed
+        /// after its bounded retries so the main thread can re-dirty it.
+        /// </summary>
+        private void OnStoreWriteFailed(ChunkCoord coord)
+        {
+            failedWrites.Enqueue(coord);
+        }
+
+        /// <summary>
+        /// Re-dirties every chunk the store reported failed (TD-021), so the
+        /// next <see cref="Tick"/>/<see cref="Flush"/> re-queues it instead of
+        /// silently treating a failed write as saved. Runs on the main thread;
+        /// the complete edit map is retained, so the retry rewrites the same
+        /// payload.
+        /// </summary>
+        private void DrainFailedWrites()
+        {
+            while (failedWrites.TryDequeue(out ChunkCoord coord))
+            {
+                PendingChunk state = GetOrCreate(coord);
+                state.Dirty = true;
+                state.DirtySince = Clock();
+                ReDirtiedChunks++;
+            }
         }
 
         private static double DefaultClock()

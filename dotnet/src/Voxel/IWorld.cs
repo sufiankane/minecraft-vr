@@ -25,10 +25,13 @@ namespace Cubeglass.Voxel
         EditResult Apply(in EditCommand cmd);
 
         /// <summary>
-        /// Raised exactly once per applied edit, with the owning chunk, so
-        /// consumers can mark meshes dirty.
+        /// Raised exactly once per applied edit with the owning chunk, the
+        /// edited cell and the block transition (ADR-0013), so consumers can
+        /// dirty the exact affected chunk set. Subscriber exceptions are
+        /// isolated by <see cref="World"/>; a throwing subscriber does not
+        /// abort the edit or the remaining subscribers.
         /// </summary>
-        event Action<ChunkCoord> ChunkChanged;
+        event Action<ChunkEdit> ChunkChanged;
     }
 #pragma warning restore CA1716
 }

@@ -72,8 +72,8 @@ namespace Cubeglass.Voxel
         /// <exception cref="FormatException">
         /// The text is not valid JSON, is not an array, contains a duplicate id,
         /// omits air (id 0), defines the reserved id 65535 (0xFFFF), omits a
-        /// name or declares an empty one, or contains a negative atlas index or
-        /// hardness.
+        /// name or declares an empty one, contains a negative atlas index or
+        /// hardness, or declares air as opaque.
         /// </exception>
         public static BlockRegistry Parse(string json)
         {
@@ -154,6 +154,12 @@ namespace Cubeglass.Voxel
                 {
                     throw new FormatException(
                         string.Format(CultureInfo.InvariantCulture, "Block {0} has a negative atlas index.", dto.Id));
+                }
+
+                if (id == BlockId.Air && dto.Opaque)
+                {
+                    throw new FormatException(
+                        "Air (id 0) must not be opaque: an opaque air cell would cull every neighbouring face.");
                 }
 
                 if (!(dto.Hardness >= 0f))

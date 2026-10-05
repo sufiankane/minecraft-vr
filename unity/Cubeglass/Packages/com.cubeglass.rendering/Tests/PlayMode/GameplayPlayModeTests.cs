@@ -148,7 +148,7 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             Assert.AreEqual(BlockId.Air, world.Get(target), "stone did not break after its hardness time");
             Assert.AreEqual(1, bridge.EditsApplied, "exactly one edit landed");
-            Assert.IsTrue(bridge.SaveRequested, "the bridge requested a save after the edit");
+            Assert.GreaterOrEqual(runtime.Views.PreciseEdits, 1L, "the applied edit reached the precise remesh path");
             yield return null;
         }
 
@@ -169,7 +169,7 @@ namespace Cubeglass.Unity.Rendering.Tests
 
             Assert.AreEqual(new BlockId(1), world.Get(placeCell), "the face placement wrote the selected block");
             Assert.AreEqual(1, bridge.EditsApplied);
-            Assert.IsTrue(bridge.SaveRequested, "the edit raised the save request for Task 4");
+            Assert.GreaterOrEqual(runtime.Views.PreciseEdits, 1L, "the placement reached the precise remesh path");
             yield return null;
         }
 

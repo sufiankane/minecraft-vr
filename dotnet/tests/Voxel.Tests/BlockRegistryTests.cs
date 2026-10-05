@@ -95,6 +95,33 @@ namespace Cubeglass.Voxel.Tests
         }
 
         [Test]
+        public void ParseRejectsANegativeAtlasIndexOnTopOrFront()
+        {
+            const string NegativeTop =
+                "{\"Id\":0,\"Name\":\"Air\",\"Solid\":false,\"Opaque\":false,\"Hardness\":0,\"AtlasIndexTop\":-1,\"AtlasIndexFront\":0,\"AtlasIndexSide\":0}";
+            const string NegativeFront =
+                "{\"Id\":0,\"Name\":\"Air\",\"Solid\":false,\"Opaque\":false,\"Hardness\":0,\"AtlasIndexTop\":0,\"AtlasIndexFront\":-1,\"AtlasIndexSide\":0}";
+
+            Assert.Throws<FormatException>(
+                () => BlockRegistry.Parse("[" + NegativeTop + "]"),
+                "a negative top atlas index must be rejected at parse");
+            Assert.Throws<FormatException>(
+                () => BlockRegistry.Parse("[" + NegativeFront + "]"),
+                "a negative front atlas index must be rejected at parse");
+        }
+
+        [Test]
+        public void ParseRejectsAnOpaqueAirDefinition()
+        {
+            const string OpaqueAir =
+                "{\"Id\":0,\"Name\":\"Air\",\"Solid\":false,\"Opaque\":true,\"Hardness\":0,\"AtlasIndexTop\":0,\"AtlasIndexFront\":0,\"AtlasIndexSide\":0}";
+
+            Assert.Throws<FormatException>(
+                () => BlockRegistry.Parse("[" + OpaqueAir + "," + StoneBlock + "]"),
+                "air must not be opaque: an opaque air cell would cull every neighbouring face");
+        }
+
+        [Test]
         public void ParseRejectsNegativeHardness()
         {
             const string NegativeHardness =

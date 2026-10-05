@@ -217,6 +217,30 @@ NVIDIA GeForce RTX 5070 Laptop GPU (7.9 GB), Windows 11 10.0.26200, Unity
   (`Cubeglass.Editor.BuildPlayer.BuildWindows64`) passes the same two scenes
   explicitly.
 
+### 7.1 Scene hash recipe (TD-025)
+
+`Cubeglass/Verify Scene Hashes` (menu) and
+`Cubeglass.Editor.SceneHashVerifier.VerifyAllBatch` (batch entry, run with
+Unity's `-executeMethod`) recompute both pins and compare them; the batch entry
+exits non-zero on a mismatch. The hash is SHA-256 over the scene file bytes
+with CRLF collapsed to LF first, so a Windows checkout with `core.autocrlf`
+hashes the same as the committed git blob (the old manual recipe hashed the
+worktree bytes and false-mismatched). Comparison is case-insensitive.
+`Cubeglass.Editor.Tests.SceneHashVerifierTests` runs the same verification in
+the EditMode lane.
+
+To re-pin after an intentional scene rebuild:
+
+1. Rebuild through the builder (`Cubeglass/Build Game Scene` or
+   `Cubeglass/Build Calibration Scene`) and confirm two consecutive rebuilds
+   are byte-identical, as recorded above.
+2. Read the recomputed hash from the `Cubeglass/Verify Scene Hashes` log.
+3. Update the matching constant in
+   `unity/Cubeglass/Assets/Editor/SceneHashVerifier.cs` and the value in this
+   section in the same commit, and say in the commit message that the scene
+   was regenerated.
+4. Re-run the EditMode lane to confirm the verifier and the pin agree.
+
 ## 8. Local lanes
 
 `powershell -File scripts/ci-local.ps1 -SkipUnity` → **ALL LANES PASS** (exit

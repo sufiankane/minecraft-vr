@@ -232,6 +232,23 @@ chosen over a `WorldReplaced` callback on the manager as the smaller change.
 - `LEDGER`/review: no adapter contains a second Z-flip; the mesh path's mirror
   and winding flip appear in the same function.
 
+## Addendum (TD-014): shipped `config.json`
+
+The committed `unity/Cubeglass/Assets/config.json` is the operator-facing
+tuning surface. The editor post-build step
+`Cubeglass.Editor.ConfigFileBuildCopy` copies it to
+`<Player>_Data/StreamingAssets/Cubeglass/config.json`; `GameConfigFile`
+resolves the StreamingAssets copy first, then `Assets/config.json` in the
+editor, and treats a missing file as a no-op.
+
+Precedence: built-in code defaults < serialized inspector values <
+`config.json` keys. A key present in the file wins over the scene value; a key
+absent keeps the scene value, so an author can bake values into a scene by
+omitting the key. Each numeric key is validated against the same bounds the
+runtime enforces: out-of-range finite values clamp with a warning, non-finite
+values are ignored, unknown keys are ignored, and a malformed or >256 KiB file
+logs one warning and applies nothing.
+
 ## Links
 
 - Dossier sections: 2.1 (F-04, U-09), 3.6, 5.11, 6 (S7).

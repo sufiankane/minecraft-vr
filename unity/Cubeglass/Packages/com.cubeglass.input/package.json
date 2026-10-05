@@ -2,6 +2,6 @@
   "name": "com.cubeglass.input",
   "version": "0.1.0",
   "displayName": "Cubeglass Input",
-  "description": "Unity input mapping and the deterministic synthetic pose provider for the Cubeglass Unity client (S7 adapter placeholder).",
+  "description": "Input mapping core with legacy Input Manager and Input System adapters, the gameplay bridge, the world-space HUD, comfort vignette and boot wiring for the Cubeglass Unity client.",
   "unity": "6000.6"
 }
