@@ -247,12 +247,28 @@ jobs:
       - name: Lower ASLR entropy for TSan
         # GCC's TSan runtime cannot map its shadow memory when vm.mmap_rnd_bits
         # is 32, the Ubuntu runner default; 28 is the documented value. The
-        # previous value is captured so the reduction is job-scoped: a later
-        # step restores it even when the TSan test fails (TD-066).
+        # reduction is best-effort: the key is absent on some kernels and
+        # hosted images have denied the write even under sudo (PR #58). When
+        # it is applied, the previous value is captured so the reduction is
+        # job-scoped and a later step restores it even when the TSan test
+        # fails (TD-066). TSan itself still runs for real below.
         run: |
-          before=$(sysctl -n vm.mmap_rnd_bits)
-          echo "CG_MMAP_RND_BITS_BEFORE=$before" >> "$GITHUB_ENV"
-          sudo sysctl vm.mmap_rnd_bits=28
+          current=$(sysctl -n vm.mmap_rnd_bits 2>/dev/null || true)
+          if [ -z "$current" ]; then
+            echo "::warning::vm.mmap_rnd_bits is not readable on this kernel; TSan will run at the image default ASLR entropy."
+            exit 0
+          fi
+          echo "vm.mmap_rnd_bits is currently $current."
+          if [ "$current" = "28" ]; then
+            echo "ASLR entropy is already 28 (the documented TSan value); nothing to lower."
+            exit 0
+          fi
+          if sudo -n sysctl vm.mmap_rnd_bits=28; then
+            echo "CG_MMAP_RND_BITS_BEFORE=$current" >> "$GITHUB_ENV"
+            echo "Lowered vm.mmap_rnd_bits from $current to 28 for TSan; it will be restored at job end."
+          else
+            echo "::warning::Could not lower vm.mmap_rnd_bits from $current to 28 (sudo denied or unavailable); TSan will run at the image default ASLR entropy. The runner is ephemeral, so there is nothing to restore."
+          fi
 
       - name: Configure (TSan)
         run: cmake --preset linux-tsan
@@ -268,13 +284,19 @@ jobs:
 
       - name: Restore ASLR entropy
         # TD-066: the reduced-ASLR window is job-scoped. `if: always()` also
-        # restores when the TSan test failed or was cancelled midway.
+        # restores when the TSan test failed or was cancelled midway. A denied
+        # restore only warns: the runner is ephemeral, so the exposure ends
+        # with the job and cleanup must not mask the TSan gate.
         if: always()
         run: |
-          if [ -n "${CG_MMAP_RND_BITS_BEFORE:-}" ]; then
-            sudo sysctl "vm.mmap_rnd_bits=${CG_MMAP_RND_BITS_BEFORE}"
-          else
+          if [ -z "${CG_MMAP_RND_BITS_BEFORE:-}" ]; then
             echo "ASLR entropy was not lowered in this job; nothing to restore."
+            exit 0
+          fi
+          if sudo -n sysctl "vm.mmap_rnd_bits=${CG_MMAP_RND_BITS_BEFORE}"; then
+            echo "Restored vm.mmap_rnd_bits to ${CG_MMAP_RND_BITS_BEFORE}."
+          else
+            echo "::warning::Could not restore vm.mmap_rnd_bits to ${CG_MMAP_RND_BITS_BEFORE} (sudo denied or unavailable); the reduced-ASLR window ends with this ephemeral runner."
           fi
 
       # CXX-03: the sanitizer lanes above run Debug builds; this Release

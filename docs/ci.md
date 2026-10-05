@@ -32,11 +32,17 @@ from the hosted runner image and are not version-locked; each relevant job still
 prints a "Toolchain versions" step so image drift is visible in the run log.
 
 **clang-format and clang-tidy are pinned to LLVM 23.1.2** (TD-037) to match
-[`docs/toolchains.md`](toolchains.md). The `cpp-windows` job asserts the exact
-version at the start of the job and fails with install instructions before any
-source is checked; the `expect-red-format` negative gate installs the pinned
-clang-format from `python/requirements-ci.txt` (a hash-pinned wheel) and asserts
-the same version, so the format self-test cannot silently use a distro build.
+[`docs/toolchains.md`](toolchains.md). The `cpp-windows` job installs the tools
+from the official `llvmorg-23.1.2` release tarball
+(`clang+llvm-23.1.2-x86_64-pc-windows-msvc.tar.xz`), verifying the archive's
+SHA-256 against the value recorded in `.github/workflows/ci.yml` before
+extracting and caching it; `cpp-linux-asan` installs `clang-format-23` and
+`clang-tidy-23` from apt.llvm.org at the exact version recorded in the same
+file. Both jobs assert the tools report exactly 23.1.2 (Windows additionally
+asserts they resolve inside the pinned directory) before any source is checked;
+the `expect-red-format` negative gate installs the pinned clang-format from
+`python/requirements-ci.txt` (a hash-pinned wheel) and asserts the same version,
+so the format self-test cannot silently use a distro build.
 
 **Python dependencies are hash-pinned** (TD-028). `python/requirements-ci.txt`
 (gcovr and clang-format), `python/requirements-dev.txt` (pytest, pytest-cov,
@@ -550,9 +556,12 @@ amendment). Plan the renewal before that date:
    and the EditMode/PlayMode suites pass. A failed activation fails before any
    build step with the actionable message described above.
 5. **TSan ASLR.** Unrelated to licensing but job-scoped for the same reason:
-   the `cpp-linux-asan` job lowers `vm.mmap_rnd_bits` to 28 for the TSan step
-   and restores the captured original in an `if: always()` step, so a failed or
-   cancelled TSan test cannot leave the runner's ASLR entropy reduced (TD-066).
+   the `cpp-linux-asan` job attempts to lower `vm.mmap_rnd_bits` to 28 for the
+   TSan step and, on success, restores the captured original in an
+   `if: always()` step, so a failed or cancelled TSan test cannot leave the
+   runner's ASLR entropy reduced (TD-066). Hosted images may deny the write
+   even under `sudo`; the job then warns and TSan runs at the image default
+   entropy, so the TSan gate itself stays meaningful.
 
 The licensing decision itself is recorded in
 [ADR-0012](adr/0012-ci-unity-licensing-and-release-routes.md); the expiry

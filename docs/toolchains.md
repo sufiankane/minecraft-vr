@@ -46,8 +46,14 @@ the installer script and verifies its **SHA-256**
 (`b7f8003180c35d5fd5300c919bf4855359f39d87e9ced1091a71b2e960be8861`, TD-040)
 before executing it — set the `CG_UNITY_CLI_SHA256_OVERRIDE` repository variable
 after reviewing a newer script — and the self-hosted route asserts
-`unity --version` matches `1.0.0-beta.11` before any build. The `cpp-windows`
-job asserts `clang-format`/`clang-tidy` are exactly **23.1.2** (TD-037);
+`unity --version` matches `1.0.0-beta.11` before any build.
+
+`cpp-windows` installs `clang-format`/`clang-tidy` **23.1.2** from the official
+`llvmorg-23.1.2` Windows tarball, verifying its SHA-256 (recorded with the URL
+in `.github/workflows/ci.yml`) and caching the extracted tools;
+`cpp-linux-asan` installs `clang-format-23`/`clang-tidy-23` **23.1.2** from
+apt.llvm.org at the exact package version (also recorded in the workflow). Both
+lanes assert the installed tools are exactly 23.1.2 (TD-037);
 `expect-red-format` installs the same version from the hash-pinned
 `python/requirements-ci.txt`.
 

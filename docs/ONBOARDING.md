@@ -412,8 +412,9 @@ in-flight run. These six contexts are the branch-protection required checks:
 | `licences` | `ubuntu-latest` | licence allowlist and SPDX-id validation |
 
 TSan deliberately runs **inside** `cpp-linux-asan` (R33) so branch protection
-keeps its six checks; that job lowers `vm.mmap_rnd_bits` to 28 for GCC's TSan
-runtime before running the `linux-tsan` preset. C++ dependencies come from
+keeps its six checks; that job attempts to lower `vm.mmap_rnd_bits` to 28 for
+GCC's TSan runtime before running the `linux-tsan` preset, warning and running
+at the image default entropy if the write is denied. C++ dependencies come from
 vcpkg at the pinned baseline; `cpp-windows` caches the manifest tree keyed on
 the baseline and `cpp/vcpkg.json`'s hash. Every action is pinned to a full
 commit SHA with a version comment; Dependabot proposes grouped minor/patch
