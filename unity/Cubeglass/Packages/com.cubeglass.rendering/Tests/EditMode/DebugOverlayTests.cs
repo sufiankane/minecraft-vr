@@ -74,6 +74,33 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
+        public void FormatsPluginStateForTheOverlay()
+        {
+            Assert.AreEqual("plugin -", OverlayFormat.PluginState(-1), "no selector");
+            Assert.AreEqual("plugin ok", OverlayFormat.PluginState(0), "plugin available");
+            Assert.AreEqual("plugin unavailable", OverlayFormat.PluginState(1), "TD-023 plugin flag visible");
+        }
+
+        [Test]
+        public void FormatsEffectiveEditCounters()
+        {
+            Assert.AreEqual("edits 12", OverlayFormat.EditCount(12), "effective edits");
+            Assert.AreEqual("edits -", OverlayFormat.EditCount(-1), "no runtime");
+            Assert.AreEqual("skip 3", OverlayFormat.SkippedEdits(3), "skipped replays");
+            Assert.AreEqual("skip -", OverlayFormat.SkippedEdits(-1), "no runtime");
+        }
+
+        [Test]
+        public void PanelLayoutRowsStayInsideThePanel()
+        {
+            Rect panel = DebugOverlay.PanelRect;
+            Assert.AreEqual(8f, panel.x, "panel x");
+            Assert.AreEqual(8f, panel.y, "panel y");
+            Assert.AreEqual(240f, panel.width, "panel width");
+            Assert.AreEqual(18f * (DebugOverlay.RowCount + 1), panel.height, "panel height fits every row plus padding");
+        }
+
+        [Test]
         public void OverlayTextReusesTheBufferAndOnlyRebuildsOnChange()
         {
             int formatCalls = 0;

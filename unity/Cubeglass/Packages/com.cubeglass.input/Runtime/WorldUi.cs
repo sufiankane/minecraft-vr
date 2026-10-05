@@ -1,3 +1,4 @@
+using System;
 using Cubeglass.Gameplay;
 using Cubeglass.Unity.Rendering;
 using UnityEngine;
@@ -5,24 +6,30 @@ using UnityEngine;
 namespace Cubeglass.Unity.Input
 {
     /// <summary>
-    /// The in-world HUD (S7 Task 3): a gaze-centred reticle and a hotbar strip
-    /// anchored at the rig's eye height and
-    /// <see cref="DefaultAnchorDistanceMeters"/> in front of the player body,
-    /// with the selected slot highlighted from
+    /// The in-world HUD (S7 Task 3, world-space since TD-012): a gaze-centred
+    /// reticle quad and a hotbar strip of quads anchored at the rig's eye
+    /// height and <see cref="DefaultAnchorDistanceMeters"/> in front of the
+    /// player body, with the selected slot highlighted from
     /// <see cref="PlayerState.HotbarIndex"/>.
     /// </summary>
     /// <remarks>
     /// <para>
+    /// <b>Stereo (TD-012).</b> Reticle and hotbar are real scene geometry with
+    /// <see cref="MeshRenderer"/>s, so both eye cameras of the side-by-side rig
+    /// render them (each at its own eye offset), unlike the old single-pass
+    /// IMGUI HUD which only composited into the left viewport. The quads share
+    /// one generated mesh and one unlit colour material; colours are applied
+    /// through cached <see cref="MaterialPropertyBlock"/>s, so steady frames
+    /// reuse every object and allocation-free after the first refresh.
+    /// </para>
+    /// <para>
     /// <b>Update order.</b> <see cref="Refresh"/> runs every <c>LateUpdate</c>,
     /// after every <c>Update</c> in the frame, so it re-anchors on the player
     /// pose that <see cref="GameplayBridge"/> wrote this tick (bridge
-    /// <c>Update</c> → HUD <c>LateUpdate</c> → <c>OnGUI</c>). It recomputes
-    /// the anchor from the anchor source's current position and body yaw every
-    /// frame — body-relative, not head-locked: the strip follows walking and
-    /// snap turns but not the head-relative rotation applied by the late latch.
-    /// It reuses cached <see cref="GUIContent"/> buffers and allocates nothing
-    /// on steady frames; <c>OnGUI</c> only draws on
-    /// <see cref="EventType.Repaint"/>.
+    /// <c>Update</c> → HUD <c>LateUpdate</c>). It recomputes the anchor from
+    /// the anchor source's current position and body yaw every frame —
+    /// body-relative, not head-locked: the strip follows walking and snap turns
+    /// but not the head-relative rotation applied by the late latch.
     /// </para>
     /// <para>
     /// <b>Placement.</b> The anchor is <see cref="AnchorEyeHeight"/> above the
@@ -32,22 +39,15 @@ namespace Cubeglass.Unity.Input
     /// not track head pitch). At the ADR-0010 defaults the drop is ≈7.6° below
     /// the eye axis and the strip's bottom edge ≈9.8°, inside the per-eye
     /// vertical half-FOV of ≈13.1° for the 45° horizontal FOV at 16:9 per eye
-    /// (pinned by the EditMode FOV placement test). The old feet-anchored
-    /// composition put the strip ≈31° below the eye and off-screen.
-    /// </para>
-    /// <para>
-    /// <b>Monocular SBS (S7 known, deferred M2+).</b> The HUD (reticle and
-    /// hotbar) is one screen-space IMGUI pass projected through the left eye
-    /// camera only, so in the 3840×1080 side-by-side target it is composited
-    /// into the left half and the right eye sees no HUD; there is no stereo
-    /// depth. The reticle is screen-centred, so its apparent direction is the
-    /// same for both eyes. Per-eye HUD geometry is deferred; see ADR-0011 and
-    /// the s7-gate deferred minors.
+    /// (pinned by the EditMode FOV placement test). The strip faces the gaze
+    /// camera so it stays readable without head-locking.
     /// </para>
     /// <para>
     /// The layout maths (<see cref="HotbarAnchor"/>, <see cref="SlotRect"/>,
     /// <see cref="ProjectedPixelsPerMeter"/>) are static and pure so they are
-    /// pinned in EditMode tests.
+    /// pinned in EditMode tests. <see cref="HotbarVisible"/> and
+    /// <see cref="ReticleVisible"/> report whether both eye cameras see the
+    /// geometry on the last refresh.
     /// </para>
     /// </remarks>
     [DisallowMultipleComponent]
@@ -68,7 +68,19 @@ namespace Cubeglass.Unity.Input
         /// <summary>Default hotbar strip height in metres at the anchor.</summary>
         public const float DefaultHotbarHeightMeters = 0.12f;
 
-        private const float ReticleDistanceMeters = 2f;
+        /// <summary>Default reticle quad edge length in metres at the gaze point.</summary>
+        public const float DefaultReticleSizeMeters = 0.02f;
+
+        /// <summary>Distance along the gaze the reticle quad is placed, in metres.</summary>
+        public const float ReticleDistanceMeters = 2f;
+
+        private const float SlotGapMeters = 0.01f;
+        private const string ReticleName = "CubeglassHudReticle";
+        private const string HotbarName = "CubeglassHudHotbar";
+
+        private static readonly Color BackgroundColor = new Color(0f, 0f, 0f, 0.55f);
+        private static readonly Color SlotColor = new Color(0.15f, 0.15f, 0.15f, 0.75f);
+        private static readonly Color SelectedSlotColor = new Color(1f, 0.85f, 0.2f, 0.85f);
 
         [SerializeField] private Camera gazeCamera;
         [SerializeField] private Transform anchorSource;
@@ -79,15 +91,21 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private float anchorDropMeters = DefaultAnchorDropMeters;
         [SerializeField] private float hotbarWidthMeters = DefaultHotbarWidthMeters;
         [SerializeField] private float hotbarHeightMeters = DefaultHotbarHeightMeters;
-        [SerializeField] private float reticleSizePixels = 24f;
+        [SerializeField] private float reticleSizeMeters = DefaultReticleSizeMeters;
 
-        private GUIContent reticleContent;
-        private GUIContent[] slotContents;
-        private Texture2D quad;
+        private UnityEngine.Mesh quadMesh;
+        private Material material;
+        private MaterialPropertyBlock[] slotProperties;
+        private Color[] slotColours;
+        private GameObject reticleObject;
+        private GameObject hotbarObject;
+        private MeshRenderer reticleRenderer;
+        private MeshRenderer hotbarBackground;
+        private MeshRenderer[] hotbarSlots;
         private bool hasAnchor;
         private Vector3 anchorWorldPosition;
-        private bool hotbarProjected;
-        private Rect hotbarScreenRect;
+        private bool hotbarVisible;
+        private bool reticleVisible;
         private int selectedSlot;
 
         /// <summary>Camera the HUD projects through; falls back to the bridge/rig.</summary>
@@ -128,6 +146,13 @@ namespace Cubeglass.Unity.Input
             set { anchorDropMeters = value; }
         }
 
+        /// <summary>World-locked anchor distance in metres along body forward.</summary>
+        public float AnchorDistance
+        {
+            get { return anchorDistance; }
+            set { anchorDistance = value; }
+        }
+
         /// <summary>The bridge supplying the selected hotbar slot.</summary>
         public GameplayBridge Bridge
         {
@@ -135,7 +160,7 @@ namespace Cubeglass.Unity.Input
             set { bridge = value; }
         }
 
-        /// <summary>Whether the reticle and hotbar draw.</summary>
+        /// <summary>Whether the reticle and hotbar are active.</summary>
         public bool Visible
         {
             get { return visible; }
@@ -148,16 +173,64 @@ namespace Cubeglass.Unity.Input
             get { return anchorWorldPosition; }
         }
 
-        /// <summary>Whether the hotbar strip projected on the last refresh.</summary>
-        public bool HotbarProjected
+        /// <summary>The reticle quad object; created on the first refresh.</summary>
+        public GameObject ReticleObject
         {
-            get { return hotbarProjected; }
+            get { return reticleObject; }
         }
 
-        /// <summary>The cached hotbar screen rectangle (IMGUI, top-left origin).</summary>
-        public Rect HotbarScreenRect
+        /// <summary>The hotbar strip object (background + slot children); created on the first refresh.</summary>
+        public GameObject HotbarObject
         {
-            get { return hotbarScreenRect; }
+            get { return hotbarObject; }
+        }
+
+        /// <summary>The reticle's renderer.</summary>
+        public MeshRenderer ReticleRenderer
+        {
+            get { return reticleRenderer; }
+        }
+
+        /// <summary>The hotbar background renderer.</summary>
+        public MeshRenderer HotbarBackground
+        {
+            get { return hotbarBackground; }
+        }
+
+        /// <summary>The number of hotbar slot renderers (equals <see cref="Hotbar.SlotCount"/>).</summary>
+        public int HotbarSlotCount
+        {
+            get { return hotbarSlots != null ? hotbarSlots.Length : 0; }
+        }
+
+        /// <summary>The shared quad mesh reused by every HUD renderer; null before the first refresh.</summary>
+        public UnityEngine.Mesh QuadMesh
+        {
+            get { return quadMesh; }
+        }
+
+        /// <summary>The shared unlit HUD material; null before the first refresh.</summary>
+        public Material HudMaterial
+        {
+            get { return material; }
+        }
+
+        /// <summary>
+        /// Whether both eye cameras saw the reticle on the last
+        /// <see cref="Refresh"/> (TD-012 stereo visibility).
+        /// </summary>
+        public bool ReticleVisible
+        {
+            get { return reticleVisible; }
+        }
+
+        /// <summary>
+        /// Whether both eye cameras saw the hotbar anchor on the last
+        /// <see cref="Refresh"/> (TD-012 stereo visibility).
+        /// </summary>
+        public bool HotbarVisible
+        {
+            get { return hotbarVisible; }
         }
 
         /// <summary>The cached selected slot, wrapped into the hotbar range.</summary>
@@ -166,16 +239,33 @@ namespace Cubeglass.Unity.Input
             get { return selectedSlot; }
         }
 
+        /// <summary>The renderer of <paramref name="slotIndex"/>, or null when out of range.</summary>
+        public MeshRenderer SlotRenderer(int slotIndex)
+        {
+            if (hotbarSlots == null || slotIndex < 0 || slotIndex >= hotbarSlots.Length)
+            {
+                return null;
+            }
+
+            return hotbarSlots[slotIndex];
+        }
+
+        /// <summary>Whether <paramref name="slotIndex"/> was the selected slot on the last refresh.</summary>
+        public bool IsSlotSelected(int slotIndex)
+        {
+            return slotIndex == selectedSlot;
+        }
+
         private void LateUpdate()
         {
             Refresh();
         }
 
         /// <summary>
-        /// Re-anchors on the current body pose and recomputes the selection and
-        /// projected hotbar rectangle. Runs after the gameplay Update, so the
-        /// anchor always reflects this frame's applied player root. Allocation-free
-        /// after the first call.
+        /// Re-anchors on the current body pose, updates the selection and the
+        /// world-space visuals, and records whether both eye cameras see them.
+        /// Runs after the gameplay Update, so the anchor always reflects this
+        /// frame's applied player root. Allocation-free after the first call.
         /// </summary>
         public void Refresh()
         {
@@ -192,18 +282,33 @@ namespace Cubeglass.Unity.Input
                 ? Hotbar.WrapIndex(sourceBridge.Player.HotbarIndex)
                 : 0;
 
-            hotbarProjected = false;
-            if (!visible || !hasAnchor)
+            hotbarVisible = false;
+            reticleVisible = false;
+            ResolveEyeCameras(out Camera left, out Camera right);
+            Camera gaze = left != null ? left : right;
+            if (!visible || !hasAnchor || gaze == null || left == null || right == null)
             {
+                SetVisualsActive(false);
                 return;
             }
 
-            hotbarProjected = TryProjectStrip(
-                ResolveCamera(),
-                anchorWorldPosition,
-                hotbarWidthMeters,
-                hotbarHeightMeters,
-                out hotbarScreenRect);
+            EnsureVisuals();
+            if (hotbarObject == null || reticleObject == null)
+            {
+                SetVisualsActive(false);
+                return;
+            }
+
+            SetVisualsActive(true);
+            UpdateSelectionColours();
+
+            Quaternion gazeRotation = gaze.transform.rotation;
+            hotbarObject.transform.SetPositionAndRotation(anchorWorldPosition, gazeRotation);
+            Vector3 reticlePosition = gaze.transform.position + (gaze.transform.forward * ReticleDistanceMeters);
+            reticleObject.transform.SetPositionAndRotation(reticlePosition, gazeRotation);
+
+            hotbarVisible = IsVisibleFrom(left, anchorWorldPosition) && IsVisibleFrom(right, anchorWorldPosition);
+            reticleVisible = IsVisibleFrom(left, reticlePosition) && IsVisibleFrom(right, reticlePosition);
         }
 
         /// <summary>
@@ -279,114 +384,177 @@ namespace Cubeglass.Unity.Input
         }
 
         /// <summary>
-        /// Projects a world point to the IMGUI (top-left origin) rectangle of
-        /// a strip <paramref name="widthMeters"/> by
-        /// <paramref name="heightMeters"/> centred on it. False when the point
-        /// is behind the camera or the projection degenerates.
+        /// Whether <paramref name="camera"/> sees <paramref name="worldPoint"/>:
+        /// in front of the near plane and inside its own viewport rectangle
+        /// (a half-width eye rect reports its own [0, 1] range).
         /// </summary>
-        public static bool TryProjectStrip(
-            Camera camera,
-            Vector3 worldPoint,
-            float widthMeters,
-            float heightMeters,
-            out Rect rect)
+        public static bool IsVisibleFrom(Camera camera, Vector3 worldPoint)
         {
-            rect = Rect.zero;
             if (camera == null)
             {
                 return false;
             }
 
-            Vector3 screen = camera.WorldToScreenPoint(worldPoint);
-            if (!(screen.z > 0f) || float.IsNaN(screen.z))
-            {
-                return false;
-            }
-
-            float pixelsPerMeter = ProjectedPixelsPerMeter(camera.fieldOfView, camera.pixelHeight, screen.z);
-            if (!(pixelsPerMeter > 0f))
-            {
-                return false;
-            }
-
-            float width = widthMeters * pixelsPerMeter;
-            float height = heightMeters * pixelsPerMeter;
-            rect = new Rect(
-                screen.x - (width * 0.5f),
-                (Screen.height - screen.y) - (height * 0.5f),
-                width,
-                height);
-            return true;
+            Vector3 viewport = camera.WorldToViewportPoint(worldPoint);
+            return viewport.z > 0f
+                && !float.IsNaN(viewport.x) && !float.IsNaN(viewport.y)
+                && viewport.x >= 0f && viewport.x <= 1f
+                && viewport.y >= 0f && viewport.y <= 1f;
         }
 
-        private void OnGUI()
+        /// <summary>
+        /// The generated unit quad (centred at the origin, normal -Z) shared by
+        /// every HUD renderer; reused, never rebuilt after the first call.
+        /// </summary>
+        public static UnityEngine.Mesh CreateQuadMesh(string name)
         {
-            if (!visible)
+            var mesh = new UnityEngine.Mesh();
+            mesh.name = name;
+            mesh.hideFlags = HideFlags.HideAndDontSave;
+            mesh.vertices = new[]
             {
-                return;
-            }
-
-            if (Event.current != null && Event.current.type != EventType.Repaint)
-            {
-                return;
-            }
-
-            EnsureBuffers();
-            DrawReticle();
-            DrawHotbar();
+                new Vector3(-0.5f, -0.5f, 0f),
+                new Vector3(0.5f, -0.5f, 0f),
+                new Vector3(0.5f, 0.5f, 0f),
+                new Vector3(-0.5f, 0.5f, 0f),
+            };
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            mesh.normals = new[] { Vector3.back, Vector3.back, Vector3.back, Vector3.back };
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
-        private void DrawReticle()
+        /// <summary>
+        /// The unlit HUD shader: <c>Sprites/Default</c> (always included, unlit,
+        /// alpha blend) with fallbacks for stripped player builds. Null only
+        /// when every candidate is missing.
+        /// </summary>
+        public static Shader FindHudShader()
         {
-            Camera camera = ResolveCamera();
-            if (camera == null)
-            {
-                return;
-            }
-
-            Vector3 point = camera.transform.position + (camera.transform.forward * ReticleDistanceMeters);
-            Vector3 screen = camera.WorldToScreenPoint(point);
-            if (!(screen.z > 0f) || float.IsNaN(screen.z))
-            {
-                return;
-            }
-
-            float half = reticleSizePixels * 0.5f;
-            var rect = new Rect(
-                screen.x - half,
-                (Screen.height - screen.y) - half,
-                reticleSizePixels,
-                reticleSizePixels);
-            GUI.Label(rect, reticleContent);
+            return Shader.Find("Sprites/Default")
+                ?? Shader.Find("Unlit/Color")
+                ?? Shader.Find("Unlit/Texture");
         }
 
-        private void DrawHotbar()
+        private void EnsureVisuals()
         {
-            if (!hotbarProjected)
+            if (quadMesh == null)
             {
-                return;
+                quadMesh = CreateQuadMesh("CubeglassWorldUiQuad");
             }
 
-            Color previous = GUI.color;
-            GUI.color = new Color(0f, 0f, 0f, 0.55f);
-            GUI.DrawTexture(hotbarScreenRect, quad);
+            if (material == null)
+            {
+                Shader shader = FindHudShader();
+                if (shader == null)
+                {
+                    Debug.LogError("WorldUi: no unlit HUD shader available; the HUD is hidden.", this);
+                    SetVisualsActive(false);
+                    return;
+                }
 
+                material = new Material(shader);
+                material.name = "CubeglassWorldUiMaterial";
+                material.hideFlags = HideFlags.HideAndDontSave;
+            }
+
+            if (reticleObject == null)
+            {
+                reticleObject = new GameObject(ReticleName);
+                reticleObject.hideFlags = HideFlags.HideAndDontSave;
+                reticleRenderer = AddQuad(reticleObject, reticleSizeMeters, reticleSizeMeters, BackgroundColor);
+            }
+
+            if (hotbarObject == null)
+            {
+                BuildHotbar();
+            }
+        }
+
+        private void BuildHotbar()
+        {
             int count = Hotbar.SlotCount;
+            hotbarObject = new GameObject(HotbarName);
+            hotbarObject.hideFlags = HideFlags.HideAndDontSave;
+
+            var backgroundObject = new GameObject("Background");
+            backgroundObject.hideFlags = HideFlags.HideAndDontSave;
+            backgroundObject.transform.SetParent(hotbarObject.transform, false);
+            hotbarBackground = AddQuad(backgroundObject, hotbarWidthMeters, hotbarHeightMeters, BackgroundColor);
+
+            hotbarSlots = new MeshRenderer[count];
+            slotProperties = new MaterialPropertyBlock[count];
+            slotColours = new Color[count];
+            var strip = new Rect(
+                -hotbarWidthMeters * 0.5f,
+                -hotbarHeightMeters * 0.5f,
+                hotbarWidthMeters,
+                hotbarHeightMeters);
             for (int slot = 0; slot < count; slot++)
             {
-                Rect slotRect = SlotRect(hotbarScreenRect, slot, count);
-                slotRect.x += 1f;
-                slotRect.y += 1f;
-                slotRect.width -= 2f;
-                slotRect.height -= 2f;
-                GUI.color = slot == selectedSlot
-                    ? new Color(1f, 0.85f, 0.2f, 0.85f)
-                    : new Color(0.15f, 0.15f, 0.15f, 0.75f);
-                GUI.DrawTexture(slotRect, quad);
-                GUI.Label(slotRect, slotContents[slot]);
+                Rect rect = SlotRect(strip, slot, count);
+                var slotObject = new GameObject("Slot" + (slot + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                slotObject.hideFlags = HideFlags.HideAndDontSave;
+                slotObject.transform.SetParent(hotbarObject.transform, false);
+                slotObject.transform.localPosition = new Vector3(rect.center.x, rect.center.y, 0f);
+                slotObject.transform.localScale = new Vector3(
+                    Mathf.Max(1e-4f, rect.width - SlotGapMeters),
+                    Mathf.Max(1e-4f, rect.height - SlotGapMeters),
+                    1f);
+                slotObject.AddComponent<MeshFilter>().sharedMesh = quadMesh;
+                hotbarSlots[slot] = slotObject.AddComponent<MeshRenderer>();
+                hotbarSlots[slot].sharedMaterial = material;
+                slotProperties[slot] = new MaterialPropertyBlock();
+                hotbarSlots[slot].SetPropertyBlock(slotProperties[slot]);
             }
 
-            GUI.color = previous;
+            UpdateSelectionColours();
+        }
+
+        private MeshRenderer AddQuad(GameObject owner, float width, float height, Color colour)
+        {
+            owner.transform.localScale = new Vector3(width, height, 1f);
+            owner.AddComponent<MeshFilter>().sharedMesh = quadMesh;
+            var renderer = owner.AddComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+            var properties = new MaterialPropertyBlock();
+            properties.SetColor(ColorId, colour);
+            renderer.SetPropertyBlock(properties);
+            return renderer;
+        }
+
+        private static readonly int ColorId = Shader.PropertyToID("_Color");
+
+        private void UpdateSelectionColours()
+        {
+            if (hotbarSlots == null)
+            {
+                return;
+            }
+
+            for (int slot = 0; slot < hotbarSlots.Length; slot++)
+            {
+                Color target = slot == selectedSlot ? SelectedSlotColor : SlotColor;
+                if (slotColours[slot] != target)
+                {
+                    slotColours[slot] = target;
+                    slotProperties[slot].SetColor(ColorId, target);
+                    hotbarSlots[slot].SetPropertyBlock(slotProperties[slot]);
+                }
+            }
+        }
+
+        private void SetVisualsActive(bool active)
+        {
+            if (reticleObject != null && reticleObject.activeSelf != active)
+            {
+                reticleObject.SetActive(active);
+            }
+
+            if (hotbarObject != null && hotbarObject.activeSelf != active)
+            {
+                hotbarObject.SetActive(active);
+            }
         }
 
         private Camera ResolveCamera()
@@ -411,6 +579,29 @@ namespace Cubeglass.Unity.Input
             }
 
             return anchorSource != null ? anchorSource.GetComponent<Camera>() : null;
+        }
+
+        private void ResolveEyeCameras(out Camera left, out Camera right)
+        {
+            Camera gaze = ResolveCamera();
+            StereoRig rig = bridge != null ? bridge.Rig : null;
+            if (rig == null && gaze != null)
+            {
+                rig = gaze.GetComponentInParent<StereoRig>();
+            }
+
+            if (rig != null && rig.LeftCamera != null && rig.RightCamera != null)
+            {
+                left = rig.LeftCamera;
+                right = rig.RightCamera;
+                return;
+            }
+
+            // No stereo rig (single-camera preview or a bare test): the one
+            // camera stands in for both eyes so the visibility contract still
+            // reports honestly instead of always-false.
+            left = gaze;
+            right = gaze;
         }
 
         private Transform ResolveAnchorSource(out float eyeHeightMeters)
@@ -440,39 +631,46 @@ namespace Cubeglass.Unity.Input
             return sourceBridge.Rig != null ? sourceBridge.Rig.transform : sourceBridge.transform;
         }
 
-        private void EnsureBuffers()
+        private void OnDestroy()
         {
-            if (reticleContent == null)
+            DestroyAsset(quadMesh);
+            quadMesh = null;
+
+            DestroyAsset(material);
+            material = null;
+
+            if (reticleObject != null)
             {
-                reticleContent = new GUIContent("+");
+                DestroyAsset(reticleObject);
+                reticleObject = null;
+                reticleRenderer = null;
             }
 
-            if (quad == null)
+            if (hotbarObject != null)
             {
-                quad = new Texture2D(1, 1, TextureFormat.RGBA32, false);
-                quad.name = "CubeglassWorldUiQuad";
-                quad.hideFlags = HideFlags.HideAndDontSave;
-                quad.SetPixel(0, 0, Color.white);
-                quad.Apply(false, true);
-            }
-
-            if (slotContents == null)
-            {
-                int count = Hotbar.SlotCount;
-                slotContents = new GUIContent[count];
-                for (int slot = 0; slot < count; slot++)
-                {
-                    slotContents[slot] = new GUIContent((slot + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
-                }
+                DestroyAsset(hotbarObject);
+                hotbarObject = null;
+                hotbarBackground = null;
+                hotbarSlots = null;
+                slotProperties = null;
+                slotColours = null;
             }
         }
 
-        private void OnDestroy()
+        private static void DestroyAsset(UnityEngine.Object target)
         {
-            if (quad != null)
+            if (target == null)
             {
-                Destroy(quad);
-                quad = null;
+                return;
+            }
+
+            if (Application.isPlaying)
+            {
+                Destroy(target);
+            }
+            else
+            {
+                DestroyImmediate(target);
             }
         }
     }

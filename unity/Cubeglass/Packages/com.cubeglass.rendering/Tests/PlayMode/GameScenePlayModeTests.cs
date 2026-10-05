@@ -197,28 +197,40 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         /// <summary>
-        /// The committed scene's hotbar anchor must be in front of and inside
-        /// the left eye camera: the old feet-anchored composition put it ≈31°
-        /// below the eye, outside the ≈13.1° half-vFOV and therefore off-screen.
-        /// Also pins the documented monocular SBS presentation: the HUD pass is
-        /// projected through the left camera only.
+        /// The committed scene's world-space hotbar anchor must be in front of
+        /// and inside <b>both</b> eye cameras (TD-012): the strip is real scene
+        /// geometry, not a left-eye-only IMGUI pass, and its world-locked drop
+        /// (TD-011) keeps it below the eye axis while the bottom edge stays
+        /// inside the per-eye frustum.
         /// </summary>
         [UnityTest]
-        public IEnumerator HotbarAnchorStaysInsideTheLeftEyeViewport()
+        public IEnumerator HotbarAnchorStaysInsideBothEyeViewports()
         {
             yield return LoadGameScene();
 
             hud.Refresh();
             Assert.AreSame(playerRoot.transform, hud.AnchorSource, "the HUD must have a resolved body anchor");
-            Assert.IsTrue(hud.HotbarProjected, "the hotbar must project in front of the camera");
+            Assert.IsNotNull(hud.HotbarObject, "the hotbar must be a world-space object (TD-012)");
+            Assert.IsNotNull(hud.ReticleObject, "the reticle must be a world-space object (TD-012)");
+            Assert.IsNotNull(hud.HudMaterial, "the world-space HUD must carry a material");
+            Assert.IsTrue(hud.HotbarVisible, "both eye cameras must see the hotbar anchor (TD-012)");
+            Assert.IsTrue(hud.ReticleVisible, "both eye cameras must see the gaze reticle (TD-012)");
+            Assert.AreEqual(Hotbar.SlotCount, hud.HotbarSlotCount, "every hotbar slot must be a quad");
 
             Camera left = rig.LeftCamera;
+            Camera right = rig.RightCamera;
             Assert.IsNotNull(left, "the left eye camera is the HUD projection camera");
+            Assert.IsNotNull(right, "the right eye camera must also see the HUD geometry");
             Vector3 centre = left.WorldToViewportPoint(hud.AnchorWorldPosition);
             Assert.Greater(centre.z, 0f, "the anchor must be in front of the left camera");
-            Assert.That(centre.x, Is.InRange(0f, 1f), "the anchor must be inside the horizontal viewport");
-            Assert.That(centre.y, Is.InRange(0f, 1f), "the anchor must be inside the vertical viewport");
+            Assert.That(centre.x, Is.InRange(0f, 1f), "the anchor must be inside the left horizontal viewport");
+            Assert.That(centre.y, Is.InRange(0f, 1f), "the anchor must be inside the left vertical viewport");
             Assert.Less(centre.y, 0.5f, "the world-locked drop must place the strip below the eye axis");
+
+            Vector3 rightCentre = right.WorldToViewportPoint(hud.AnchorWorldPosition);
+            Assert.Greater(rightCentre.z, 0f, "the anchor must be in front of the right camera");
+            Assert.That(rightCentre.x, Is.InRange(0f, 1f), "the anchor must be inside the right horizontal viewport");
+            Assert.That(rightCentre.y, Is.InRange(0f, 1f), "the anchor must be inside the right vertical viewport");
 
             Vector3 bottomEdge = hud.AnchorWorldPosition
                 - (Vector3.up * (0.5f * WorldUi.DefaultHotbarHeightMeters));
@@ -334,7 +346,7 @@ namespace Cubeglass.Unity.Rendering.Tests
             }
 
             Assert.AreEqual(BlockId.Air, world.Get(breakCell), "holding past the hardness must break the block");
-            Assert.IsTrue(bridge.SaveRequested, "an applied edit must request a save");
+            Assert.GreaterOrEqual(runtime.Views.PreciseEdits, 1L, "the applied edit must reach the precise remesh path (TD-017)");
             Assert.GreaterOrEqual(saves.TrackedEdits, 1L, "the break must be tracked for persistence");
             Assert.GreaterOrEqual(saves.PendingChunks, 1);
             Assert.AreEqual(1, bridge.EditsApplied);
@@ -411,10 +423,20 @@ namespace Cubeglass.Unity.Rendering.Tests
             reloadManager.Initialize(new StreamingConfig(), WorldSeed, 16);
             reloadManager.OnLoad(editedChunk);
 
+            // The stored delta loads on the store's pump (TD-060 M-3);
+            // generation does not block and the delta is applied when the
+            // background read completes.
+            for (int frame = 0; frame < 240 && reloadManager.DeltasLoaded == 0; frame++)
+            {
+                reloadManager.ProcessDeltaLoads();
+                yield return null;
+            }
+
             World reloaded = reloadManager.World;
             Assert.IsNotNull(reloaded, "the reload manager must expose its world");
             Assert.AreEqual(1, reloadManager.DeltasLoaded, "the stored delta must load");
             Assert.AreEqual(2, reloadManager.DeltaEditsApplied, "both edits must be applied over the baseline");
+            Assert.AreEqual(0, reloadManager.LiveEditsReapplied, "no merged map exists in a fresh manager");
             Assert.AreEqual(BlockId.Air, reloaded.Get(breakCell), "the break must persist");
             Assert.AreEqual(expectedPlace, reloaded.Get(placedCell), "the placement must persist");
         }

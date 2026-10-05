@@ -64,7 +64,7 @@ namespace Cubeglass.Unity.Rendering
         }
 
         /// <summary>
-        /// Formats a pose-source bucket: 1 is the bridge, 0 is unknown/source
+        /// Formats the pose-source bucket: 1 is the bridge, 0 is unknown/source
         /// absent, and <c>2 + (int)PoseFallbackReason</c> is the active
         /// synthetic fallback reason (I-1), so a silent fallback is visible.
         /// </summary>
@@ -81,6 +81,39 @@ namespace Cubeglass.Unity.Rendering
             }
 
             return "pose synthetic (" + ((PoseFallbackReason)(bucket - 2)).ToString() + ")";
+        }
+
+        /// <summary>
+        /// Formats the native-plugin bucket (TD-023): -1 no selector, 0 the
+        /// plugin is available, 1 the selector reported
+        /// <see cref="PoseProviderSelector.PluginUnavailable"/>; the reason for
+        /// the fallback itself is in the pose-source row and TD-057's honest
+        /// tracking state in the track row.
+        /// </summary>
+        public static string PluginState(int bucket)
+        {
+            if (bucket < 0)
+            {
+                return "plugin -";
+            }
+
+            return bucket == 1 ? "plugin unavailable" : "plugin ok";
+        }
+
+        /// <summary>Formats the effective applied-edit count bucket (TD-018); negative means "no runtime".</summary>
+        public static string EditCount(int bucket)
+        {
+            return bucket < 0
+                ? "edits -"
+                : "edits " + bucket.ToString(CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>Formats the replay cells skipped as already applied (TD-018); negative means "no runtime".</summary>
+        public static string SkippedEdits(int bucket)
+        {
+            return bucket < 0
+                ? "skip -"
+                : "skip " + bucket.ToString(CultureInfo.InvariantCulture);
         }
     }
 
@@ -167,21 +200,36 @@ namespace Cubeglass.Unity.Rendering
     /// (0 renders as "-").
     /// </remarks>
     [DisallowMultipleComponent]
-    public sealed class DebugOverlay : MonoBehaviour
+    public class DebugOverlay : MonoBehaviour
     {
         private const float Smoothing = 0.1f;
         private const float RateSmoothing = 0.2f;
-        private const int RowCount = 6;
+
+        /// <summary>Number of text rows the panel draws.</summary>
+        public const int RowCount = 9;
+
         private const float PanelX = 8f;
         private const float PanelY = 8f;
         private const float PanelWidth = 240f;
         private const float RowHeight = 18f;
+
+        /// <summary>
+        /// The panel rectangle (top-left IMGUI coordinates), exposed for layout
+        /// tests (TD-020).
+        /// </summary>
+        public static Rect PanelRect
+        {
+            get { return new Rect(PanelX, PanelY, PanelWidth, RowHeight * (RowCount + 1)); }
+        }
 
         private static readonly OverlayText.Formatter FrameTimeFormatter = OverlayFormat.FrameTimeTenths;
         private static readonly OverlayText.Formatter PoseRateFormatter = OverlayFormat.PoseRateHz;
         private static readonly OverlayText.Formatter PoseAgeFormatter = OverlayFormat.PoseAgeMs;
         private static readonly OverlayText.Formatter TrackingFormatter = OverlayFormat.TrackingState;
         private static readonly OverlayText.Formatter PoseSourceFormatter = OverlayFormat.PoseSource;
+        private static readonly OverlayText.Formatter PluginFormatter = OverlayFormat.PluginState;
+        private static readonly OverlayText.Formatter EditCountFormatter = OverlayFormat.EditCount;
+        private static readonly OverlayText.Formatter SkippedEditsFormatter = OverlayFormat.SkippedEdits;
         private static readonly OverlayText.Formatter CommandAckFormatter = OverlayFormat.CommandAck;
 
         [SerializeField] private bool visible = true;
@@ -192,6 +240,9 @@ namespace Cubeglass.Unity.Rendering
         private OverlayText poseAge;
         private OverlayText tracking;
         private OverlayText poseSource;
+        private OverlayText plugin;
+        private OverlayText edits;
+        private OverlayText skipped;
         private OverlayText commandAck;
 
         private float smoothedFrameMs;
@@ -226,6 +277,13 @@ namespace Cubeglass.Unity.Rendering
         /// </summary>
         public PoseProviderSelector PoseSource { get; set; }
 
+        /// <summary>
+        /// The streaming runtime whose effective edit counters are shown; resolved
+        /// at <c>Awake</c> from the scene or assigned explicitly (TD-018).
+        /// Null keeps the rows at "-".
+        /// </summary>
+        public StreamingRuntime Streaming { get; set; }
+
         private void Awake()
         {
             EnsureRows();
@@ -237,6 +295,11 @@ namespace Cubeglass.Unity.Rendering
             if (PoseSource == null)
             {
                 PoseSource = FindFirstObjectByType<PoseProviderSelector>(FindObjectsInactive.Include);
+            }
+
+            if (Streaming == null)
+            {
+                Streaming = FindFirstObjectByType<StreamingRuntime>(FindObjectsInactive.Include);
             }
         }
 
@@ -252,6 +315,9 @@ namespace Cubeglass.Unity.Rendering
             poseAge = new OverlayText(PoseAgeFormatter);
             tracking = new OverlayText(TrackingFormatter);
             poseSource = new OverlayText(PoseSourceFormatter);
+            plugin = new OverlayText(PluginFormatter);
+            edits = new OverlayText(EditCountFormatter);
+            skipped = new OverlayText(SkippedEditsFormatter);
             commandAck = new OverlayText(CommandAckFormatter);
         }
 
@@ -319,6 +385,37 @@ namespace Cubeglass.Unity.Rendering
 
             commandAck.Set(CommandAck == 0 ? -1 : (int)Math.Min(CommandAck, (uint)int.MaxValue));
             poseSource.Set(DescribePoseSource());
+            plugin.Set(DescribePluginState());
+
+            StreamingRuntime streaming = Streaming;
+            ChunkViewManager views = streaming != null ? streaming.Views : null;
+            if (views != null)
+            {
+                long applied = views.DeltaEditsApplied + views.LiveEditsReapplied;
+                edits.Set(applied > int.MaxValue ? int.MaxValue : (int)applied);
+                long skippedCells = views.EditsSkippedAlreadyApplied;
+                skipped.Set(skippedCells > int.MaxValue ? int.MaxValue : (int)skippedCells);
+            }
+            else
+            {
+                edits.Set(-1);
+                skipped.Set(-1);
+            }
+        }
+
+        /// <summary>
+        /// Maps the selector's plugin flag to the plugin bucket (TD-023): 0 ok,
+        /// 1 unavailable, -1 when no selector is known.
+        /// </summary>
+        private int DescribePluginState()
+        {
+            PoseProviderSelector selector = PoseSource;
+            if (selector == null)
+            {
+                return -1;
+            }
+
+            return selector.PluginUnavailable ? 1 : 0;
         }
 
         /// <summary>
@@ -339,7 +436,7 @@ namespace Cubeglass.Unity.Rendering
 
         private void DrawPanel()
         {
-            GUI.Box(new Rect(PanelX, PanelY, PanelWidth, RowHeight * (RowCount + 1)), GUIContent.none);
+            PaintBox(PanelRect);
 
             float y = PanelY + (RowHeight * 0.5f);
             DrawRow(y, frameTime);
@@ -352,12 +449,35 @@ namespace Cubeglass.Unity.Rendering
             y += RowHeight;
             DrawRow(y, poseSource);
             y += RowHeight;
+            DrawRow(y, plugin);
+            y += RowHeight;
+            DrawRow(y, edits);
+            y += RowHeight;
+            DrawRow(y, skipped);
+            y += RowHeight;
             DrawRow(y, commandAck);
         }
 
-        private static void DrawRow(float y, OverlayText row)
+        /// <summary>
+        /// Paints the panel background. Virtual so the headless IMGUI paint
+        /// tests can substitute a recording surface (TD-020): <c>GUI.Box</c>
+        /// refuses to run outside a real OnGUI callback, which a batch-mode
+        /// test cannot provide.
+        /// </summary>
+        protected virtual void PaintBox(Rect rect)
         {
-            GUI.Label(new Rect(PanelX + 6f, y, PanelWidth - 12f, RowHeight - 2f), row.Content);
+            GUI.Box(rect, GUIContent.none);
+        }
+
+        private void DrawRow(float y, OverlayText row)
+        {
+            PaintLabel(new Rect(PanelX + 6f, y, PanelWidth - 12f, RowHeight - 2f), row.Content);
+        }
+
+        /// <summary>Paints one row label; the TD-020 headless seam counterpart of <see cref="PaintBox"/>.</summary>
+        protected virtual void PaintLabel(Rect rect, GUIContent content)
+        {
+            GUI.Label(rect, content);
         }
 
         private static long NowNanoseconds()
