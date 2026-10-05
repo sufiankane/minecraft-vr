@@ -31,11 +31,12 @@
     {
       "name": "windows-analyze",
       "displayName": "Windows MSVC x64 static analysis (Ninja)",
-      "description": "TD-030: configures the native module targets with /analyze /analyze:external- (CG_ENABLE_ANALYZE=ON). The cpp-windows job builds cg_core_math, cg_glasses, cg_bridge and cg_bridge_test_support only, so cpp/tests and cpp/tools stay outside the static-analysis scope.",
+      "description": "TD-030: configures the native module targets with /analyze /analyze:external- (CG_ENABLE_ANALYZE=ON). The cpp-windows job builds cg_core_math, cg_glasses, cg_bridge and cg_bridge_test_support only, so cpp/tests and cpp/tools stay outside the static-analysis scope. It reuses the windows-msvc vcpkg install tree (same Debug triplet) instead of installing the manifest a third time.",
       "inherits": "windows-msvc",
       "binaryDir": "${sourceDir}/build/windows-analyze",
       "cacheVariables": {
-        "CG_ENABLE_ANALYZE": "ON"
+        "CG_ENABLE_ANALYZE": "ON",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/windows-msvc/vcpkg_installed"
       }
     },
     {
