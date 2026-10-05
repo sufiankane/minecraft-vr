@@ -108,8 +108,33 @@ namespace Cubeglass.Unity.Input
             set { playerRoot = value; }
         }
 
+        /// <summary>
+        /// The shipped <c>config.json</c> values loaded at start (TD-014), or
+        /// null when no file was found. <see cref="StereoRig"/> and
+        /// <see cref="StreamingRuntime"/> apply the same file in their own
+        /// <c>Awake</c>; boot re-reads it once so the loaded source and values
+        /// are observable/diagnosable in one place.
+        /// </summary>
+        public GameConfigValues LoadedConfig { get; private set; }
+
+        /// <summary>The resolved <c>config.json</c> path, or null when absent (TD-014).</summary>
+        public string ConfigSourcePath { get; private set; }
+
         private void Start()
         {
+            GameConfigValues configValues;
+            string configSource;
+            string configError;
+            if (GameConfigFile.TryLoadDefault(out configValues, out configSource, out configError))
+            {
+                LoadedConfig = configValues;
+                ConfigSourcePath = configSource;
+            }
+            else if (!string.IsNullOrEmpty(configError))
+            {
+                Debug.LogWarning("[GameBoot] config.json was not applied: " + configError);
+            }
+
             string name = string.IsNullOrEmpty(WorldNameOverride) ? worldName : WorldNameOverride;
             store = RootDirectoryOverride != null
                 ? new FileWorldStore(name, RootDirectoryOverride)

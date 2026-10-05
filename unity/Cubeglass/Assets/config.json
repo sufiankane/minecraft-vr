@@ -1,0 +1,13 @@
+{
+  "viewDistanceChunks": 8,
+  "unloadHysteresis": 2,
+  "maxLoadsPerFrame": 4,
+  "maxUnloadsPerFrame": 4,
+  "maxMeshUploadsPerFrame": 4,
+  "verticalRadiusChunks": 2.0,
+  "ipdMeters": 0.064,
+  "fovDegrees": 45.0,
+  "near": 0.05,
+  "far": 500.0,
+  "targetRefresh": 90
+}

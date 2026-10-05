@@ -220,6 +220,11 @@ namespace Cubeglass.Unity.Rendering
                 return;
             }
 
+            // TD-014: the shipped config.json overrides the serialized tuning
+            // key by key (ADR-0011 addendum) before the scheduler is built; a
+            // missing or invalid file leaves the inspector values untouched.
+            ApplyShippedConfig();
+
             config = new StreamingConfig
             {
                 ViewDistanceChunks = viewDistanceChunks,
@@ -232,6 +237,89 @@ namespace Cubeglass.Unity.Rendering
 
             player = player != null ? player : transform;
             Build();
+        }
+
+        /// <summary>
+        /// The resolved <c>config.json</c> path applied on initialization, or
+        /// null when no file was found (TD-014).
+        /// </summary>
+        public string ConfigSourcePath { get; private set; }
+
+        /// <summary>
+        /// Loads <paramref name="path"/> and applies its streaming keys to the
+        /// serialized tuning; returns false (no changes) when the file is
+        /// missing or invalid. Call before <see cref="Configure"/> or before
+        /// the first <see cref="Awake"/>-driven build.
+        /// </summary>
+        public bool ApplyConfigFile(string path)
+        {
+            if (!GameConfigFile.TryLoad(path, out GameConfigValues values, out string error))
+            {
+                if (!string.IsNullOrEmpty(error))
+                {
+                    Debug.LogWarning("[StreamingRuntime] config.json was not applied: " + error);
+                }
+
+                return false;
+            }
+
+            ApplyConfigValues(values);
+            ConfigSourcePath = path;
+            return true;
+        }
+
+        private void ApplyShippedConfig()
+        {
+            GameConfigValues values;
+            string source;
+            string error;
+            if (GameConfigFile.TryLoadDefault(out values, out source, out error))
+            {
+                ApplyConfigValues(values);
+                ConfigSourcePath = source;
+            }
+            else if (!string.IsNullOrEmpty(error))
+            {
+                Debug.LogWarning("[StreamingRuntime] config.json was not applied: " + error);
+            }
+        }
+
+        private void ApplyConfigValues(GameConfigValues values)
+        {
+            if (values == null)
+            {
+                return;
+            }
+
+            if (values.ViewDistanceChunks.HasValue)
+            {
+                viewDistanceChunks = values.ViewDistanceChunks.Value;
+            }
+
+            if (values.UnloadHysteresis.HasValue)
+            {
+                unloadHysteresis = values.UnloadHysteresis.Value;
+            }
+
+            if (values.MaxLoadsPerFrame.HasValue)
+            {
+                maxLoadsPerFrame = values.MaxLoadsPerFrame.Value;
+            }
+
+            if (values.MaxUnloadsPerFrame.HasValue)
+            {
+                maxUnloadsPerFrame = values.MaxUnloadsPerFrame.Value;
+            }
+
+            if (values.MaxMeshUploadsPerFrame.HasValue)
+            {
+                maxMeshUploadsPerFrame = values.MaxMeshUploadsPerFrame.Value;
+            }
+
+            if (values.VerticalRadiusChunks.HasValue)
+            {
+                verticalRadiusChunks = values.VerticalRadiusChunks.Value;
+            }
         }
 
         private void Build()

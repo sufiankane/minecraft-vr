@@ -53,12 +53,60 @@ namespace Cubeglass.Unity.Rendering
 
         private void Awake()
         {
+            // TD-014: the shipped config.json keys override the serialized
+            // inspector values key by key (ADR-0011 addendum), then the repaired
+            // values are validated as before.
+            GameConfigValues loaded;
+            string source;
+            string error;
+            if (GameConfigFile.TryLoadDefault(out loaded, out source, out error))
+            {
+                GameConfigFile.ApplyTo(loaded, Config);
+                ConfigSourcePath = source;
+            }
+            else if (!string.IsNullOrEmpty(error))
+            {
+                Debug.LogWarning("[StereoRig] config.json was not applied: " + error);
+            }
+
             // A deserialized scene can carry out-of-range or non-finite values
             // (Unity writes serialized fields directly); repair them once
             // before the first layout so the committed defaults are restored
             // and the warning is logged at boot (reviews I-3, R-1).
             Config.Validate();
             ApplyEyeLayout();
+        }
+
+        /// <summary>
+        /// The resolved <c>config.json</c> path applied in <see cref="Awake"/>,
+        /// or null when no file was found (TD-014).
+        /// </summary>
+        public string ConfigSourcePath { get; private set; }
+
+        /// <summary>
+        /// Loads and applies a config file to <see cref="Config"/> and
+        /// re-applies the eye layout; used by tests and by tooling with an
+        /// explicit path. Returns false (and leaves the config unchanged) when
+        /// the file is missing or invalid.
+        /// </summary>
+        public bool LoadConfigFile(string path)
+        {
+            GameConfigValues loaded;
+            if (!GameConfigFile.TryLoad(path, out loaded, out string error))
+            {
+                if (!string.IsNullOrEmpty(error))
+                {
+                    Debug.LogWarning("[StereoRig] config.json was not applied: " + error);
+                }
+
+                return false;
+            }
+
+            GameConfigFile.ApplyTo(loaded, Config);
+            ConfigSourcePath = path;
+            Config.Validate();
+            ApplyEyeLayout();
+            return true;
         }
 
         private void OnValidate()
