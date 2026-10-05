@@ -146,3 +146,38 @@ def test_default_command_still_checks_dependency_rules(
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out == ""
+
+
+def test_unreferenced_allowlist_entry_is_reported_but_does_not_fail(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    write_manifest_root(root, '{"gtest": "BSD-3-Clause", "nlohmann-json": "MIT"}')
+    code, lines = run_cli(root, capsys)
+    assert code == 0
+    assert lines == [
+        (
+            'warning: contracts/licence-allowlist.json: package "nlohmann-json" is allowlisted '
+            "but no manifest declares it; remove it or record why it is kept"
+        )
+    ]
+
+
+def test_reference_report_is_quiet_on_a_fully_referenced_allowlist(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    write_manifest_root(root, '{"gtest": "BSD-3-Clause"}')
+    code, lines = run_cli(root, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_declared_package_with_an_unknown_spdx_id_fails_even_when_referenced(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "root"
+    write_manifest_root(root, '{"gtest": "BSD"}')
+    code, lines = run_cli(root, capsys)
+    assert code == 1
+    assert any("unknown SPDX licence id" in line and "gtest" in line for line in lines)

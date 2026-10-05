@@ -100,15 +100,26 @@ def test_test_only_path_does_not_match_a_production_module(tmp_path: Path) -> No
     assert result.meets_floor is False
 
 
-def test_dotnet_package_without_coverable_lines_passes() -> None:
+def test_dotnet_package_without_coverable_lines_fails_by_default() -> None:
     result = check_coverage(DOTNET_PACKAGE, "Cubeglass.CoreMath", 90)
+    assert result.matched_units >= 1
+    assert result.total_lines == 0
+    assert result.meets_floor is False
+    summary = result.summary()
+    assert "FAIL" in summary
+    assert "0 coverable lines" in summary
+    assert "--allow-empty" in summary
+
+
+def test_dotnet_package_without_coverable_lines_passes_with_allow_empty() -> None:
+    result = check_coverage(DOTNET_PACKAGE, "Cubeglass.CoreMath", 90, allow_empty=True)
     assert result.matched_units >= 1
     assert result.total_lines == 0
     assert result.meets_floor is True
     summary = result.summary()
     assert summary.startswith("WARNING:")
     assert "0 coverable lines" in summary
-    assert "floor not enforced" in summary
+    assert "allowed by --allow-empty" in summary
 
 
 def test_dotnet_class_matches_assembly_qualified_module() -> None:
@@ -138,17 +149,78 @@ def test_malformed_report_raises_coverage_error(tmp_path: Path) -> None:
         check_coverage(broken, "core-math", 90)
 
 
-def test_cli_matched_but_empty_module_warns_and_exits_zero(
+def test_cli_matched_but_empty_module_fails_by_default(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     code = main(
         ["coverage", "--report", str(DOTNET_PACKAGE), "--module", "Cubeglass.CoreMath", "--floor", "90"]
     )
     captured = capsys.readouterr()
+    assert code == 1
+    assert "FAIL" in captured.out
+    assert "0 coverable lines" in captured.out
+
+
+def test_cli_matched_but_empty_module_passes_with_allow_empty(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code = main(
+        [
+            "coverage",
+            "--report",
+            str(DOTNET_PACKAGE),
+            "--module",
+            "Cubeglass.CoreMath",
+            "--floor",
+            "90",
+            "--allow-empty",
+        ]
+    )
+    captured = capsys.readouterr()
     assert code == 0
     assert "WARNING" in captured.out
     assert "0 coverable lines" in captured.out
-    assert "floor not enforced" in captured.out
+
+
+def test_directory_report_selects_the_only_cobertura_file(tmp_path: Path) -> None:
+    results = tmp_path / "coverage" / "coremath"
+    results.mkdir(parents=True)
+    (results / "coverage.cobertura.xml").write_text(
+        ABOVE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    result = check_coverage(results, "core-math", 90)
+    assert result.meets_floor is True
+    assert result.covered_lines == 5
+
+
+def test_directory_without_a_report_is_an_error(tmp_path: Path) -> None:
+    results = tmp_path / "coverage" / "coremath"
+    results.mkdir(parents=True)
+    with pytest.raises(CoverageError, match="no coverage report"):
+        check_coverage(results, "core-math", 90)
+
+
+def test_directory_with_several_reports_is_ambiguous(tmp_path: Path) -> None:
+    results = tmp_path / "coverage"
+    (results / "first").mkdir(parents=True)
+    (results / "second").mkdir(parents=True)
+    (results / "first" / "coverage.cobertura.xml").write_text(
+        ABOVE.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (results / "second" / "coverage.cobertura.xml").write_text(
+        BELOW.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    with pytest.raises(CoverageError, match="ambiguous"):
+        check_coverage(results, "core-math", 90)
+
+
+def test_cli_directory_with_no_report_exits_one(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    results = tmp_path / "coverage"
+    results.mkdir()
+    code = main(["coverage", "--report", str(results), "--module", "core-math", "--floor", "90"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "no coverage report" in captured.out
 
 
 def test_cli_above_floor_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:

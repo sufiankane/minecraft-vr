@@ -37,11 +37,18 @@ object (``{"deferred": {"cpp": [...], "dotnet": [...]}}``), which also keeps the
 tree green before the module exists.
 
 A .NET project may declare ``allowNamespaces`` alongside
-``forbidNamespaces``: a namespace that matches an allowed entry (exact, or
-``entry + "."`` prefix, the same matching rule as the forbid list) is not a
-violation even when a forbid entry also matches. The allow list is the only way
-to carve an exception out of a forbidden namespace, and it is deliberately
-per-project.
+``forbidNamespaces``: a namespace that matches an allowed entry is not a
+violation even when a forbid entry also matches. Two entry forms exist:
+
+- a bare entry (``System.Threading.Tasks``) keeps the subtree allowed: it
+  matches the entry itself and every ``entry + "."`` child, the same matching
+  rule as the forbid list;
+- an ``exact:`` entry (``exact:System.Threading.CancellationToken``) matches
+  only that type or namespace, so a sibling such as
+  ``System.Threading.CancellationTokenSource`` stays forbidden.
+
+The allow list is the only way to carve an exception out of a forbidden
+namespace, and it is deliberately per-project.
 """
 
 from __future__ import annotations
@@ -77,6 +84,10 @@ _PROJECT_REFERENCE_RE = re.compile(r"<ProjectReference\b[^>]*?\bInclude\s*=\s*\"
 # A dotted identifier in code, matched after comments are removed and literal
 # contents are blanked, so `System.IO.File` counts but `"System.IO.File"` does not.
 _QUALIFIED_NAME_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)")
+
+# ``exact:`` allow entries match only the named type/namespace; bare entries keep
+# the substring prefix rule (TD-050).
+_EXACT_ALLOW_PREFIX = "exact:"
 
 
 @dataclass(frozen=True)
@@ -191,7 +202,20 @@ def _check_cpp_file(root: Path, path: Path, forbid_includes: tuple[str, ...]) ->
 
 
 def _namespace_matches(namespace: str, entries: tuple[str, ...]) -> bool:
-    return any(namespace == entry or namespace.startswith(f"{entry}.") for entry in entries)
+    """Match a namespace/type against a rule entry list.
+
+    Bare entries keep prefix semantics (the entry itself or a ``entry.`` child);
+    ``exact:`` entries accept only the exact name, which is how a single type is
+    admitted from a forbidden parent namespace without admitting its siblings.
+    """
+
+    for entry in entries:
+        if entry.startswith(_EXACT_ALLOW_PREFIX):
+            if namespace == entry[len(_EXACT_ALLOW_PREFIX) :]:
+                return True
+        elif namespace == entry or namespace.startswith(f"{entry}."):
+            return True
+    return False
 
 
 def _check_cs_file(

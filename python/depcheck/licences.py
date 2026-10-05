@@ -183,6 +183,32 @@ def _invalid_allowlist_ids(root: Path) -> list[str]:
     return violations
 
 
+def licence_report(root: Path) -> list[str]:
+    """Return report-only licence hygiene warnings (never gate failures).
+
+    An allowlist entry that no manifest declares is dead weight: it hides which
+    packages are actually shipped and drifts as dependencies are removed. The
+    warning names the entry; removing it stays an owner decision because a
+    dormant platform dependency may be deliberately pre-recorded (TD-065).
+    """
+
+    resolved = root.resolve()
+    vcpkg_manifest = resolved.joinpath(*VCPKG_MANIFEST)
+    dotnet_manifest = resolved.joinpath(*DOTNET_PACKAGES)
+    if not vcpkg_manifest.is_file() or not dotnet_manifest.is_file():
+        return []
+    declared = set(
+        _declared_vcpkg_packages(vcpkg_manifest) + _declared_dotnet_packages(dotnet_manifest)
+    )
+    warnings: list[str] = []
+    for package in sorted(_allowlisted_packages(resolved) - declared):
+        warnings.append(
+            f'{_ALLOWLIST_REL}: package "{package}" is allowlisted but no manifest declares it; '
+            f"remove it or record why it is kept"
+        )
+    return warnings
+
+
 def check_licences(root: Path) -> list[str]:
     """Return every licence-gate failure under ``root``.
 

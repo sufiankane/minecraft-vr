@@ -586,7 +586,7 @@ graph LR
   CL --> TSAN["linux-tsan ctest, concurrency tests"]
   CL --> COV["linux-coverage + core-math floor 95"]
 
-  CW --> CW1["MSVC build + ctest + clang-format + clang-tidy core-math"]
+  CW --> CW1["MSVC build + ctest + clang-format + clang-tidy native modules"]
   DN --> DN1["build + 5 test projects + coverage floors 95/90"]
   PY --> PY1["ruff + mypy + pytest + calib/depcheck floors 90"]
   DC --> DC1["dependency rules + contracts fingerprint"]
@@ -612,7 +612,7 @@ Branch protection requires exactly these six contexts (`docs/ci.md`,
 
 | Check | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build with warnings as errors, `ctest --preset ci` (5 tests), `clang-format --dry-run --Werror` over all `cpp/**` sources/headers (60 files), `clang-tidy` over `cpp/core-math/src` only (TD-029) |
+| `cpp-windows` | `windows-latest` | MSVC build with warnings as errors, `ctest --preset ci` (5 tests), `clang-format --dry-run --Werror` over all `cpp/**` sources/headers (60 files), `clang-tidy` over `cpp/core-math/src`, `cpp/glasses/src` and `cpp/bridge/src` (TD-029) |
 | `cpp-linux-asan` | `ubuntu-latest` | `linux-asan` ctest (ASan/UBSan), the **`linux-tsan` preset and concurrency tests inside this job** (R33: no seventh check), `linux-coverage` ctest + gcovr + `core-math` coverage floor 95 |
 | `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, five test projects with XPlat coverage, floors: CoreMath 95, Voxel/Mesh/Gameplay/Streaming 90 |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy calib depcheck`, `pytest` with coverage floors calib 90 and depcheck 90 |
@@ -633,13 +633,15 @@ the single source of truth in `docs/toolchains.md`.
 - `bench-dotnet`: three BenchmarkDotNet projects plus the ADR-0007 mesh p95
   harness with `--budget-ms 8` (the shared-runner CI budget; the release/local
   budget stays 2.0 ms per full 16^3 chunk, ADR-0007).
-- `bench-compare`: `depcheck benchregress` against
-  `docs/perf/nightly-baseline.json`, failing on a >10 percent regression. The
-  baseline file is **not committed yet**, so the gate currently passes with a
-  "baseline established" capture (TD-033).
-- `supply-chain`: NuGet `--vulnerable --include-transitive` and `pip-audit`.
-- `mutation`: Stryker.NET against `Cubeglass.Voxel`, break threshold 70
-  (Gameplay mutation is deferred, TD-031).
+- `bench-compare`: `depcheck benchregress` against the median of the last five
+  nightly summaries, held in the `nightly-bench-history-*` actions cache
+  (self-seeding; no committed baseline, TD-033/TD-054), failing on a >10 percent
+  regression and naming the benchmark (TD-034).
+- `supply-chain`: machine-readable NuGet `--vulnerable
+  --include-transitive --format json` (parsed by `depcheck nuget`), pinned
+  OSV-Scanner over the Python requirement files, and `pip-audit`.
+- `mutation`: Stryker.NET against `Cubeglass.Voxel`, break threshold 70, plus
+  the `mutation-gameplay` lane for `Cubeglass.Gameplay` (TD-031).
 - `soak`: 30-minute `glasses_soak` at 500 Hz, RSS growth budget 1 MiB, log
   uploaded with `if: always()`.
 
@@ -753,10 +755,8 @@ TD-004 test-only writer in the production bridge DLL; TD-007 soak is a leak
 gate only; TD-012 monocular left-eye HUD with no stereo depth; TD-013 Input
 System mapping never landed; TD-014 `config.json` never loaded at runtime;
 TD-020 IMGUI paint paths have no automated coverage; TD-021 failed world-store
-writes are not retried; TD-029 clang-tidy covers only `cpp/core-math/src`;
-TD-033 nightly regression baseline not committed; TD-038 no release-artefact
-checksums; TD-046 branch protection bypassed for two CI-only PRs while hosted
-checks were blocked; TD-047 self-hosted runner is session-scoped.
+writes are not retried; TD-046 branch protection bypassed for two CI-only PRs
+while hosted checks were blocked; TD-047 self-hosted runner is session-scoped.
 
 ### 9.3 Architecture-level limitations
 

@@ -41,15 +41,31 @@ Invoke-WebRequest -UseBasicParsing -Uri 'https://public-cdn.cloud.unity3d.com/hu
 Verify with `unity --version`; the editor itself is the separately pinned
 "Unity editor" row above.
 
+The release workflow enforces both Unity CLI pins: the hosted route downloads
+the installer script and verifies its **SHA-256**
+(`b7f8003180c35d5fd5300c919bf4855359f39d87e9ced1091a71b2e960be8861`, TD-040)
+before executing it — set the `CG_UNITY_CLI_SHA256_OVERRIDE` repository variable
+after reviewing a newer script — and the self-hosted route asserts
+`unity --version` matches `1.0.0-beta.11` before any build.
+
+`cpp-windows` installs `clang-format`/`clang-tidy` **23.1.2** from the official
+`llvmorg-23.1.2` Windows tarball, verifying its SHA-256 (recorded with the URL
+in `.github/workflows/ci.yml`) and caching the extracted tools;
+`cpp-linux-asan` installs `clang-format-23`/`clang-tidy-23` **23.1.2** from
+apt.llvm.org at the exact package version (also recorded in the workflow). Both
+lanes assert the installed tools are exactly 23.1.2 (TD-037);
+`expect-red-format` installs the same version from the hash-pinned
+`python/requirements-ci.txt`.
+
 ## Format and lint scope
 
 `clang-format` covers every `cpp/**/*.{cpp,hpp,h,hh,cc,cxx}` file in the
 required `cpp-windows` job; `contracts/**` is excluded because those headers are
 dossier-verbatim and frozen by the contract gate instead.
-`clang-tidy` currently runs over `cpp/core-math/src/*.cpp` only;
-`cpp/glasses/src`, `cpp/bridge/src`, `cpp/tests` and `cpp/tools` are deferred
-(widening to the adapters surfaces 159 warnings-as-errors today). The exact
-scope and the deferral evidence are recorded in [`docs/ci.md`](ci.md).
+`clang-tidy` runs over `cpp/core-math/src/*.cpp`, `cpp/glasses/src/*.cpp` and
+`cpp/bridge/src/*.cpp` with a `--header-filter` restricted to those module
+directories; `cpp/tests` and `cpp/tools` stay outside the gate by design. The
+exact scope is recorded in [`docs/ci.md`](ci.md).
 
 ## Bootstrap
 

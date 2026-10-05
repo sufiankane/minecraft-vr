@@ -175,12 +175,12 @@ Format and tidy checks (run from the repository root after the configure step;
 
 ```powershell
 clang-format --dry-run --Werror @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
-clang-tidy -p cpp/build/windows-msvc @(git ls-files cpp/core-math/src | Where-Object { $_ -match '\.cpp$' })
+clang-tidy --header-filter='[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p cpp/build/windows-msvc @(git ls-files cpp/core-math/src cpp/glasses/src cpp/bridge/src | Where-Object { $_ -match '\.cpp$' })
 ```
 
-`clang-tidy` currently covers `cpp/core-math/src` only; `glasses`, `bridge`,
-`tests` and `tools` are deferred (widening surfaces 159 warnings-as-errors —
-see [`docs/ci.md`](ci.md) and TD-029).
+`clang-tidy` covers `cpp/core-math/src`, `cpp/glasses/src` and
+`cpp/bridge/src`; `tests` and `tools` stay outside the gate by design (see
+[`docs/ci.md`](ci.md)).
 
 ### 4.2 .NET
 
@@ -198,10 +198,14 @@ Expected at the current head: **471 tests, 0 failed** across
 Coverage is collected and the module floors enforced by the `dotnet` CI job, one results directory per test project (`coverage/{coremath,voxel,mesh,gameplay,streaming}`); a missing report fails the job. Local CoreMath example:
 
 ```powershell
-dotnet test dotnet/Cubeglass.sln --configuration Release --collect:"XPlat Code Coverage" --results-directory dotnet/coverage
-$report = (Get-ChildItem -Recurse -Filter coverage.cobertura.xml dotnet/coverage | Select-Object -First 1).FullName
-python\.venv\Scripts\python.exe -m depcheck coverage --report $report --module Cubeglass.CoreMath --floor 95
+dotnet test dotnet/tests/CoreMath.Tests --configuration Release --collect:"XPlat Code Coverage" --results-directory dotnet/coverage/coremath
+python\.venv\Scripts\python.exe -m depcheck coverage --report dotnet/coverage/coremath --module Cubeglass.CoreMath --floor 95
 ```
+
+Pass a results **directory** that holds exactly one Cobertura report:
+`depcheck coverage` resolves it deterministically and fails on zero or several
+candidates, so it can never compare against the wrong run (TD-032). A matched
+module with zero coverable lines fails unless `--allow-empty` is passed.
 
 ### 4.3 Python and the dependency gates
 
@@ -400,7 +404,7 @@ in-flight run. These six contexts are the branch-protection required checks:
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over all `cpp/**`, `clang-tidy` over `cpp/core-math/src` |
+| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over all `cpp/**`, `clang-tidy` over the `core-math`, `glasses` and `bridge` sources |
 | `cpp-linux-asan` | `ubuntu-latest` | ASan/UBSan `ctest`, **the TSan preset and thread-safety tests**, plus the `linux-coverage` build, gcovr report and the `core-math` 95% floor |
 | `dotnet` | `ubuntu-latest` | solution build, per-project tests with coverage, the five module floors |
 | `python` | `ubuntu-latest` | `ruff`, strict `mypy`, `pytest` with coverage, `calib`/`depcheck` floors |
@@ -408,8 +412,9 @@ in-flight run. These six contexts are the branch-protection required checks:
 | `licences` | `ubuntu-latest` | licence allowlist and SPDX-id validation |
 
 TSan deliberately runs **inside** `cpp-linux-asan` (R33) so branch protection
-keeps its six checks; that job lowers `vm.mmap_rnd_bits` to 28 for GCC's TSan
-runtime before running the `linux-tsan` preset. C++ dependencies come from
+keeps its six checks; that job attempts to lower `vm.mmap_rnd_bits` to 28 for
+GCC's TSan runtime before running the `linux-tsan` preset, warning and running
+at the image default entropy if the write is denied. C++ dependencies come from
 vcpkg at the pinned baseline; `cpp-windows` caches the manifest tree keyed on
 the baseline and `cpp/vcpkg.json`'s hash. Every action is pinned to a full
 commit SHA with a version comment; Dependabot proposes grouped minor/patch
@@ -429,9 +434,10 @@ in the release workflow.
 | --- | --- |
 | `bench-cpp` | builds and runs `cg_core_math_benchmarks` (JSON artefact) |
 | `bench-dotnet` | runs the CoreMath/Voxel/Mesh benchmark projects and the mesh p95 budget harness (`--budget-ms 8`; 8 ms is the shared-runner CI budget, ADR-0007's 2.0 ms stays the release/local budget) |
-| `bench-compare` | 10 % regression check against `docs/perf/nightly-baseline.json`; while the baseline is missing the job captures it as an artefact (TD-033: commit that artefact to arm the gate) |
-| `supply-chain` | NuGet `--vulnerable --include-transitive` and `pip-audit` |
+| `bench-compare` | 10 % regression check against the median of the last five nightly summaries in the `nightly-bench-history-*` actions cache (self-seeding, TD-033/TD-054); the first run bootstraps |
+| `supply-chain` | machine-readable NuGet `--vulnerable --include-transitive --format json` via `depcheck nuget`, pinned OSV-Scanner over the Python requirements, and `pip-audit` |
 | `mutation` | Stryker on `Cubeglass.Voxel`, break threshold 70 |
+| `mutation-gameplay` | Stryker on `Cubeglass.Gameplay`, break threshold 70 (TD-031) |
 | `soak` | 30-minute `glasses_soak` leak gate, log always uploaded |
 
 ### Release
@@ -512,7 +518,7 @@ An S7 checklist box that fails is a finding: record the screenshot/log, reopen t
 | [`docs/notes/tech-debt.md`](notes/tech-debt.md) | The programme debt register (TD-NNN). Add rows, never delete or renumber; fixed items move to Closed with the PR |
 | [`docs/releases/v0.1.0.md`](releases/v0.1.0.md) | Release-candidate notes for M1, known issues and build/run instructions |
 | [`docs/reviews/2026-10-03-full-review.md`](reviews/2026-10-03-full-review.md) | The consolidated programme review: findings, dispositions, verification and residual owner actions |
-| [`docs/perf/README.md`](perf/README.md) | Performance methodology and budgets. Measured numbers are **not** committed; the nightly artefacts and `nightly-baseline.json` are the evidence |
+| [`docs/perf/README.md`](perf/README.md) | Performance methodology and budgets. Measured numbers are **not** committed; the nightly artefacts and the self-seeding benchmark-history cache are the evidence |
 | [`docs/ci.md`](ci.md), [`docs/ci/negative-gates.md`](ci/negative-gates.md) | Gate details, local reproduction and the dispatch-only negative self-tests |
 | [`docs/questions/`](questions/) | Escalations and HIL runbooks. Stop and ask via this directory if a gate cannot be met, a contract conflicts or hardware contradicts a recorded fact |
 | [`docs/superpowers/plans/`](superpowers/plans/) | The S0–S7 implementation plans (historical; the gate notes supersede them for results) |

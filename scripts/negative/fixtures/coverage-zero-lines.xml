@@ -1,0 +1,15 @@
+<?xml version="1.0" ?>
+<coverage line-rate="1.0" branch-rate="1.0" version="coverlet" timestamp="0">
+  <sources>
+    <source>.</source>
+  </sources>
+  <packages>
+    <package name="Cubeglass.Voxel" line-rate="1.0" branch-rate="1.0">
+      <classes>
+        <class name="Cubeglass.Voxel.NoCoverableLines" filename="dotnet/src/Voxel/NoCoverableLines.cs" line-rate="1.0">
+          <lines/>
+        </class>
+      </classes>
+    </package>
+  </packages>
+</coverage>

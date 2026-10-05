@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -367,6 +368,169 @@ def test_fully_qualified_allowed_prefix_is_not_flagged(
         "    public static class Allowed\n"
         "    {\n"
         "        public static void Run() => _ = System.Threading.Tasks.Task.CompletedTask;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_exact_type_allow_admits_the_named_type(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.Threading"], '
+        '"allowNamespaces": ["System.Threading.Tasks", "exact:System.Threading.CancellationToken"], '
+        '"allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Allowed.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Allowed\n"
+        "    {\n"
+        "        public static bool Stopped(System.Threading.CancellationToken ct) => ct.IsCancellationRequested;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 0
+    assert lines == []
+
+
+def test_exact_type_allow_rejects_the_sibling_type(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.Threading"], '
+        '"allowNamespaces": ["exact:System.Threading.CancellationToken"], '
+        '"allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Bad\n"
+        "    {\n"
+        "        public static System.Threading.CancellationTokenSource Fresh() => new();\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:5 forbidNamespaces"]
+
+
+def test_exact_type_allow_does_not_admit_the_parent_namespace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.Threading"], '
+        '"allowNamespaces": ["exact:System.Threading.CancellationToken"], '
+        '"allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text("using System.Threading;\n", encoding="utf-8")
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:1 forbidNamespaces"]
+
+
+def test_repository_layers_pin_the_voxel_cancellation_token_exactly() -> None:
+    layers = json.loads((REPO_ROOT / "contracts" / "layers.json").read_text(encoding="utf-8"))
+    allow = layers["dotnet"]["Cubeglass.Voxel"]["allowNamespaces"]
+    assert "exact:System.Threading.CancellationToken" in allow
+    assert "System.Threading.CancellationToken" not in allow
+
+
+def test_qualified_name_in_an_interpolation_hole_is_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"], "allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Bad\n"
+        "    {\n"
+        "        public static string Read(string p) => $\"{System.IO.File.ReadAllText(p)}\";\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:5 forbidNamespaces"]
+
+
+def test_qualified_name_in_a_verbatim_interpolation_hole_is_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"], "allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Bad.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Bad\n"
+        "    {\n"
+        "        public static string Read(string p) => $@\"{System.IO.File.ReadAllText(p)}\";\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    code, lines = run_cli(tmp_path, capsys)
+    assert code == 1
+    assert lines == ["dotnet/src/Voxel/Bad.cs:5 forbidNamespaces"]
+
+
+def test_literal_text_and_escaped_braces_stay_masked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_layers(
+        tmp_path,
+        '{"dotnet": {"Cubeglass.Voxel": {"forbidNamespaces": ["System.IO"], "allowedProjectReferences": []}}}',
+    )
+    source = tmp_path / "dotnet" / "src" / "Voxel"
+    source.mkdir(parents=True)
+    (source / "Cubeglass.Voxel.csproj").write_text("<Project />", encoding="utf-8")
+    (source / "Ok.cs").write_text(
+        "namespace Cubeglass.Voxel\n"
+        "{\n"
+        "    public static class Ok\n"
+        "    {\n"
+        "        public const string Plain = $\"System.IO.File\";\n"
+        "        public const string Escaped = $\"{{System.IO.File}}\";\n"
+        "        public const string Format = $\"{0:System.IO.File}\";\n"
+        "        public const string Nested = $\"{$\"System.IO.File\"}\";\n"
         "    }\n"
         "}\n",
         encoding="utf-8",

@@ -20,11 +20,13 @@ BenchmarkDotNet statistics are already reported in nanoseconds.
 from __future__ import annotations
 
 import json
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 DEFAULT_THRESHOLD_PERCENT = 10.0
+DEFAULT_HISTORY_WINDOW = 5
 BASELINE_KEY = "benchmarks"
 
 _UNIT_TO_NS: dict[str, float] = {
@@ -152,6 +154,50 @@ def load_baseline(path: Path) -> dict[str, float] | None:
             raise BenchError(f"{path}: benchmark {key!r} has a non-numeric value")
         baseline[str(key)] = float(value)
     return baseline
+
+
+def load_history(directory: Path, window: int = DEFAULT_HISTORY_WINDOW) -> list[dict[str, float]]:
+    """Load the up-to-``window`` most recent benchmark summaries in ``directory``.
+
+    Each summary is a capture file with the same ``{"benchmarks": {...}}`` shape
+    as the committed baseline. Files are ordered by modification time and then by
+    name, so the caller gets a deterministic window; a missing directory yields an
+    empty history (the clean first-run bootstrap). A malformed summary is a hard
+    error: silently skipping it would shrink the window without any visible
+    reason.
+    """
+
+    if window < 1:
+        raise BenchError(f"history window must be at least 1, got {window}")
+    if not directory.is_dir():
+        return []
+    candidates = sorted(
+        (path for path in directory.iterdir() if path.is_file() and path.suffix == ".json"),
+        key=lambda path: (path.stat().st_mtime, path.name),
+    )
+    summaries: list[dict[str, float]] = []
+    for path in candidates[-window:]:
+        summary = load_baseline(path)
+        if summary is None:
+            raise BenchError(f"{path}: history file is not readable")
+        summaries.append(summary)
+    return summaries
+
+
+def median_history(summaries: list[dict[str, float]]) -> dict[str, float]:
+    """Return the per-benchmark median across the summary window.
+
+    A benchmark is included when it appears in at least one summary; the median is
+    taken over the runs that measured it. The median is robust to a single noisy
+    or hung run, so a shared runner's outlier cannot trip the 10 percent gate
+    (the rationale for TD-034).
+    """
+
+    values: dict[str, list[float]] = {}
+    for summary in summaries:
+        for name, nanoseconds in summary.items():
+            values.setdefault(name, []).append(nanoseconds)
+    return {name: float(statistics.median(items)) for name, items in sorted(values.items())}
 
 
 def write_capture(path: Path, measurements: dict[str, float]) -> None:

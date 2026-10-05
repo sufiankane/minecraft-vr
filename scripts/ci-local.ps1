@@ -159,8 +159,8 @@ try {
         if (-not (Test-Path $VenvPython)) {
             throw "virtual-environment interpreter not found at '$VenvPython'"
         }
-        Invoke-Checked 'python -m pip install -r requirements-dev.txt' {
-            & $VenvPython -m pip install -r $RequirementsDev
+        Invoke-Checked 'python -m pip install --require-hashes -r requirements-dev.txt' {
+            & $VenvPython -m pip install --require-hashes -r $RequirementsDev
         }
         Invoke-Checked 'python -m pip install -e .' {
             & $VenvPython -m pip install -e $PythonDir
