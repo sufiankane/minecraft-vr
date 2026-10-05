@@ -203,17 +203,17 @@ namespace Cubeglass.Unity.Rendering.Tests
         }
 
         [Test]
-        public void DeltaFileSymlinkIsRefusedOnLoad()
+        public void DeltaPathReparsePointIsRefusedOnLoad()
         {
             if (Application.platform != RuntimePlatform.WindowsEditor
                 && Application.platform != RuntimePlatform.WindowsPlayer
                 && Application.platform != RuntimePlatform.WindowsServer)
             {
-                Assert.Ignore("file symlinks are created through mklink (Windows-only test)");
+                Assert.Ignore("directory junctions are created through mklink (Windows-only test)");
             }
 
-            string root = Path.Combine(Path.GetTempPath(), "cg-store-filelink-" + Guid.NewGuid().ToString("N"));
-            var store = new FileWorldStore("filelink", root);
+            string root = Path.Combine(Path.GetTempPath(), "cg-store-reparse-" + Guid.NewGuid().ToString("N"));
+            var store = new FileWorldStore("reparse", root);
             var coord = new ChunkCoord(0, 0, 0);
             try
             {
@@ -222,24 +222,29 @@ namespace Cubeglass.Unity.Rendering.Tests
                     store.WaitForPendingWrites(TimeSpan.FromSeconds(10)).Succeeded,
                     "fixture delta must write");
 
+                // A junction exercises the same reparse-point refusal as a file
+                // symlink but is created with mklink /J, which needs neither
+                // Developer Mode nor elevation; a bare mklink for a file
+                // symlink needs SeCreateSymbolicLinkPrivilege, which headless
+                // CI does not have (TD-062). A junction planted at the delta
+                // path carries FILE_ATTRIBUTE_REPARSE_POINT even though
+                // File.Exists reports it as absent.
                 string path = store.ChunkPath(coord);
-                string real = path + ".real";
-                File.Move(path, real);
+                File.Delete(path);
+                string target = Path.Combine(root, "target");
+                Directory.CreateDirectory(target);
 
                 var start = new ProcessStartInfo
                 {
                     FileName = "cmd.exe",
-                    Arguments = "/c mklink \"" + path + "\" \"" + real + "\"",
+                    Arguments = "/c mklink /J \"" + path + "\" \"" + target + "\"",
                     CreateNoWindow = true,
                     UseShellExecute = false,
                 };
                 using (Process link = Process.Start(start))
                 {
                     link.WaitForExit();
-                    if (link.ExitCode != 0)
-                    {
-                        Assert.Ignore("creating a file symlink needs Developer Mode or elevation");
-                    }
+                    Assert.AreEqual(0, link.ExitCode, "fixture: the junction must be created");
                 }
 
                 ChunkDelta loaded = store
@@ -248,12 +253,22 @@ namespace Cubeglass.Unity.Rendering.Tests
                     .GetAwaiter()
                     .GetResult();
 
-                Assert.IsNull(loaded, "a delta symlink must never be followed (TD-062)");
+                Assert.IsNull(loaded, "a delta reparse point must never be followed (TD-062)");
                 Assert.AreEqual(1, store.RefusedLoads, "the refusal is counted");
             }
             finally
             {
                 store.Dispose();
+                try
+                {
+                    Directory.Delete(store.ChunkPath(coord), false);
+                }
+                catch (Exception)
+                {
+                    // Deleting a junction never follows it; a failure here is
+                    // harmless for the unique temp directory.
+                }
+
                 if (Directory.Exists(root))
                 {
                     Directory.Delete(root, true);

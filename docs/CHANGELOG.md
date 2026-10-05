@@ -20,7 +20,7 @@ plus the register consolidation (#61).
 
 ### Changed
 - 59 register rows closed with outcomes and commit refs; 17 residual rows added
-  (TD-069..TD-085); open debt is now **23 rows - High 4, Medium 6, Low 13**, of
+  (TD-069..TD-085); open debt is now **22 rows - High 4, Medium 6, Low 12** (TD-077 closed: the last skipped Unity test became a junction-based probe; PR #63), of
   which the four High rows are owner-gated (HIL playtests and the v0.1.0 tag).
 - Contract evolution: ADR-0013 cell-carrying ChunkChanged (managed-only), the
   bridge test-support DLL split (production exports verified by dumpbin), and

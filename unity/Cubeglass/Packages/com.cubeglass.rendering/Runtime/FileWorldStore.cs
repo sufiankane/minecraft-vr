@@ -710,12 +710,12 @@ namespace Cubeglass.Unity.Rendering
             byte[] bytes;
             try
             {
+                RefuseReparsePointIfPresent(path);
                 if (!File.Exists(path))
                 {
                     return null;
                 }
 
-                RefuseReparsePointIfPresent(path);
                 bytes = ReadFileAllowingReplace(path);
             }
             catch (ReparsePointException exception)
@@ -972,30 +972,41 @@ namespace Cubeglass.Unity.Rendering
             }
         }
 
-        /// <summary>Refuses a delta path that is a reparse point; absent paths are fine.</summary>
+        /// <summary>
+        /// Refuses a delta path that is a reparse point; absent paths are fine.
+        /// The attributes are probed before the existence check because a
+        /// directory junction planted at the delta path is reported as absent
+        /// by <see cref="File.Exists"/>; its reparse attribute is the only
+        /// signal that it must be refused instead of silently treated as
+        /// missing (TD-062). This keeps the refusal observable through
+        /// <see cref="RefusedLoads"/> for junctions, which can be created
+        /// without Developer Mode or elevation, as well as for file symlinks.
+        /// </summary>
         /// <exception cref="ReparsePointException">The delta path exists and is a reparse point.</exception>
         private static void RefuseReparsePointIfPresent(string path)
         {
-            if (!File.Exists(path))
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(path);
+            }
+            catch (FileNotFoundException)
             {
                 return;
             }
-
-            try
+            catch (DirectoryNotFoundException)
             {
-                if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                {
-                    throw new ReparsePointException(
-                        "it is a reparse point (symlink/junction) and the store never traverses links");
-                }
-            }
-            catch (ReparsePointException)
-            {
-                throw;
+                return;
             }
             catch (Exception exception)
             {
                 throw new IOException("could not inspect '" + path + "': " + exception.Message);
+            }
+
+            if ((attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new ReparsePointException(
+                    "it is a reparse point (symlink/junction) and the store never traverses links");
             }
         }
 
