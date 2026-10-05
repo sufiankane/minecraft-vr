@@ -143,6 +143,19 @@ jobs:
         run: ctest --preset windows-release --output-on-failure
         working-directory: cpp
 
+      # TD-030: MSVC static analysis (/analyze /analyze:external-) over the
+      # three native module source trees. CG_ENABLE_ANALYZE keeps /W4 /WX, so a
+      # code-analysis warning fails this lane. Only the module targets are
+      # built, so cpp/tests and cpp/tools stay outside the scope (documented in
+      # docs/ci.md).
+      - name: Configure (static analysis lane)
+        run: cmake --preset windows-analyze
+        working-directory: cpp
+
+      - name: Build modules with MSVC /analyze (TD-030)
+        run: cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
+        working-directory: cpp
+
       - name: clang-format (warnings as errors)
         run: |
           $version = (& clang-format --version | Out-String).Trim()

@@ -29,6 +29,16 @@
       }
     },
     {
+      "name": "windows-analyze",
+      "displayName": "Windows MSVC x64 static analysis (Ninja)",
+      "description": "TD-030: configures the native module targets with /analyze /analyze:external- (CG_ENABLE_ANALYZE=ON). The cpp-windows job builds cg_core_math, cg_glasses, cg_bridge and cg_bridge_test_support only, so cpp/tests and cpp/tools stay outside the static-analysis scope.",
+      "inherits": "windows-msvc",
+      "binaryDir": "${sourceDir}/build/windows-analyze",
+      "cacheVariables": {
+        "CG_ENABLE_ANALYZE": "ON"
+      }
+    },
+    {
       "name": "linux-ci",
       "displayName": "Linux CI (Ninja)",
       "generator": "Ninja",
@@ -100,6 +110,10 @@
     {
       "name": "windows-release",
       "configurePreset": "windows-release"
+    },
+    {
+      "name": "windows-analyze",
+      "configurePreset": "windows-analyze"
     },
     {
       "name": "linux-ci",

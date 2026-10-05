@@ -12,7 +12,7 @@ it after any job rename.
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `glasses` and `bridge` source (see below) |
+| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, MSVC `/analyze` over every `core-math`, `glasses` and `bridge` source (TD-030), `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `glasses` and `bridge` source (see below) |
 | `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan `ctest`, the TSan preset and concurrency tests, plus the `linux-coverage` build and the `core-math` coverage floor |
 | `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, per-project `dotnet test` with `XPlat Code Coverage`, and the module coverage floors |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy`, `pytest` |
@@ -174,6 +174,27 @@ module directories must stay clean under the repository `.clang-tidy` policy
 clang-tidy by design (the negative format fixture and any Unity C# are not
 module sources).
 
+## MSVC static analysis scope (TD-030)
+
+The `cpp-windows` job configures the `windows-analyze` preset
+(`CG_ENABLE_ANALYZE=ON`) and builds only the four native module targets:
+
+```powershell
+cmake --preset windows-analyze
+cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
+```
+
+The option adds `/analyze /analyze:external-` to those targets only, while
+`cg_warnings` keeps `/W4 /WX`, so any code-analysis warning (C6xxx) fails the
+lane. Scope is the `src` directories of the three modules
+(`cpp/core-math/src`, `cpp/glasses/src`, `cpp/bridge/src`, the last including
+the test-only writer, which the split into `cg_bridge_test_support` moved to
+its own target, TD-004/TD-067). `cpp/tests` and `cpp/tools` are deliberately
+outside the scope: they are test/tooling code, and clang-tidy covers the
+module headers they exercise. The same flag set can be applied by hand on any
+Windows MSVC host with `cmake --preset windows-analyze`; `CG_ENABLE_ANALYZE` is
+off by default, so the Debug and Release lanes are unaffected.
+
 ## Reproduce locally
 
 From the repository root, using the Python environment in `python/.venv`:
@@ -214,6 +235,8 @@ cd cpp
 cmake --preset windows-msvc
 cmake --build --preset windows-msvc
 ctest --preset ci
+cmake --preset windows-analyze
+cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
 clang-format --dry-run --Werror @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
 clang-tidy --header-filter='[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p build/windows-msvc @(git ls-files core-math/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
 ```
