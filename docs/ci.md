@@ -12,7 +12,7 @@ it after any job rename.
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over `cpp/core-math/src` (other modules deferred; see below) |
+| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `glasses` and `bridge` source (see below) |
 | `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan `ctest`, the TSan preset and concurrency tests, plus the `linux-coverage` build and the `core-math` coverage floor |
 | `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, per-project `dotnet test` with `XPlat Code Coverage`, and the module coverage floors |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy`, `pytest` |
@@ -166,15 +166,13 @@ the S1 follow-up did not happen until then. The gate was hardened after the
 `contracts/**` is deliberately excluded: those headers are dossier-verbatim and
 are frozen by the contract gate above instead.
 
-`clang-tidy` currently runs over `cpp/core-math/src/*.cpp` only. Widening it to
-`cpp/glasses/src` and `cpp/bridge/src` surfaces 159 warnings-as-errors with the
-repo `.clang-tidy` policy (e.g. `bugprone-multi-level-implicit-pointer-conversion`
-in `viture_loader.cpp`, `cppcoreguidelines-avoid-magic-numbers` in
-`yaw_unwrap.hpp`), which is a dedicated follow-up, not part of this wave.
-Deferred directories, explicitly: `cpp/glasses/src`, `cpp/bridge/src`,
-`cpp/tests`, `cpp/tools` (the negative format fixture and any Unity C# are
-outside clang-tidy by design). `cpp/core-math/src` is the only module that must
-stay clean; a change there is gated by the required `cpp-windows` job.
+`clang-tidy` runs over every `*.cpp` in `cpp/core-math/src`,
+`cpp/glasses/src` and `cpp/bridge/src` with the pinned LLVM 23.1.2 (TD-029),
+using the same `--header-filter` as the local invocation below. All three
+module directories must stay clean under the repository `.clang-tidy` policy
+(`WarningsAsErrors: '*'`). `cpp/tests` and `cpp/tools` remain outside
+clang-tidy by design (the negative format fixture and any Unity C# are not
+module sources).
 
 ## Reproduce locally
 

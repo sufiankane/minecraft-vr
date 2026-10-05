@@ -18,10 +18,10 @@ void ClockMapper::AddSample(double sdk_seconds, HostTime host_time) noexcept {
         return;
     }
 
-    // `next_sample_` is maintained modulo kWindowSize by the line below.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index,
-    // cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
-    offsets_[next_sample_] = static_cast<double>(host_time) / static_cast<double>(kNanosecondsPerSecond) - sdk_seconds;
+    // `next_sample_` is maintained modulo kWindowSize by the line below, so
+    // the checked access never throws.
+    offsets_.at(next_sample_) =
+        static_cast<double>(host_time) / static_cast<double>(kNanosecondsPerSecond) - sdk_seconds;
     next_sample_ = (next_sample_ + 1) % kWindowSize;
     if (sample_count_ < kWindowSize) {
         ++sample_count_;
@@ -38,16 +38,14 @@ double ClockMapper::OffsetSeconds() const noexcept {
 
     const std::size_t middle = sample_count_ / 2;
     if (sample_count_ % 2 != 0) {
-        // `middle` is in [0, sample_count_) and sample_count_ <= kWindowSize.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index,
-        // cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
-        return sorted[middle];
+        // `middle` is in [0, sample_count_) and sample_count_ <= kWindowSize,
+        // so the checked access never throws.
+        return sorted.at(middle);
     }
     // `middle - 1` and `middle` are in [0, sample_count_) because an even
-    // count of at least two is guaranteed here.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index,
-    // cppcoreguidelines-pro-bounds-avoid-unchecked-container-access)
-    return (sorted[middle - 1] + sorted[middle]) / kEvenMedianDivisor;
+    // count of at least two is guaranteed here, so the checked accesses never
+    // throw.
+    return (sorted.at(middle - 1) + sorted.at(middle)) / kEvenMedianDivisor;
 }
 
 HostTime ClockMapper::Map(double sdk_seconds) const noexcept {

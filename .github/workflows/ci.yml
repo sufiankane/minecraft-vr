@@ -157,21 +157,25 @@ jobs:
           }
           clang-format --dry-run --Werror $files
 
-      - name: clang-tidy (core-math module sources; other modules deferred)
-        # Scope is deliberately core-math/src only; widening to glasses/src and
-        # bridge/src surfaces 159 warnings-as-errors today. The deferral is
-        # recorded in docs/ci.md ("clang-tidy scope").
+      - name: clang-tidy (native modules core-math, glasses, bridge)
+        # TD-029: the gate runs the pinned LLVM 23.1.2 over every native module
+        # source, matching the documented local invocation in docs/ci.md
+        # ("Reproduce locally"). The --header-filter narrows the repository
+        # header regex to the three module directories: .clang-tidy's default
+        # (^|[/\\])cpp[/\\]... also matches the frozen, dossier-verbatim
+        # headers under contracts/ once glasses and bridge include them.
         working-directory: cpp
         run: |
           $version = (& clang-tidy --version | Out-String).Trim()
           if ($version -notmatch '23\.1\.2') {
             throw "clang-tidy is not the pinned LLVM 23.1.2 (got: $version); the pinned install step must have run first (TD-037)."
           }
-          $files = @(git ls-files core-math/src | Where-Object { $_ -match '\.cpp$' })
+          $headerFilter = '[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$'
+          $files = @(git ls-files core-math/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
           if ($files.Count -eq 0) {
-            throw "clang-tidy selector found no core-math sources; the tidy gate would pass vacuously (TD-063)."
+            throw "clang-tidy selector found no native module sources; the tidy gate would pass vacuously (TD-063)."
           }
-          clang-tidy -p build/windows-msvc $files
+          clang-tidy "--header-filter=$headerFilter" -p build/windows-msvc $files
 
   cpp-linux-asan:
     name: cpp-linux-asan

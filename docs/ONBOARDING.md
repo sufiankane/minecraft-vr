@@ -175,12 +175,12 @@ Format and tidy checks (run from the repository root after the configure step;
 
 ```powershell
 clang-format --dry-run --Werror @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
-clang-tidy -p cpp/build/windows-msvc @(git ls-files cpp/core-math/src | Where-Object { $_ -match '\.cpp$' })
+clang-tidy --header-filter='[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p cpp/build/windows-msvc @(git ls-files cpp/core-math/src cpp/glasses/src cpp/bridge/src | Where-Object { $_ -match '\.cpp$' })
 ```
 
-`clang-tidy` currently covers `cpp/core-math/src` only; `glasses`, `bridge`,
-`tests` and `tools` are deferred (widening surfaces 159 warnings-as-errors —
-see [`docs/ci.md`](ci.md) and TD-029).
+`clang-tidy` covers `cpp/core-math/src`, `cpp/glasses/src` and
+`cpp/bridge/src`; `tests` and `tools` stay outside the gate by design (see
+[`docs/ci.md`](ci.md)).
 
 ### 4.2 .NET
 
@@ -404,7 +404,7 @@ in-flight run. These six contexts are the branch-protection required checks:
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over all `cpp/**`, `clang-tidy` over `cpp/core-math/src` |
+| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, `clang-format --dry-run --Werror` over all `cpp/**`, `clang-tidy` over the `core-math`, `glasses` and `bridge` sources |
 | `cpp-linux-asan` | `ubuntu-latest` | ASan/UBSan `ctest`, **the TSan preset and thread-safety tests**, plus the `linux-coverage` build, gcovr report and the `core-math` 95% floor |
 | `dotnet` | `ubuntu-latest` | solution build, per-project tests with coverage, the five module floors |
 | `python` | `ubuntu-latest` | `ruff`, strict `mypy`, `pytest` with coverage, `calib`/`depcheck` floors |

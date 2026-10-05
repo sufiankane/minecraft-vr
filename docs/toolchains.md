@@ -62,10 +62,10 @@ lanes assert the installed tools are exactly 23.1.2 (TD-037);
 `clang-format` covers every `cpp/**/*.{cpp,hpp,h,hh,cc,cxx}` file in the
 required `cpp-windows` job; `contracts/**` is excluded because those headers are
 dossier-verbatim and frozen by the contract gate instead.
-`clang-tidy` currently runs over `cpp/core-math/src/*.cpp` only;
-`cpp/glasses/src`, `cpp/bridge/src`, `cpp/tests` and `cpp/tools` are deferred
-(widening to the adapters surfaces 159 warnings-as-errors today). The exact
-scope and the deferral evidence are recorded in [`docs/ci.md`](ci.md).
+`clang-tidy` runs over `cpp/core-math/src/*.cpp`, `cpp/glasses/src/*.cpp` and
+`cpp/bridge/src/*.cpp` with a `--header-filter` restricted to those module
+directories; `cpp/tests` and `cpp/tools` stay outside the gate by design. The
+exact scope is recorded in [`docs/ci.md`](ci.md).
 
 ## Bootstrap
 
