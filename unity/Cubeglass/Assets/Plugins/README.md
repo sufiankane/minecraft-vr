@@ -1,11 +1,20 @@
 # Native and managed plugins
 
-`win-x64/cg_unity_bridge.dll` is not tracked in git. The C++ lane builds it to
-`cpp/build/windows-msvc/bridge/cg_unity_bridge.dll` (`cmake --build --preset
-windows-msvc` from the dev shell), and `scripts/ci-local.ps1` copies it into this
-folder before running the Unity lane.
+`win-x64/cg_unity_bridge.dll` (production 5.12 reader) and
+`win-x64/cg_bridge_test_support.dll` (test-only native writer, TD-004/TD-067)
+are not tracked in git. The C++ lane builds them to
+`cpp/build/windows-msvc/bridge/` (`cmake --build --preset windows-msvc --target
+cg_bridge cg_bridge_test_support` from the dev shell). The test-only library is
+staged only for Unity test runs and must not be shipped: the release workflow
+removes it before the player build.
 
-For a manual Unity run, copy it yourself first:
+`scripts/sync-unity-plugins.ps1 -IncludeTestSupport` (what `scripts/ci-local.ps1`
+runs in the Unity lane) stages both native DLLs plus the managed plugins. For a
+manual Unity test run:
+
+    powershell -File scripts/sync-unity-plugins.ps1 -IncludeTestSupport
+
+For a manual player build, stage only the production DLL:
 
     Copy-Item cpp/build/windows-msvc/bridge/cg_unity_bridge.dll unity/Cubeglass/Assets/Plugins/win-x64/
 

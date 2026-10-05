@@ -60,7 +60,7 @@ $UnityExe = Join-Path $env:LOCALAPPDATA 'Unity\bin\unity.exe'
 $UnityResultsEditMode = Join-Path $env:TEMP 'cg-unity-editmode-results.xml'
 $UnityResultsPlayMode = Join-Path $env:TEMP 'cg-unity-playmode-results.xml'
 $BridgeDll = Join-Path $CppDir 'build\windows-msvc\bridge\cg_unity_bridge.dll'
-$UnityPluginsDir = Join-Path $RepoRoot 'unity\Cubeglass\Assets\Plugins\win-x64'
+$TestSupportDll = Join-Path $CppDir 'build\windows-msvc\bridge\cg_bridge_test_support.dll'
 
 $script:LaneResults = New-Object System.Collections.Generic.List[object]
 
@@ -231,23 +231,23 @@ try {
             if (-not (Test-Path $UnityExe)) {
                 throw "Unity CLI not found at '$UnityExe'"
             }
-            # The native bridge tests P/Invoke cg_unity_bridge.dll from
-            # Assets/Plugins/win-x64. Fail loudly when it is missing instead of
-            # skipping: the cpp-windows lane above must have built it.
-            if (-not (Test-Path -LiteralPath $BridgeDll)) {
-                throw "native bridge DLL not found at '$BridgeDll'; run the C++ build first (cmake --build --preset windows-msvc), then re-run ci-local"
+            # The native bridge tests P/Invoke cg_unity_bridge.dll (production
+            # reader) and cg_bridge_test_support.dll (test-only writer,
+            # TD-004/TD-067) from Assets/Plugins/win-x64. Fail loudly when
+            # either is missing instead of skipping: the cpp-windows lane above
+            # must have built both.
+            foreach ($nativeDll in @($BridgeDll, $TestSupportDll)) {
+                if (-not (Test-Path -LiteralPath $nativeDll)) {
+                    throw "native bridge DLL not found at '$nativeDll'; run the C++ build first (cmake --build --preset windows-msvc --target cg_bridge cg_bridge_test_support), then re-run ci-local"
+                }
             }
-            if (-not (Test-Path -LiteralPath $UnityPluginsDir)) {
-                New-Item -ItemType Directory -Path $UnityPluginsDir -Force | Out-Null
-            }
-            Copy-Item -LiteralPath $BridgeDll -Destination (Join-Path $UnityPluginsDir 'cg_unity_bridge.dll') -Force
-            Write-Host "Copied native bridge DLL: $BridgeDll -> $UnityPluginsDir"
             # Cubeglass.CoreMath is a .NET library outside Unity, so the bridge
             # package loads it as a managed plugin instead of an asmdef
             # reference. The sync script builds it in Release and fails loudly
             # when the DLL is missing; Task 3 consumes UnityConvert from it.
+            # -IncludeTestSupport also stages both native DLLs above.
             $SyncPlugins = Join-Path $PSScriptRoot 'sync-unity-plugins.ps1'
-            Invoke-Checked 'scripts/sync-unity-plugins.ps1' { & $SyncPlugins }
+            Invoke-Checked 'scripts/sync-unity-plugins.ps1 -IncludeTestSupport' { & $SyncPlugins -IncludeTestSupport }
             # The Unity CLI mishandles the project argument (it prepends the
             # current directory to an already-absolute path) when the project
             # has no Assets folder, so a pristine clone aborts before importing.

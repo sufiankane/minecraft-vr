@@ -8,6 +8,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(CG_BUILD_BENCHMARKS "Build Cubeglass micro-benchmarks" OFF)
+# TD-030: opt-in MSVC static analysis (/analyze) over the native module sources.
+# Off by default so the normal Debug/Release lanes stay unchanged; the
+# windows-analyze preset turns it on and the cpp-windows job builds the module
+# targets under it. /analyze:external- keeps the analysis focused on our code,
+# and the module targets keep /W4 /WX (cg_warnings), so a code-analysis warning
+# fails the lane.
+option(CG_ENABLE_ANALYZE "Run MSVC static analysis (/analyze) on the native modules" OFF)
 
 add_library(cg_warnings INTERFACE)
 if(MSVC)
@@ -18,6 +25,15 @@ if(MSVC)
     target_compile_options(cg_warnings INTERFACE /W4 /WX /permissive- /utf-8)
 else()
     target_compile_options(cg_warnings INTERFACE -Wall -Wextra -Wpedantic -Wconversion -Werror)
+endif()
+
+# The module targets link this privately; when CG_ENABLE_ANALYZE is off it is an
+# empty interface, so the flag is a no-op on every other lane. It is separate
+# from cg_warnings because cg_warnings propagates to tests/tools, whose sources
+# are deliberately outside the static-analysis scope (TD-030).
+add_library(cg_analyze INTERFACE)
+if(CG_ENABLE_ANALYZE AND MSVC)
+    target_compile_options(cg_analyze INTERFACE /analyze /analyze:external-)
 endif()
 
 enable_testing()

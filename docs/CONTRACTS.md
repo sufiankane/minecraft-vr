@@ -116,9 +116,9 @@ bytes. The layout tests document the padding explicitly.
 
 | Format / artefact | Writers | Readers | Fixture / test role |
 | --- | --- | --- | --- |
-| C ABI structs (`cg_types.h`) | C++ producers: `cg_test_writer_*` today; `cg-handservice` in the future (dossier 5.6) | C++ bridge and tests; Unity P/Invoke (`BridgeTypes.cs`, then `BridgePoseProvider`) | `layout_tests.cpp` compile-time offsets/sizes; Unity explicit `StructLayout` sizes |
-| Shared-memory region | `cg_test_writer_*` (tests only; the production writer is the future hand service — M-4/TD-004) | `cg_bridge_read_head/read_hands` (Unity through the DLL); `cpp/tests/bridge` | `bridge_layout`, `bridge_reader`, `bridge_stress` (200,000 samples, 8 readers, 0 mismatches); TSan lane |
-| Command / ack words | `cg_bridge_send_command` (Unity side, `BridgeTypes`/`NativeBridge`) | `cg_test_writer_read_command`/`ack_command` in tests; the future service in production | `shm_reader_tests.cpp` command/ack cases |
+| C ABI structs (`cg_types.h`) | C++ producers: `cg_test_writer_*` today (test-only `cg_bridge_test_support`); `cg-handservice` in the future (dossier 5.6) | C++ bridge and tests; Unity P/Invoke (`BridgeTypes.cs`, then `BridgePoseProvider`) | `layout_tests.cpp` compile-time offsets/sizes; Unity explicit `StructLayout` sizes |
+| Shared-memory region | `cg_test_writer_*` (tests only, in `cg_bridge_test_support`; the production writer is the future hand service — TD-004/TD-067 split) | `cg_bridge_read_head/read_hands` (Unity through the DLL); `cpp/tests/bridge` | `bridge_layout`, `bridge_reader`, `bridge_stress` (200,000 samples, 8 readers, 0 mismatches); TSan lane |
+| Command / ack words | `cg_bridge_send_command` (Unity side, `BridgeTypes`/`NativeBridge`) | `cg_test_writer_read_command`/`ack_command` in tests (`cg_bridge_test_support`); the future service in production | `shm_reader_tests.cpp` command/ack cases |
 | `transforms.json` | Hand-authored repository data (no runtime writer) | C++ `golden_test.cpp`; C# `GoldenFixtureTests.cs` | 28 cases shared by both languages; unknown/unvisited ops fail |
 | `layers.json` | Developers | `depcheck` rules (`python/depcheck/rules.py`) | Negative fixtures under `python/tests/` (`test_depcheck.py`) |
 | `licence-allowlist.json` | Developers | `depcheck licences` (`python/depcheck/licences.py`) | SPDX-id and allowlist tests in `test_depcheck_licences.py` |
@@ -130,10 +130,14 @@ bytes. The layout tests document the padding explicitly.
 **Golden-fixture and test-writer roles.** `contracts/golden/transforms.json`
 is the cross-language oracle: the same 28 cases pin the C++ and C#
 implementations, and both harnesses must fail on an unknown op or an op no case
-visits. `cg_test_writer_*` is the only in-repo shared-memory writer; it is
-deliberately compiled into `cg_unity_bridge.dll` (`src/test_writer.cpp`,
-`WINDOWS_EXPORT_ALL_SYMBOLS`) for the S6 tests, because R44 forbids export
-macros in the frozen header — M-4/TD-004 tracks splitting it out. Scene hashes
+visits. `cg_test_writer_*` is the only in-repo shared-memory writer; since
+TD-004/TD-067 it is compiled into the **test-only** `cg_bridge_test_support`
+library (`cpp/bridge/src/test_writer.cpp`, `WINDOWS_EXPORT_ALL_SYMBOLS` on
+Windows), not into the production `cg_unity_bridge.dll`, which exports only the
+frozen 5.12 surface. The C++ bridge tests link the test-support library; the
+Unity EditMode tests load it after `scripts/sync-unity-plugins.ps1
+-IncludeTestSupport` (or `scripts/ci-local.ps1`) stages it, and the release
+workflow removes it before the player build so it never ships. Scene hashes
 (Game `2B97305E…`, Calibration `70F970CE…`) and the chunk/terrain hashes
 (S2 `0x1EF678D6ADDA1CEC`, S7 `0xB38A50148C01A643`) are test-side golden values,
 not contract files.
