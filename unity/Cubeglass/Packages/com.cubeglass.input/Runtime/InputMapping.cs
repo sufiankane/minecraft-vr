@@ -17,6 +17,9 @@ namespace Cubeglass.Unity.Input
 
         /// <summary>Force the keyboard/mouse mapping.</summary>
         KeyboardMouse = 2,
+
+        /// <summary>Force the Input System package adapter (TD-013; needs the new backend).</summary>
+        InputSystem = 3,
     }
 
     /// <summary>

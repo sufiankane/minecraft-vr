@@ -24,6 +24,16 @@ namespace Cubeglass.Unity.Input
     /// mode is cached so no per-frame device enumeration allocates.
     /// </para>
     /// <para>
+    /// <b>Input System backend (TD-013).</b> When the project enables the new
+    /// backend (<c>ENABLE_INPUT_SYSTEM</c>), <see cref="InputMode.InputSystem"/>
+    /// reads the same controls from <c>Gamepad</c>/<c>Keyboard</c>/<c>Mouse</c>
+    /// through <see cref="InputSystemProvider"/> and the pure
+    /// <see cref="InputSystemMapping"/>; in a new-input-only project
+    /// <see cref="InputMode.Auto"/> resolves to it because the legacy mapping is
+    /// compiled out. While the legacy backend is enabled, Auto keeps the legacy
+    /// mapping as the documented fallback and the new adapter is opt-in.
+    /// </para>
+    /// <para>
     /// <b>Frame edges.</b> <see cref="Sample"/> and <see cref="Update"/> share
     /// one poll per Unity frame (deduplicated by <c>Time.frameCount</c>), so
     /// the mapper's press/release edges are reported on exactly one frame
@@ -62,6 +72,7 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private bool invertTurn;
 
         private InputMapper mapper;
+        private InputSystemProvider inputSystem;
         private InputFrame latest;
         private int lastPollFrame = int.MinValue;
         private bool modeResolved;
@@ -140,13 +151,21 @@ namespace Cubeglass.Unity.Input
         /// </summary>
         public int ConsumeSnapDirection()
         {
-            return mapper != null ? mapper.ConsumeSnapDirection() : 0;
+            EnsureMapper();
+            EnsureMode();
+            if (resolvedMode == InputMode.InputSystem && inputSystem != null)
+            {
+                return inputSystem.ConsumeSnapDirection();
+            }
+
+            return mapper.ConsumeSnapDirection();
         }
 
         /// <summary>Resolves <see cref="InputMode.Auto"/> again and clears button edges.</summary>
         public void RefreshMode()
         {
             modeResolved = false;
+            inputSystem = null;
             EnsureMode();
             if (mapper != null)
             {
@@ -178,16 +197,50 @@ namespace Cubeglass.Unity.Input
         {
             EnsureMapper();
             EnsureMode();
+            if (resolvedMode == InputMode.InputSystem)
+            {
+                // The Input System adapter owns its own mapper (it maps raw
+                // device state once, edges included), so its frame is returned
+                // directly instead of being mapped a second time.
+                return SampleInputSystemFrame(deltaTime);
+            }
+
             RawInputSample raw = resolvedMode == InputMode.Gamepad
                 ? SampleGamepad(deltaTime)
                 : SampleKeyboardMouse(deltaTime);
             return mapper.Map(raw);
         }
 
+        private InputFrame SampleInputSystemFrame(float deltaTime)
+        {
+#if ENABLE_INPUT_SYSTEM
+            if (inputSystem == null)
+            {
+                inputSystem = new InputSystemProvider(
+                    turnDegreesPerSecond,
+                    mouseDegreesPerPixel,
+                    swapGamepadButtons,
+                    invertTurn);
+            }
+
+            return inputSystem.PollNow(deltaTime);
+#else
+            return mapper.Map(RawInputSample.Neutral);
+#endif
+        }
+
         private InputMode ResolveMode()
         {
             if (mode != InputMode.Auto)
             {
+#if !ENABLE_INPUT_SYSTEM
+                // A legacy-only build cannot serve the new adapter; keep the
+                // keyboard/mouse mapping instead of a dead neutral frame.
+                if (mode == InputMode.InputSystem)
+                {
+                    return InputMode.KeyboardMouse;
+                }
+#endif
                 return mode;
             }
 
@@ -198,8 +251,15 @@ namespace Cubeglass.Unity.Input
             {
                 return InputMode.Gamepad;
             }
-#endif
+
             return InputMode.KeyboardMouse;
+#elif ENABLE_INPUT_SYSTEM
+            // New-input-only projects have no legacy mapping: the Input System
+            // adapter owns both gamepad and keyboard/mouse selection.
+            return InputMode.InputSystem;
+#else
+            return InputMode.KeyboardMouse;
+#endif
         }
 
         private void EnsureMode()
