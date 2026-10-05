@@ -44,12 +44,19 @@ namespace cg::glasses {
 /// blocked poll and a pending backoff, joins, destroys the device and keeps
 /// the newest sample readable. `TryGetLatest` is wait-free: it copies the slot
 /// and extrapolates yaw/pitch by the last inter-sample rate, capped at
-/// 100 ms, without locks or allocation.
+/// 100 ms, without locks or allocation. Prediction applies only while the
+/// newest sample is `Stable`: a quiet `Unstable`/`Lost` synthetic has no new
+/// samples to extrapolate, so it is returned unchanged (still carrying an
+/// armed recentre correction, CXX-12).
 ///
 /// `Recenter` is serviced by the polling thread (the only thread allowed to
 /// call the API): it captures the newest slot sample, posts the request and
 /// returns `Ok` as soon as the request is posted, without waiting for the
-/// polling thread. It additionally arms the inverse-yaw read-time correction
+/// polling thread. `Ok` therefore means "posted", not "applied": a `Stop`
+/// that races or follows the post withdraws an unresolved request before the
+/// seam is called (CXX-14), and the stream then stays in its never-reset
+/// frame; only a request the polling thread resolved before `Stop` keeps its
+/// correction. It additionally arms the inverse-yaw read-time correction
 /// for the captured sample immediately, so the newest pre-reset sample reads
 /// recentred as soon as `Recenter` returns; the polling thread applies
 /// `ResetOriginCarina` between polls on its next pass, and later samples come
@@ -88,6 +95,8 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
 
     VitureHeadPoseSource(const VitureHeadPoseSource &) = delete;
     VitureHeadPoseSource &operator=(const VitureHeadPoseSource &) = delete;
+    VitureHeadPoseSource(VitureHeadPoseSource &&) = delete;
+    VitureHeadPoseSource &operator=(VitureHeadPoseSource &&) = delete;
 
     Result<void> Start() override;
     void Stop() noexcept override;
@@ -136,20 +145,23 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     }
 
   private:
-    void PollLoop(std::stop_token stop) noexcept;
+    void PollLoop(const std::stop_token &stop) noexcept;
     void SetupThread() noexcept;
 
     /// Polling-thread half of `Recenter`: consumes a posted request and calls
     /// `ResetOriginCarina` with the newest raw slot pose, then extends the
     /// read-time correction over every sample published before this pass. Only
-    /// resolves `generation` if no newer post superseded it.
+    /// resolves `generation` if no newer post superseded it; a superseded
+    /// request is dropped without a seam call, so every request is resolved or
+    /// withdrawn exactly once and a successful request calls the seam exactly
+    /// once (TD-005, pinned by `VitureFault.RecentreWorksAfterSuccessfulRecreate`).
     void ServiceRecentre() noexcept;
     void HandleRecentre(std::uint64_t generation) noexcept;
 
     /// Drops an unresolved request and its armed correction (`Stop` only).
     void WithdrawPendingRecentre() noexcept;
 
-    [[nodiscard]] bool WaitBackoff(Duration duration, std::stop_token stop) noexcept;
+    [[nodiscard]] bool WaitBackoff(Duration duration, const std::stop_token &stop) noexcept;
     [[nodiscard]] bool StopRequested(const std::stop_token &stop) const noexcept;
     void PublishQuiet(HostTime now) noexcept;
     void UpdateRate(const HeadSample &sample) noexcept;
@@ -186,6 +198,11 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
 
     // Polling-thread state (never touched by readers).
     std::optional<HeadSample> last_published_{};
+    // Strictly increasing across reconnects, restarts and recentres: it is
+    // never reset, so a consumer that keeps the newest seq cannot see it go
+    // backwards or repeat within a wrap period (TD-005, pinned by
+    // `VitureFault.SequenceStaysMonotonicAcrossReconnect`). The contract type
+    // is `std::uint32_t`, so it wraps after 2^32 samples (~99 days at 500 Hz).
     std::uint32_t seq_ = 0;
     HostTime last_success_ns_ = 0;
     TrackState quiet_state_ = TrackState::Stable;

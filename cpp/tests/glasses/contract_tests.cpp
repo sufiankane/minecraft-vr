@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -50,6 +51,14 @@ double YawDegrees(const core_math::Pose &pose) noexcept {
 double PitchDegrees(const core_math::Pose &pose) noexcept {
     const core_math::Vec3 forward = Forward(pose);
     return std::asin(std::clamp(forward.y, -1.0, 1.0)) * kRadiansToDegrees;
+}
+
+/// Roll of a `yaw * pitch * roll` rotation: `atan2(R(1,0), R(1,1))`, where row
+/// 1 of the rotation matrix is the world-Y component of the rotated X/Y axes.
+double RollDegrees(const core_math::Pose &pose) noexcept {
+    const core_math::Vec3 x_axis = pose.rotation.Rotate(core_math::Vec3{1.0, 0.0, 0.0});
+    const core_math::Vec3 y_axis = pose.rotation.Rotate(core_math::Vec3{0.0, 1.0, 0.0});
+    return std::atan2(x_axis.y, y_axis.y) * kRadiansToDegrees;
 }
 
 void ExpectFiniteUnitPose(const HeadSample &sample) {
@@ -462,6 +471,50 @@ TEST(FakeSource, PitchSweepAdvancesAtTheRequestedRate) {
     uut.source->Stop();
 }
 
+TEST(FakeSource, PredictComposesTheDeltaOnTheRecordedRolledRotation) {
+    // TD-001: the prediction must compose its yaw/pitch delta onto the recorded
+    // rotation, not rebuild an absolute yaw*pitch pose. A scripted 20 degree
+    // roll plus a 90 deg/s yaw sweep makes the failure visible: the old rebuild
+    // dropped the roll entirely.
+    FakeScript script = FakeScript::YawSweep(90.0);
+    script.roll_deg = 20.0;
+    SourceUnderTest uut = MakeFakeSource(script);
+    ASSERT_TRUE(uut.source->Start().ok());
+    uut.advance(2);
+
+    HeadSample newest = PlaceholderSample();
+    ASSERT_TRUE(uut.source->TryGetLatest(newest, Duration{0}));
+    EXPECT_NEAR(YawDegrees(newest.pose), 1.8, 1e-6);
+    EXPECT_NEAR(PitchDegrees(newest.pose), 0.0, 1e-6);
+    EXPECT_NEAR(RollDegrees(newest.pose), 20.0, 1e-6);
+
+    HeadSample predicted = PlaceholderSample();
+    ASSERT_TRUE(uut.source->TryGetLatest(predicted, Duration{50'000'000}));
+    // 90 deg/s over 50 ms adds 4.5 degrees of world yaw on top of the recorded
+    // rotation; pitch and roll are unchanged.
+    const core_math::Quat expected =
+        core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, 4.5 * kPi / 180.0) * newest.pose.rotation;
+    EXPECT_NEAR(predicted.pose.rotation.w(), expected.w(), 1e-9);
+    EXPECT_NEAR(predicted.pose.rotation.x(), expected.x(), 1e-9);
+    EXPECT_NEAR(predicted.pose.rotation.y(), expected.y(), 1e-9);
+    EXPECT_NEAR(predicted.pose.rotation.z(), expected.z(), 1e-9);
+    EXPECT_NEAR(RollDegrees(predicted.pose), 20.0, 1e-6) << "the scripted roll was dropped by the prediction";
+    EXPECT_NEAR(YawDegrees(predicted.pose), 6.3, 1e-6);
+    EXPECT_EQ(predicted.time, newest.time + 50'000'000);
+    uut.source->Stop();
+}
+
+TEST(FakeSource, NonFiniteRollOffsetIsRejectedWithoutPublishing) {
+    FakeScript script = FakeScript::Static();
+    script.roll_deg = std::numeric_limits<double>::quiet_NaN();
+    SourceUnderTest uut = MakeFakeSource(script);
+    const cg::Result<void> result = uut.source->Start();
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.status().code(), cg::StatusCode::InvalidArgument);
+    HeadSample sample = PlaceholderSample();
+    EXPECT_FALSE(uut.source->TryGetLatest(sample, Duration{0}));
+}
+
 TEST(FakeSource, DropoutReportsLostForItsWindow) {
     SourceUnderTest uut = MakeFakeSource(FakeScript::Dropout(2, 2));
     ASSERT_TRUE(uut.source->Start().ok());
@@ -621,13 +674,22 @@ SourceUnderTest MakeVitureSource() {
             raw->AllowOnePoll();
             const std::uint32_t target = last_seq->load() + 1;
             HeadSample sample = PlaceholderSample();
+            bool reached = false;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
             while (std::chrono::steady_clock::now() < deadline) {
                 if (raw->TryGetLatest(sample, Duration{0}) && sample.seq >= target) {
                     last_seq->store(sample.seq);
+                    reached = true;
                     break;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            // CXX-18: a silent under-advance would make every later contract
+            // case assert against a stale sample. A step that stops early
+            // because the source was stopped mid-advance is not a failure.
+            if (!reached && !raw->stopped()) {
+                ADD_FAILURE() << "viture harness under-advanced: target seq " << target
+                              << " was not published within 2 s";
             }
         }
     };

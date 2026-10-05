@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -587,7 +588,7 @@ TEST(VitureFault, RecenterDoesNotStallThePollingThread) {
 /// destroyed and work again after a create.
 TEST(VitureFault, FakeVitureApiModelsDeviceLifetime) {
     FakeVitureApi api;
-    const float pose[7] = {0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
+    const std::array<float, kViturePoseFloatCount> pose{0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F};
     EXPECT_EQ(api.PollPose().status().code(), StatusCode::NotReady);
     EXPECT_EQ(api.StartPose().status().code(), StatusCode::NotReady);
     EXPECT_EQ(api.ResetOriginCarina(pose).status().code(), StatusCode::NotReady);
@@ -875,6 +876,148 @@ TEST(VitureFault, LastSdkSecondsTracksNewestPublishedSample) {
     ASSERT_TRUE(source.TryGetLatest(second, Duration{0}));
     ASSERT_TRUE(source.LastSdkSeconds().has_value());
     EXPECT_DOUBLE_EQ(*source.LastSdkSeconds(), core_math::ToSeconds(kSecondSdkNs));
+}
+
+/// CXX-12: prediction must not extrapolate through quiet synthetics. While the
+/// newest sample is `Unstable`/`Lost` (the last real pose with no new data),
+/// `TryGetLatest` returns it unchanged regardless of `predict`; the nonzero
+/// rate established by the live samples must not be applied.
+TEST(VitureFault, PredictionDoesNotExtrapolateThroughQuietSamples) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    constexpr std::int64_t kSdkNs = 1'000'000'000;
+    constexpr std::int64_t kPeriodNs = 10'000'000;
+    constexpr std::int64_t kPredictNs = 50'000'000;
+    api.samples = {CgSample(1, kSdkNs, CG_TRACK_STABLE, 0.0), CgSample(2, kSdkNs + kPeriodNs, CG_TRACK_STABLE, 10.0)};
+    api.SetPollGate(true);
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    api.AllowOnePoll();
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+    clock.Advance(Duration{kPeriodNs});
+    api.AllowOnePoll();
+    HeadSample second = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, second, 2U));
+    ASSERT_EQ(second.state, TrackState::Stable);
+    // The pair establishes 10 degrees per 10 ms; a 50 ms prediction on a live
+    // sample would add 50 degrees, so the quiet checks below have teeth.
+
+    // Exhaust the feed: the next gated poll fails, the device is torn down and
+    // the quiet synthetics take over.
+    api.AllowOnePoll();
+    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+
+    const auto check_quiet = [&](TrackState expected) {
+        HeadSample raw = PlaceholderSample();
+        ASSERT_TRUE(WaitForState(source, expected, raw));
+        HeadSample predicted = PlaceholderSample();
+        ASSERT_TRUE(source.TryGetLatest(predicted, Duration{kPredictNs}));
+        EXPECT_EQ(predicted.time, raw.time) << "a quiet synthetic must not be advanced by a prediction";
+        EXPECT_NEAR(YawDegrees(predicted.pose), YawDegrees(raw.pose), 1e-12);
+        EXPECT_NEAR(YawDegrees(predicted.pose), 10.0, 0.1) << "the quiet pose must be the last real sample";
+    };
+
+    clock.Advance(Duration{600 * kMillisecondNs});
+    check_quiet(TrackState::Unstable);
+
+    // The backoff released at the new clock instant, so the thread is blocked
+    // on the closed gate again; one granted poll fails and publishes Lost.
+    clock.Advance(Duration{600 * kMillisecondNs});
+    api.AllowOnePoll();
+    check_quiet(TrackState::Lost);
+    source.Stop();
+}
+
+/// CXX-17: the read-time recentre offset applies only to samples up to
+/// `until_seq`. A sample published after the reset already arrives recentred
+/// from the SDK (here, from the scripted feed's own recentre), so applying the
+/// production offset again would double-correct it.
+TEST(VitureFault, ReadTimeOffsetIsDroppedAfterUntilSeq) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    ASSERT_TRUE(api.FeedScript(FakeScript::YawSweep(1000.0), 100.0).ok());
+    api.SetPollGate(true);
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    api.AllowOnePoll();
+    HeadSample first = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, first, 1U));
+    ASSERT_NEAR(YawDegrees(first.pose), 10.0, 0.1);
+
+    api.AllowOnePoll();
+    HeadSample second = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, second, 2U));
+    ASSERT_NEAR(YawDegrees(second.pose), 20.0, 0.1);
+
+    ASSERT_TRUE(source.Recenter().ok());
+    // Armed immediately: the newest pre-reset sample reads yaw-zero.
+    HeadSample armed = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(armed, Duration{0}));
+    EXPECT_NEAR(YawDegrees(armed.pose), 0.0, 0.1);
+
+    // Release the next poll: sample 3 (raw 30 deg) is published, then the
+    // service pass resolves the reset. The scripted feed recentres at the
+    // current heading (30 deg), so sample 4 is emitted as 40 - 30 = 10 deg.
+    api.AllowOnePoll();
+    ASSERT_TRUE(WaitFor([&] { return api.reset_origin_calls.load() == 1U; }));
+
+    api.AllowOnePoll();
+    HeadSample fourth = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, fourth, 4U));
+    ASSERT_EQ(fourth.state, TrackState::Stable);
+    EXPECT_NEAR(YawDegrees(fourth.pose), 10.0, 0.5)
+        << "the read-time offset must not apply to samples published after until_seq (a regression would "
+           "double-correct to -20 deg)";
+    source.Stop();
+}
+
+/// CXX-14: `Recenter` returning `Ok` means the request was posted, not
+/// applied. A `Stop` that races the post withdraws the unresolved request: the
+/// seam is never called, the read-time correction is dropped, and the stream
+/// stays in its never-reset frame.
+TEST(VitureFault, StopWithdrawsARecentreThatReturnedOk) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.samples = {CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 10.0)};
+    api.empty_poll_result = Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 10.0));
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample sample = PlaceholderSample();
+    ASSERT_TRUE(WaitForSample(source, sample, 1U));
+
+    ScopedArmHook arm_hook;
+    Result<void> poster_result = Err<void>(Status{StatusCode::Internal, "the poster never ran"});
+    std::thread poster([&] { poster_result = source.Recenter(); });
+    bool entered = false;
+    {
+        std::unique_lock<std::mutex> lock(g_arm_mutex);
+        entered = g_arm_cv.wait_for(lock, std::chrono::seconds(2), [&] { return g_arm_entered; });
+    }
+    EXPECT_TRUE(entered) << "the poster never reached the pre-arming seam";
+
+    // Stop joins the polling thread (so the request can never be serviced)
+    // and then blocks on the caller mutex the parked poster holds.
+    std::thread stopper([&] { source.Stop(); });
+    EXPECT_TRUE(WaitFor([&] { return api.stop_requested(); }));
+
+    {
+        const std::lock_guard<std::mutex> lock(g_arm_mutex);
+        g_arm_release = true;
+    }
+    g_arm_cv.notify_all();
+    poster.join();
+    stopper.join();
+
+    EXPECT_TRUE(poster_result.ok()) << poster_result.status().message();
+    EXPECT_EQ(api.reset_origin_calls.load(), 0U) << "a request withdrawn by Stop must never reach the seam";
+    EXPECT_FALSE(source.Running());
+    HeadSample after = PlaceholderSample();
+    ASSERT_TRUE(source.TryGetLatest(after, Duration{0}));
+    EXPECT_NEAR(YawDegrees(after.pose), 10.0, 0.1) << "a withdrawn recentre must not leave a read-time correction";
 }
 
 } // namespace

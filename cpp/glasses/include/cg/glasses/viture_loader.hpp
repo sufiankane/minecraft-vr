@@ -10,7 +10,7 @@
 namespace cg::glasses {
 
 /// The loader's decision for a caller-supplied vendor-DLL path.
-enum class DllPathDecision {
+enum class DllPathDecision : std::uint8_t {
     /// The path may be opened: an absolute path outside the working directory,
     /// or a DLL next to the running executable.
     kAllow,
@@ -48,11 +48,25 @@ enum class DllPathDecision {
 /// the path or the first unresolved symbol. The returned API keeps the library
 /// loaded for its whole lifetime.
 ///
-/// Authenticating the vendor DLL (signature/hash pinning) remains open and is
-/// recorded as tech debt; the path policy constrains where a library may come
-/// from, not what it contains. The vendor symbol table is provisional and
-/// documented in `viture_loader.cpp`; the exact export names are a HIL question
-/// recorded in ADR-0009.
+/// Optional content pin (TD-051): when the `CG_VITURE_DLL_SHA256` environment
+/// variable is set, it must hold exactly 64 hex characters (otherwise
+/// `InvalidArgument`) and the loader hashes the file before opening it,
+/// refusing a mismatch with `Unsupported` that names the expected and actual
+/// digests. The pin catches a wrong, stale or corrupted build; it is not a
+/// signature check (an attacker who can set the environment can also set the
+/// expected hash).
+///
+/// Residual trust (documented, not mitigated here): the path policy trusts a
+/// DLL placed next to the running executable, so a process able to write the
+/// executable's directory can still replace the vendor binary (an OS
+/// code-signing policy is the real control). On POSIX, `dlopen` uses the
+/// platform's default dependency search (including `LD_LIBRARY_PATH` and the
+/// caller's `RPATH`), so the vendor `.so`'s own dependencies are not
+/// constrained by this policy; POSIX exists for CI type-checking and
+/// development, not as a hardened deployment. Signature verification remains
+/// the open residual. The vendor symbol table is provisional and documented in
+/// `viture_loader.cpp`; the exact export names are a HIL question recorded in
+/// ADR-0009.
 [[nodiscard]] Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path);
 
 } // namespace cg::glasses

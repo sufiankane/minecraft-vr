@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -115,7 +116,7 @@ class FakeVitureApi final : public IVitureApi {
     /// release-stores `has_reset_pose`; a test reader must acquire-load
     /// `has_reset_pose` before touching `last_reset_pose` (TSan-clean
     /// handshake, not an unordered flag/payload pair).
-    float last_reset_pose[7] = {};
+    std::array<float, kViturePoseFloatCount> last_reset_pose{};
     std::atomic<bool> has_reset_pose{false};
 
     // --- deterministic interleaving seams (CXX-01/CXX-02 tests) -----------
@@ -207,7 +208,7 @@ class FakeVitureApi final : public IVitureApi {
         return empty_poll_result;
     }
 
-    Result<void> ResetOriginCarina(const float pose[7]) override {
+    Result<void> ResetOriginCarina(const std::array<float, kViturePoseFloatCount> &pose) override {
         const std::uint64_t call = reset_origin_calls.fetch_add(1, std::memory_order_relaxed) + 1U;
         if (on_device_call) {
             on_device_call();
@@ -215,10 +216,7 @@ class FakeVitureApi final : public IVitureApi {
         if (!device_alive.load(std::memory_order_relaxed)) {
             return Err<void>(Status{StatusCode::NotReady, "fake: recentre without a device"});
         }
-        if (pose == nullptr) {
-            return Err<void>(Status{StatusCode::InvalidArgument, "fake: null recentre pose"});
-        }
-        for (std::size_t i = 0; i < 7; ++i) {
+        for (std::size_t i = 0; i < pose.size(); ++i) {
             last_reset_pose[i] = pose[i];
         }
         // Publish the payload before the flag; readers acquire the flag first.

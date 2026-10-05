@@ -76,6 +76,13 @@ Offset  Size  Field
 The head and hand payloads are the contract types `cg_head_sample` and
 `cg_hand_frame` defined in dossier sections 5.1 and 5.6.
 
+> **Amendment, 2026-10-04 (TD-009):** the `abi_version` field is **2**, not 1.
+> S6 grew the hand slot with `cg_hand_frame` and bumped the region ABI
+> (`kShmAbiVersion = 2` in `cpp/bridge/include/cg/bridge/shm_layout.hpp`;
+> ADR-0010 records the same bump for the Unity bridge ABI). The `(=1)` value
+> above is the S0 record and is kept for history; this amendment is the current
+> value.
+
 ### Seqlock protocol
 
 Reader: read `seq_a`; if odd, retry; copy the payload; read `seq_b`; accept only

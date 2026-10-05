@@ -20,19 +20,25 @@
 
 #include "cg/glasses/viture_loader.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
 
+#include "cg/glasses/file_hash.hpp"
 #include "result.hpp"
 
 #ifdef _WIN32
@@ -79,31 +85,16 @@ std::wstring Utf8ToWide(const std::string &text) {
     return wide;
 }
 
-[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path) {
-    const std::wstring wide = Utf8ToWide(path);
-    if (wide.empty()) {
-        return nullptr;
-    }
-    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path and keeps the
-    // DLL's own directory available for its dependencies; DEFAULT_DIRS covers
-    // the application and user directories. Unlike the legacy search, neither
-    // flag consults the working directory or PATH, so a planted dependency
-    // next to the process cannot hijack the imports.
-    return LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-}
-
-void CloseLibrary(LibraryHandle handle) noexcept {
-    if (handle != nullptr) {
-        FreeLibrary(handle);
-    }
-}
-
 [[nodiscard]] std::string LastLibraryError() {
     const DWORD error = GetLastError();
     LPWSTR buffer = nullptr;
-    const DWORD length =
-        FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                       nullptr, error, 0, reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
+    // FormatMessageW's ALLOCATE_BUFFER form takes a pointer to the output
+    // pointer; the cast is the documented Win32 calling convention, not a
+    // type pun on the data.
+    const DWORD length = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error, 0,
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        reinterpret_cast<LPWSTR>(&buffer), 0, nullptr);
     std::string message;
     if (length != 0 && buffer != nullptr) {
         message = WideToUtf8(buffer, static_cast<int>(length));
@@ -118,12 +109,49 @@ void CloseLibrary(LibraryHandle handle) noexcept {
     return message;
 }
 
+/// Opens `path`; on failure fills `error` with the reason for *this* call
+/// (CXX-11). A path that never reaches `LoadLibraryExW` (invalid UTF-8) gets
+/// its own message instead of a stale `GetLastError` value.
+[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path, std::string &error) {
+    const std::wstring wide = Utf8ToWide(path);
+    if (wide.empty()) {
+        error = "the DLL path is not valid UTF-8";
+        return nullptr;
+    }
+    // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs an absolute path and keeps the
+    // DLL's own directory available for its dependencies; DEFAULT_DIRS covers
+    // the application and user directories. Unlike the legacy search, neither
+    // flag consults the working directory or PATH, so a planted dependency
+    // next to the process cannot hijack the imports.
+    HMODULE handle =
+        LoadLibraryExW(wide.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (handle == nullptr) {
+        error = LastLibraryError();
+    }
+    return handle;
+}
+
+void CloseLibrary(LibraryHandle handle) noexcept {
+    if (handle != nullptr) {
+        FreeLibrary(handle);
+    }
+}
+
 #else
 
 using LibraryHandle = void *;
 
-[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path) noexcept {
-    return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+/// Opens `path`; on failure fills `error` with the reason for *this* call
+/// (CXX-11). `dlerror()` is cleared first so a successful call cannot leave a
+/// stale message behind, and the failure message is captured immediately.
+[[nodiscard]] LibraryHandle OpenLibrary(const std::string &path, std::string &error) noexcept {
+    (void)dlerror();
+    LibraryHandle handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr) {
+        const char *message = dlerror();
+        error = message == nullptr ? "dlopen failed" : message;
+    }
+    return handle;
 }
 
 void CloseLibrary(LibraryHandle handle) noexcept {
@@ -132,23 +160,45 @@ void CloseLibrary(LibraryHandle handle) noexcept {
     }
 }
 
-[[nodiscard]] std::string LastLibraryError() {
-    const char *error = dlerror();
-    return error == nullptr ? "dlopen failed" : error;
-}
-
 #endif
+
+/// Reads environment variable `name`, or an empty string when unset.
+/// Windows uses the two-call `GetEnvironmentVariableW` (no allocation and no
+/// MSVC deprecation warning); POSIX uses `std::getenv`.
+[[nodiscard]] std::string ReadEnvironment(const char *name) {
+#ifdef _WIN32
+    const std::wstring wide_name = Utf8ToWide(name);
+    if (wide_name.empty()) {
+        return {};
+    }
+    const DWORD needed = ::GetEnvironmentVariableW(wide_name.c_str(), nullptr, 0);
+    if (needed == 0) {
+        return {}; // unset, or an empty value: both mean "no pin"
+    }
+    std::wstring wide_value(static_cast<std::size_t>(needed), L'\0');
+    const DWORD written = ::GetEnvironmentVariableW(wide_name.c_str(), wide_value.data(), needed);
+    if (written == 0 || written >= needed) {
+        return {};
+    }
+    wide_value.resize(static_cast<std::size_t>(written));
+    return WideToUtf8(wide_value.c_str(), static_cast<int>(wide_value.size()));
+#else
+    const char *value = std::getenv(name);
+    return value == nullptr ? std::string{} : std::string{value};
+#endif
+}
 
 /// Outcome of validating a caller-supplied vendor-DLL path.
 ///
 /// A path is accepted only when it is absolute and either outside the working
 /// directory or a sibling of the running executable: the working directory is
-/// attacker-influenced, so a library there is a planted DLL. Authenticating
-/// the vendor DLL (signature/hash) remains open and is recorded as tech debt.
+/// attacker-influenced, so a library there is a planted DLL. The optional
+/// `CG_VITURE_DLL_SHA256` pin in `LoadVitureApi` additionally checks the file
+/// content; signature verification remains open (TD-051).
 [[nodiscard]] bool SamePath(const std::filesystem::path &left, const std::filesystem::path &right) {
 #ifdef _WIN32
-    const std::wstring left_text = left.native();
-    const std::wstring right_text = right.native();
+    const std::wstring &left_text = left.native();
+    const std::wstring &right_text = right.native();
     return _wcsicmp(left_text.c_str(), right_text.c_str()) == 0;
 #else
     return left == right;
@@ -231,7 +281,10 @@ using CreateDeviceFn = cg_status (*)();
 using DestroyDeviceFn = void (*)();
 using StartPoseFn = cg_status (*)();
 using PollPoseFn = cg_status (*)(cg_head_sample *out);
-using ResetOriginCarinaFn = cg_status (*)(const float pose[7]);
+/// The SDK hands a pointer to seven floats ([px, py, pz, qw, qx, qy, qz]);
+/// a pointer parameter is ABI-identical to the vendor's `float[7]` and keeps
+/// the length in `kViturePoseFloatCount` instead of the type.
+using ResetOriginCarinaFn = cg_status (*)(const float *pose);
 using SetDisplayModeFn = cg_status (*)(std::uint32_t refresh_hz, bool sbs);
 using GetRefreshHzFn = cg_status (*)(std::uint32_t *out_refresh_hz);
 using SdkVersionFn = const char *(*)();
@@ -248,6 +301,9 @@ struct VitureApiFns {
 };
 
 // Placeholder export names (see the HIL note at the top).
+/// Length of a lower-case SHA-256 digest in hex characters (TD-051 pin).
+constexpr std::size_t kSha256HexLength = 64;
+
 constexpr const char *kCreateDeviceSymbol = "xr_device_provider_create";
 constexpr const char *kDestroyDeviceSymbol = "xr_device_provider_destroy";
 constexpr const char *kStartPoseSymbol = "xr_device_provider_start_pose";
@@ -273,8 +329,15 @@ template <typename Function>
     if (symbol == nullptr) {
         return false;
     }
+    // Copying the loader's data pointer into the function-pointer slot is the
+    // documented portable workaround for the missing standard conversion
+    // (casting between function pointer types is conditionally supported and
+    // MSVC warns with C4191, an error under /WX). The sizes are static_asserted
+    // above on every supported ABI.
+    // NOLINTBEGIN(bugprone-bitwise-pointer-cast, bugprone-multi-level-implicit-pointer-conversion)
     static_assert(sizeof(Function) == sizeof(symbol), "a function pointer must fit in a loader symbol");
     std::memcpy(&out, &symbol, sizeof(Function));
+    // NOLINTEND(bugprone-bitwise-pointer-cast, bugprone-multi-level-implicit-pointer-conversion)
     return true;
 }
 
@@ -331,6 +394,8 @@ class VendorVitureApi final : public IVitureApi {
 
     VendorVitureApi(const VendorVitureApi &) = delete;
     VendorVitureApi &operator=(const VendorVitureApi &) = delete;
+    VendorVitureApi(VendorVitureApi &&) = delete;
+    VendorVitureApi &operator=(VendorVitureApi &&) = delete;
 
     Result<void> CreateDevice() override { return ToResult(fns_.create_device()); }
 
@@ -353,7 +418,9 @@ class VendorVitureApi final : public IVitureApi {
         return Ok(sample);
     }
 
-    Result<void> ResetOriginCarina(const float pose[7]) override { return ToResult(fns_.reset_origin_carina(pose)); }
+    Result<void> ResetOriginCarina(const std::array<float, kViturePoseFloatCount> &pose) override {
+        return ToResult(fns_.reset_origin_carina(pose.data()));
+    }
 
     Result<void> SetDisplayMode(std::uint32_t refresh_hz, bool sbs) override {
         return ToResult(fns_.set_display_mode(refresh_hz, sbs));
@@ -439,10 +506,42 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
 #else
     const std::string resolved_path = resolved.string();
 #endif
-    LibraryHandle handle = OpenLibrary(resolved_path);
+
+    // TD-051: optional content pin. The path policy constrains where the
+    // library comes from; when the operator sets CG_VITURE_DLL_SHA256 the
+    // loader additionally refuses unexpected bytes before opening the file.
+    const std::string pin = ReadEnvironment("CG_VITURE_DLL_SHA256");
+    if (!pin.empty()) {
+        std::string expected = pin;
+        if (expected.size() != kSha256HexLength || !std::all_of(expected.begin(), expected.end(), [](char character) {
+                return std::isxdigit(static_cast<unsigned char>(character)) != 0;
+            })) {
+            return Err<std::unique_ptr<IVitureApi>>(
+                Status{StatusCode::InvalidArgument,
+                       InternMessage("viture_loader: CG_VITURE_DLL_SHA256 must be exactly 64 hex characters")});
+        }
+        std::transform(expected.begin(), expected.end(), expected.begin(), [](char character) {
+            return static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        });
+        const std::optional<std::string> actual = FileSha256Hex(resolved);
+        if (!actual.has_value()) {
+            return Err<std::unique_ptr<IVitureApi>>(Status{
+                StatusCode::Unsupported, InternMessage("viture_loader: cannot read '" + dll_path +
+                                                       "' to verify CG_VITURE_DLL_SHA256; refusing the library")});
+        }
+        if (*actual != expected) {
+            return Err<std::unique_ptr<IVitureApi>>(Status{
+                StatusCode::Unsupported,
+                InternMessage("viture_loader: DLL hash mismatch for '" + dll_path + "': CG_VITURE_DLL_SHA256 expects " +
+                              expected + ", the file hashes to " + *actual + "; refusing the library")});
+        }
+    }
+
+    std::string open_error;
+    LibraryHandle handle = OpenLibrary(resolved_path, open_error);
     if (handle == nullptr) {
         return Err<std::unique_ptr<IVitureApi>>(
-            Status{StatusCode::Unsupported, InternMessage(dll_path + ": " + LastLibraryError())});
+            Status{StatusCode::Unsupported, InternMessage(dll_path + ": " + open_error)});
     }
 
     VitureApiFns fns{};
@@ -453,7 +552,16 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
             Status{StatusCode::Unsupported, InternMessage(std::string{missing} + ": symbol not found in " + dll_path)});
     }
 
-    std::unique_ptr<IVitureApi> api = std::make_unique<VendorVitureApi>(handle, fns);
+    // CXX-11: construct with `new (std::nothrow)` so an allocation failure
+    // cannot throw out of this function and cannot leak the library handle
+    // (the constructor is noexcept; only the allocation itself can fail).
+    std::unique_ptr<IVitureApi> api(new (std::nothrow) VendorVitureApi(handle, fns));
+    if (api == nullptr) {
+        CloseLibrary(handle);
+        return Err<std::unique_ptr<IVitureApi>>(
+            Status{StatusCode::Internal,
+                   InternMessage("viture_loader: out of memory constructing the vendor API for " + dll_path)});
+    }
     return Ok(std::move(api));
 }
 

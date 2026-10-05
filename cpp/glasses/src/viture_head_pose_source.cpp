@@ -1,6 +1,7 @@
 #include "cg/glasses/viture_head_pose_source.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -89,7 +90,7 @@ Result<void> VitureHeadPoseSource::Start() {
     session_published_ = false;
     running_.store(true, std::memory_order_release);
     try {
-        thread_ = std::jthread([this](std::stop_token stop) { PollLoop(stop); });
+        thread_ = std::jthread([this](const std::stop_token &stop) { PollLoop(stop); });
     } catch (...) {
         running_.store(false, std::memory_order_release);
         device_alive_.store(false, std::memory_order_release);
@@ -206,8 +207,13 @@ bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
     const RecentreState::Value recentre = recentre_state_.Load();
     const bool recentred = recentre.pending || newest.seq <= recentre.until_seq;
     const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
-    if (recentred || capped_ns > 0) {
-        const double dt_s = core_math::ToSeconds(capped_ns);
+    // Prediction is only valid for live tracking. Through a quiet synthetic
+    // (`Unstable`/`Lost`, the last pose with no new samples) there is nothing
+    // to extrapolate: return it unchanged (CXX-12), still applying any recentre
+    // correction armed for it.
+    const bool predict_enabled = newest.state == TrackState::Stable;
+    const double dt_s = predict_enabled ? core_math::ToSeconds(capped_ns) : 0.0;
+    if (recentred || dt_s > 0.0) {
         const double yaw_delta_deg =
             (recentred ? recentre.yaw_offset_deg : 0.0) + yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
         const double pitch_delta_deg = pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
@@ -217,14 +223,18 @@ bool VitureHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const
                 out.pose.rotation *
                 core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_delta_deg * kDegreesToRadians);
         }
-        if (capped_ns > 0) {
+        if (dt_s > 0.0) {
             out.time = newest.time + capped_ns;
         }
     }
     return true;
 }
 
-void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
+// The vendor seam is a virtual interface whose contract forbids throwing
+// (`IVitureApi`: "No method throws"), but the compiler cannot see that across
+// the virtual call; a throw would terminate by design rather than escape.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+void VitureHeadPoseSource::PollLoop(const std::stop_token &stop) noexcept {
     SetupThread();
 
     Duration backoff = kInitialBackoff;
@@ -248,7 +258,7 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
             const double sdk_seconds = core_math::ToSeconds(sdk.host_time);
             mapper_.AddSample(sdk_seconds, now);
             HostTime mapped = mapper_.Map(sdk_seconds);
-            if (last_published_.has_value() && mapped < last_published_->time) {
+            if (last_published_.has_value() && mapped < last_published_.value().time) {
                 // U-01 assumption: the SDK stamp is monotonic within a session.
                 // If a device recreate restarted it (or a stale window maps the
                 // new base into the past), re-seed the mapper from this sample
@@ -257,9 +267,9 @@ void VitureHeadPoseSource::PollLoop(std::stop_token stop) noexcept {
                 mapper_.AddSample(sdk_seconds, now);
                 mapped = mapper_.Map(sdk_seconds);
             }
-            const float sdk_pose[7] = {sdk.pose.p.x, sdk.pose.p.y, sdk.pose.p.z, sdk.pose.q.w,
-                                       sdk.pose.q.x, sdk.pose.q.y, sdk.pose.q.z};
-            HeadSample sample{mapped, core_math::PoseFromSdk(sdk_pose), MapState(sdk.state), ++seq_};
+            const std::array<float, kViturePoseFloatCount> sdk_pose{
+                sdk.pose.p.x, sdk.pose.p.y, sdk.pose.p.z, sdk.pose.q.w, sdk.pose.q.x, sdk.pose.q.y, sdk.pose.q.z};
+            HeadSample sample{mapped, core_math::PoseFromSdk(sdk_pose.data()), MapState(sdk.state), ++seq_};
             UpdateRate(sample);
             // Diagnostics-only stamp: stored before the slot publish, so a
             // reader that sees this sample cannot observe an older stamp.
@@ -315,8 +325,9 @@ void VitureHeadPoseSource::SetupThread() noexcept {
     if (setup_hook_) {
         try {
             setup_hook_();
-        } catch (...) {
-            // A priority hook must never take the polling thread down.
+        } catch (...) { // NOLINT(bugprone-empty-catch)
+            // A priority hook must never take the polling thread down, so the
+            // exception is deliberately swallowed (test-only seam).
         }
     }
 }
@@ -354,6 +365,9 @@ void VitureHeadPoseSource::ServiceRecentre() noexcept {
     HandleRecentre(generation);
 }
 
+// Same exception-escape rationale as `PollLoop`: the seam contract forbids
+// throwing, and the noexcept signature is the enforced boundary.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 void VitureHeadPoseSource::HandleRecentre(std::uint64_t generation) noexcept {
     // The target is the newest raw slot sample: for a normal post that is the
     // sample the caller captured; after a recreate it is the first sample of
@@ -363,12 +377,13 @@ void VitureHeadPoseSource::HandleRecentre(std::uint64_t generation) noexcept {
     HeadSample target{0, core_math::Pose{core_math::Vec3{0.0, 0.0, 0.0}, core_math::Quat::kIdentity},
                       TrackState::Stable, 0};
     if (!slot_.TryRead(target) && last_published_.has_value()) {
-        target = *last_published_;
+        target = last_published_.value();
     }
-    const float pose[7] = {static_cast<float>(target.pose.position.x),   static_cast<float>(target.pose.position.y),
-                           static_cast<float>(target.pose.position.z),   static_cast<float>(target.pose.rotation.w()),
-                           static_cast<float>(target.pose.rotation.x()), static_cast<float>(target.pose.rotation.y()),
-                           static_cast<float>(target.pose.rotation.z())};
+    const std::array<float, kViturePoseFloatCount> pose{
+        static_cast<float>(target.pose.position.x),   static_cast<float>(target.pose.position.y),
+        static_cast<float>(target.pose.position.z),   static_cast<float>(target.pose.rotation.w()),
+        static_cast<float>(target.pose.rotation.x()), static_cast<float>(target.pose.rotation.y()),
+        static_cast<float>(target.pose.rotation.z())};
     const double yaw_deg = YawDegrees(target.pose);
 
     const Result<void> result = api_.ResetOriginCarina(pose);
@@ -390,20 +405,28 @@ void VitureHeadPoseSource::HandleRecentre(std::uint64_t generation) noexcept {
     // every sample published before this pass: one may have been published
     // between the post and the service pass. The sequence store releases the
     // offset store. A newer post is resolved by its own pass instead.
+    //
+    // `ServiceRecentre` verified the optional before calling, and this thread
+    // is the only writer; the explicit guard makes the access checked for the
+    // static analysis (and is unreachable in practice).
+    if (!last_published_.has_value()) {
+        return;
+    }
+    HeadSample &published = *last_published_;
     {
         const std::lock_guard<std::mutex> lock(recentre_mutex_);
         if (generation == recentre_generation_) {
-            recentre_state_.Store({-yaw_deg, static_cast<std::int64_t>(last_published_->seq), false, generation});
+            recentre_state_.Store({-yaw_deg, static_cast<std::int64_t>(published.seq), false, generation});
         }
     }
     // Later quiet synthetics must carry the recentred pose, and the next real
     // sample's rate is measured from the corrected heading. This reflects the
     // SDK transition just performed even when a newer post superseded it.
-    last_published_->pose.rotation =
+    published.pose.rotation =
         core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, -yaw_deg * kDegreesToRadians) *
-        last_published_->pose.rotation;
-    previous_yaw_deg_ = YawDegrees(last_published_->pose);
-    previous_pitch_deg_ = PitchDegrees(last_published_->pose);
+        published.pose.rotation;
+    previous_yaw_deg_ = YawDegrees(published.pose);
+    previous_pitch_deg_ = PitchDegrees(published.pose);
 }
 
 void VitureHeadPoseSource::WithdrawPendingRecentre() noexcept {
@@ -412,7 +435,7 @@ void VitureHeadPoseSource::WithdrawPendingRecentre() noexcept {
     recentre_state_.Store({0.0, 0, false, recentre_generation_});
 }
 
-bool VitureHeadPoseSource::WaitBackoff(Duration duration, std::stop_token stop) noexcept {
+bool VitureHeadPoseSource::WaitBackoff(Duration duration, const std::stop_token &stop) noexcept {
     const HostTime deadline = clock_.Now() + duration.ns;
     for (;;) {
         if (StopRequested(stop)) {
@@ -428,6 +451,7 @@ bool VitureHeadPoseSource::WaitBackoff(Duration duration, std::stop_token stop) 
     }
 }
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 void VitureHeadPoseSource::PublishQuiet(HostTime now) noexcept {
     if (!last_published_.has_value()) {
         return;
@@ -442,7 +466,7 @@ void VitureHeadPoseSource::PublishQuiet(HostTime now) noexcept {
     if (desired == quiet_state_) {
         return;
     }
-    HeadSample sample{now, last_published_->pose, desired, ++seq_};
+    HeadSample sample{now, last_published_.value().pose, desired, ++seq_};
     slot_.Publish(sample);
     last_published_ = sample;
     quiet_state_ = desired;

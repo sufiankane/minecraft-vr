@@ -13,6 +13,9 @@ constexpr double kLinearInterpolationDotThreshold = 0.9995;
 
 const Quat Quat::kIdentity(1.0, 0.0, 0.0, 0.0);
 
+// Component order (w, x, y, z) is the public construction contract shared with
+// C#; distinct wrapper types would not add safety to a four-double constructor.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 Quat::Quat(double w, double x, double y, double z) noexcept : w_(w), x_(x), y_(y), z_(z) {}
 
 Quat Quat::FromComponents(double w, double x, double y, double z) noexcept {

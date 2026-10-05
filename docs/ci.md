@@ -152,8 +152,15 @@ cmake --preset windows-msvc
 cmake --build --preset windows-msvc
 ctest --preset ci
 clang-format --dry-run --Werror @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
-clang-tidy -p build/windows-msvc @(git ls-files core-math/src | Where-Object { $_ -match '\.cpp$' })
+clang-tidy --header-filter='[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p build/windows-msvc @(git ls-files core-math/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
 ```
+
+The `--header-filter` deliberately narrows the repository header filter to the
+three C++ module directories: `.clang-tidy`'s default `(^|[/\\])cpp[/\\]…`
+would match the frozen, dossier-verbatim headers under `contracts/` (notably
+`contracts/cpp/result.hpp`) once the glasses and bridge sources include them,
+and those contracts are not ours to edit. Module headers under
+`core-math|glasses|bridge/{include,src}` are checked; contract headers are not.
 
 .NET gate:
 

@@ -39,10 +39,18 @@ class PoseSlot {
     static constexpr int kMaxReadAttempts = 64;
 
     PoseSlot() noexcept = default;
+    ~PoseSlot() = default;
     PoseSlot(const PoseSlot &) = delete;
     PoseSlot &operator=(const PoseSlot &) = delete;
+    PoseSlot(PoseSlot &&) = delete;
+    PoseSlot &operator=(PoseSlot &&) = delete;
 
     /// Publishes `sample` as the newest value. Single writer only.
+    // The seqlock works on a fixed-size word buffer bounded by the compile-time
+    // `kWordCount` static asserts; checked indexing would add a throw path to
+    // the wait-free publish contract.
+    // NOLINTBEGIN(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+    // cppcoreguidelines-pro-bounds-constant-array-index)
     void Publish(const HeadSample &sample) noexcept {
         std::uint64_t words[kWordCount];
         std::memcpy(words, &sample, sizeof(HeadSample));
@@ -86,15 +94,23 @@ class PoseSlot {
         }
         return false;
     }
+    // NOLINTEND(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+    // cppcoreguidelines-pro-bounds-constant-array-index)
 
-    /// Test-only publish seam. When armed, `Publish` calls `hook(context)`
-    /// after storing the odd version counter (and the release fence) and before
-    /// writing the payload, so a test can hold one publish mid-flight and pin
-    /// the bounded-retry exhaustion path deterministically. Production leaves
-    /// it unset and pays one predictable null check. Not thread-safe: arm the
-    /// hook while no publish is in flight and clear it afterwards.
+    /// Test-only publish seam, scoped to this slot instance (TD-002). When
+    /// armed, `Publish` calls `hook(context)` after storing the odd version
+    /// counter (and the release fence) and before writing the payload, so a
+    /// test can hold one publish mid-flight and pin the bounded-retry
+    /// exhaustion path deterministically. Production leaves it unset and pays
+    /// one predictable null check.
+    ///
+    /// Instance-scoped: arming one slot can never affect another slot's
+    /// publishes, so parallel tests stay serial-safe. Not thread-safe with
+    /// respect to a publish in flight on this slot: arm the hook while no
+    /// publish is in flight ("arm before publish") and clear it afterwards,
+    /// before the writer may publish again.
     using TestPublishHook = void (*)(void *) noexcept;
-    static void SetTestPublishHook(TestPublishHook hook, void *context) noexcept {
+    void SetTestPublishHook(TestPublishHook hook, void *context) noexcept {
         test_publish_hook_ = hook;
         test_publish_context_ = context;
     }
@@ -114,11 +130,14 @@ class PoseSlot {
 
     static constexpr std::size_t kWordCount = sizeof(HeadSample) / sizeof(std::uint64_t);
 
-    // Test-only publish seam; null unless `SetTestPublishHook` armed it (see
-    // the public comment). The writer only reads these.
-    inline static TestPublishHook test_publish_hook_ = nullptr;
-    inline static void *test_publish_context_ = nullptr;
+    // Test-only publish seam, an instance member (TD-002; see the public
+    // comment). The writer only reads these.
+    TestPublishHook test_publish_hook_ = nullptr;
+    void *test_publish_context_ = nullptr;
 
+    // The fixed C array is the wait-free seqlock storage; see the block
+    // comment in `Publish`.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
     mutable std::uint64_t payload_[kWordCount]{};
     // The atomic word accesses target `payload_` directly, so the storage's
     // own alignment is what matters (CXX-07); `HeadSample`'s alignment is

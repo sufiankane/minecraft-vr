@@ -3,4 +3,6 @@ add_library(cg::core_math ALIAS cg_core_math)
 
 target_compile_features(cg_core_math PUBLIC cxx_std_20)
 target_include_directories(cg_core_math PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(cg_core_math PRIVATE cg_warnings)
+# TD-010: the warning flags are a usage requirement of the public headers, so
+# they propagate to every consumer instead of stopping at this target.
+target_link_libraries(cg_core_math PUBLIC cg_warnings)

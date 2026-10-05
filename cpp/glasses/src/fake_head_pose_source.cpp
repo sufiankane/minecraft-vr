@@ -14,6 +14,10 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kDegreesToRadians = kPi / 180.0;
 constexpr std::int64_t kMaxPredictNs = 100'000'000;
 
+/// Maps the RNG's unit interval to [-1, 1]: `scale * unit - offset`.
+constexpr double kUnitToSignedScale = 2.0;
+constexpr double kUnitToSignedOffset = 1.0;
+
 } // namespace
 
 FakeScript FakeScript::Static() noexcept { return FakeScript{}; }
@@ -32,6 +36,10 @@ FakeScript FakeScript::PitchSweep(double degrees_per_second) noexcept {
     return script;
 }
 
+// The factory parameters are positional integers mirroring the script
+// vocabulary (`after`, `count`); a wrapper type would not make the call sites
+// clearer.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 FakeScript FakeScript::Dropout(std::uint64_t after, std::uint64_t count) noexcept {
     FakeScript script;
     script.pattern = Pattern::Dropout;
@@ -40,6 +48,7 @@ FakeScript FakeScript::Dropout(std::uint64_t after, std::uint64_t count) noexcep
     return script;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 FakeScript FakeScript::Unstable(std::uint64_t after, std::uint64_t count) noexcept {
     FakeScript script;
     script.pattern = Pattern::Unstable;
@@ -48,6 +57,7 @@ FakeScript FakeScript::Unstable(std::uint64_t after, std::uint64_t count) noexce
     return script;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 FakeScript FakeScript::Jitter(double amplitude_degrees, std::uint32_t seed) noexcept {
     FakeScript script;
     script.pattern = Pattern::Jitter;
@@ -84,6 +94,9 @@ Result<void> FakeHeadPoseSource::Start() {
         !std::isfinite(script.value)) {
         return Err<void>(Status{StatusCode::InvalidArgument, "sweep rate must be finite"});
     }
+    if (!std::isfinite(script.roll_deg)) {
+        return Err<void>(Status{StatusCode::InvalidArgument, "roll offset must be finite"});
+    }
     running_.store(true, std::memory_order_release);
     return Ok();
 }
@@ -108,23 +121,24 @@ bool FakeHeadPoseSource::TryGetLatest(HeadSample &out, Duration predict) const n
     out = newest;
 
     const double yaw_offset_deg = yaw_offset_deg_.load(std::memory_order_relaxed);
-    if (yaw_offset_deg != 0.0) {
+    const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
+    if (capped_ns > 0) {
+        // Compose the recentre offset and the extrapolated delta onto the
+        // recorded rotation (matching the replay and VITURE adapters, TD-001):
+        // a scripted roll survives the prediction instead of being dropped by
+        // rebuilding an absolute yaw*pitch pose.
+        const double dt_s = core_math::ToSeconds(capped_ns);
+        const double yaw_delta_deg = yaw_offset_deg + yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
+        const double pitch_delta_deg = pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
+        out.pose.rotation =
+            core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_delta_deg * kDegreesToRadians) *
+            out.pose.rotation *
+            core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_delta_deg * kDegreesToRadians);
+        out.time = newest.time + capped_ns;
+    } else if (yaw_offset_deg != 0.0) {
         out.pose.rotation =
             core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_offset_deg * kDegreesToRadians) *
             out.pose.rotation;
-    }
-
-    const std::int64_t capped_ns = std::clamp<std::int64_t>(predict.ns, 0, kMaxPredictNs);
-    if (capped_ns > 0) {
-        const double dt_s = core_math::ToSeconds(capped_ns);
-        const double yaw_deg = yaw_offset_deg + latest_yaw_deg_.load(std::memory_order_relaxed) +
-                               yaw_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
-        const double pitch_deg = latest_pitch_deg_.load(std::memory_order_relaxed) +
-                                 pitch_rate_deg_per_s_.load(std::memory_order_relaxed) * dt_s;
-        out.pose.rotation =
-            core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_deg * kDegreesToRadians) *
-            core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_deg * kDegreesToRadians);
-        out.time = newest.time + capped_ns;
     }
     return true;
 }
@@ -204,12 +218,16 @@ core_math::Quat FakeHeadPoseSource::RawRotation() const noexcept {
         core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 1.0, 0.0}, yaw_deg_ * kDegreesToRadians);
     const core_math::Quat pitch =
         core_math::Quat::FromAxisAngle(core_math::Vec3{1.0, 0.0, 0.0}, pitch_deg_ * kDegreesToRadians);
-    return yaw * pitch;
+    // The fixed script roll is the final component, so a prediction that
+    // composes its yaw/pitch delta onto this rotation preserves it (TD-001).
+    const core_math::Quat roll =
+        core_math::Quat::FromAxisAngle(core_math::Vec3{0.0, 0.0, 1.0}, config_.script.roll_deg * kDegreesToRadians);
+    return yaw * pitch * roll;
 }
 
 double FakeHeadPoseSource::RandomSymmetric(double amplitude) noexcept {
     const double unit = static_cast<double>(rng_()) / static_cast<double>(std::mt19937::max());
-    return (2.0 * unit - 1.0) * amplitude;
+    return (kUnitToSignedScale * unit - kUnitToSignedOffset) * amplitude;
 }
 
 } // namespace cg::glasses

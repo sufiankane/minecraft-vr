@@ -46,6 +46,56 @@ struct RssGateResult {
     return RssGateResult{true, growth, RssGateReason::WithinBudget};
 }
 
+/// Why the soak thread/handle count gate passed or failed.
+enum class CountGateReason {
+    /// The final count is at or below the baseline (a shrink is fine).
+    WithinBaseline,
+    /// The final count is above the baseline: a leaked thread or handle.
+    Grew,
+    MissingBaseline,
+    MissingFinal,
+};
+
+/// The thread/handle count gate verdict (TD-007). `baseline` is taken right
+/// after the consumer thread starts, `final_count` after it is joined, so the
+/// expected consumer thread is part of both readings.
+struct CountGateResult {
+    bool pass = false;
+    std::uint64_t baseline = 0;
+    std::uint64_t final_count = 0;
+    CountGateReason reason = CountGateReason::MissingBaseline;
+};
+
+/// Evaluates one thread-or-handle count gate (TD-007, NFR-07): the final count
+/// must not exceed the baseline. Missing readings fail, consistently with the
+/// RSS gate, so a query that stopped working cannot mask a leak.
+[[nodiscard]] inline CountGateResult EvaluateCountGate(std::optional<std::uint64_t> baseline,
+                                                       std::optional<std::uint64_t> final_count) noexcept {
+    if (!baseline.has_value()) {
+        return CountGateResult{false, 0, 0, CountGateReason::MissingBaseline};
+    }
+    if (!final_count.has_value()) {
+        return CountGateResult{false, *baseline, 0, CountGateReason::MissingFinal};
+    }
+    if (*final_count > *baseline) {
+        return CountGateResult{false, *baseline, *final_count, CountGateReason::Grew};
+    }
+    return CountGateResult{true, *baseline, *final_count, CountGateReason::WithinBaseline};
+}
+
+/// The read-to-read gap p95 gate verdict (TD-007): the p95 must stay at or
+/// below `threshold_ns`. The threshold is a wall-clock budget for the render
+/// consumer's read loop, normally supplied from `--latency-p95-ms`.
+struct LatencyGateResult {
+    bool pass = false;
+    double p95_ns = 0.0;
+    double threshold_ns = 0.0;
+};
+
+[[nodiscard]] inline LatencyGateResult EvaluateLatencyGate(double p95_ns, double threshold_ns) noexcept {
+    return LatencyGateResult{p95_ns <= threshold_ns, p95_ns, threshold_ns};
+}
+
 /// Formats one RSS reading into the caller's buffer: `"x.xx MiB"`, or
 /// `"unavailable"` when the query failed.
 ///

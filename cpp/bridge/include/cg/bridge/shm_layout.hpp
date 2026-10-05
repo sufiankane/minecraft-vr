@@ -29,6 +29,31 @@
 // is bumped whenever the payload shape changes (S6: the hand slot grew with
 // `cg_hand_frame`), and the reader rejects a mismatch with
 // `CG_ERR_UNSUPPORTED` naming both versions in `LastHeaderError()`.
+//
+// Reader hardening (TD-003/TD-008/TD-052): the writer is a same-user process
+// and is not authenticated, so the reader applies the cheap checks below; a
+// nonce/HMAC identity handshake remains the documented residual. It
+// re-validates `magic`, `writer_pid`, `abi_version` and `header_size` on every
+// read and before every command, not only at open. A valid magic with a zero
+// `writer_pid` violates the publication order (the writer stores `writer_pid`
+// before `magic`) and is treated as unpublished; a non-zero pid that differs
+// from the reader's process is normal (the writer is a separate service) and
+// advisory only, never a rejection. The reader maps exactly
+// `kMinimumRegionSize` payload bytes plus the 64-byte header command view and
+// refuses a POSIX region outside [`kMinimumRegionSize`, `kMaximumRegionSize`];
+// a Windows section is page-granular and cannot be measured cheaply, so the
+// mapped view length is the exact accepted size there. No payload count is
+// trusted: `header_size` must equal `kHeaderSize` exactly and each slot is
+// copied as its fixed `sizeof` payload.
+//
+// Object-model assumption (CXX-19): the payload words are accessed through
+// `std::atomic_ref<std::uint64_t>` over the C struct storage (see
+// `cpp/bridge/src/bridge.cpp` `copy_payload`). The effective type of that
+// storage is the payload struct, so the access is formally outside the C++
+// object model; both sides use the same layout, every access is 8-byte
+// aligned, and the bridge target builds with `-fno-strict-aliasing` on
+// GCC/Clang (MSVC does not exploit this aliasing), which keeps the pattern
+// well-defined for the supported toolchains.
 
 #include <atomic>
 #include <bit>
@@ -66,14 +91,21 @@ inline constexpr std::uint32_t kShmAbiVersion = 2;
 inline constexpr std::uint32_t kHeaderSize = 64;
 
 /// Windows shared-memory region name (dossier 5.6).
-inline constexpr char kStateName[] = "Local\\cubeglass.v1.state";
+inline constexpr const char *kStateName = "Local\\cubeglass.v1.state";
 
 /// Header offsets from the 5.6 table.
+inline constexpr std::size_t kAbiVersionOffset = 8;
+inline constexpr std::size_t kHeaderSizeOffset = 12;
+inline constexpr std::size_t kWriterPidOffset = 16;
 inline constexpr std::size_t kHeartbeatOffset = 24;
 inline constexpr std::size_t kCommandOffset = 32;
 inline constexpr std::size_t kAckOffset = 36;
+inline constexpr std::size_t kReservedOffset = 40;
 inline constexpr std::size_t kHeadSlotOffset = 64;
 inline constexpr std::size_t kHandSlotOffset = 256;
+
+/// Size of one seqlock counter (`std::atomic<std::uint64_t>`).
+inline constexpr std::size_t kSeqCounterSize = sizeof(std::uint64_t);
 
 /// A sample whose writer heartbeat is older than this is stale (250 ms).
 inline constexpr std::int64_t kStaleAfterNs = 250'000'000;
@@ -114,18 +146,21 @@ struct ShmHeader {
     std::int64_t heartbeat_ns;
     std::uint32_t command;
     std::uint32_t ack;
+    // The 24 reserved bytes are the 40..63 tail of the fixed 64-byte header
+    // (dossier 5.6 table): a byte-exact layout, not an arbitrary array.
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-avoid-magic-numbers)
     std::uint8_t reserved[24];
 };
 
 static_assert(sizeof(ShmHeader) == kHeaderSize);
 static_assert(offsetof(ShmHeader, magic) == 0);
-static_assert(offsetof(ShmHeader, abi_version) == 8);
-static_assert(offsetof(ShmHeader, header_size) == 12);
-static_assert(offsetof(ShmHeader, writer_pid) == 16);
+static_assert(offsetof(ShmHeader, abi_version) == kAbiVersionOffset);
+static_assert(offsetof(ShmHeader, header_size) == kHeaderSizeOffset);
+static_assert(offsetof(ShmHeader, writer_pid) == kWriterPidOffset);
 static_assert(offsetof(ShmHeader, heartbeat_ns) == kHeartbeatOffset);
 static_assert(offsetof(ShmHeader, command) == kCommandOffset);
 static_assert(offsetof(ShmHeader, ack) == kAckOffset);
-static_assert(offsetof(ShmHeader, reserved) == 40);
+static_assert(offsetof(ShmHeader, reserved) == kReservedOffset);
 
 /// HeadSlot seqlock at `kHeadSlotOffset`: counter, payload, counter.
 struct HeadSlot {
@@ -145,11 +180,28 @@ static_assert(std::is_trivially_copyable_v<cg_head_sample> && std::is_trivially_
               std::is_trivially_copyable_v<cg_hand_frame>);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(offsetof(HeadSlot, seq_a) == 0);
-static_assert(offsetof(HeadSlot, sample) == 8);
-static_assert(offsetof(HeadSlot, seq_b) == 8 + sizeof(cg_head_sample));
+static_assert(offsetof(HeadSlot, sample) == kSeqCounterSize);
+static_assert(offsetof(HeadSlot, seq_b) == kSeqCounterSize + sizeof(cg_head_sample));
 static_assert(sizeof(HeadSlot) <= kHandSlotOffset - kHeadSlotOffset);
 static_assert(offsetof(HandSlot, seq_a) == 0);
-static_assert(offsetof(HandSlot, frame) == 8);
-static_assert(offsetof(HandSlot, seq_b) == 8 + sizeof(cg_hand_frame));
+static_assert(offsetof(HandSlot, frame) == kSeqCounterSize);
+static_assert(offsetof(HandSlot, seq_b) == kSeqCounterSize + sizeof(cg_hand_frame));
+
+/// The smallest region a reader accepts: the 5.6 head and hand slots fit.
+inline constexpr std::size_t kMinimumRegionSize = kHandSlotOffset + sizeof(HandSlot);
+// The literal is the frozen S5 dossier region size; the surrounding expression
+// is the derivation the reader relies on, so the check is intentional.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers)
+static_assert(kMinimumRegionSize == 848, "the 5.6 head and hand slots must fit the accepted region");
+
+/// The largest POSIX region a reader will map (TD-052). The reader only ever
+/// maps `kMinimumRegionSize` payload bytes plus the 64-byte header command
+/// view, so this is generous headroom for future layout growth while still
+/// refusing a hostile multi-gigabyte object. Windows cannot query a section's
+/// exact size cheaply, so there the cap is implicit in the view lengths.
+inline constexpr std::size_t kMaximumRegionSizeKiB = 64;
+inline constexpr std::size_t kBytesPerKiB = 1024;
+inline constexpr std::size_t kMaximumRegionSize = kMaximumRegionSizeKiB * kBytesPerKiB;
+static_assert(kMaximumRegionSize >= kMinimumRegionSize, "the accepted size window must not be empty");
 
 } // namespace cg::bridge
