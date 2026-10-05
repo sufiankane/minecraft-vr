@@ -21,9 +21,10 @@ namespace Cubeglass.Editor
     /// <remarks>
     /// Shared by <see cref="CalibrationSceneBuilder"/> and
     /// <see cref="GameSceneBuilder"/> (S7 Task 4c); the pass is not part of
-    /// Unity, so it lives here rather than in a runtime assembly.
+    /// Unity, so it lives here rather than in a runtime assembly. Public so the
+    /// EditMode tests can pin the root ordering and the stable-key contract.
     /// </remarks>
-    internal static class SceneCanonicalizer
+    public static class SceneCanonicalizer
     {
         private const int GameObjectClassId = 1;
         private const int SceneRootsClassId = 1660057539;
@@ -179,13 +180,50 @@ namespace Cubeglass.Editor
         private static IEnumerable<long> OrderSceneRoots(
             SceneDocument sceneRoots, Dictionary<long, SceneDocument> byOldId)
         {
-            return sceneRoots.References
+            List<SceneDocument> roots = sceneRoots.References
                 .Where(reference => byOldId.ContainsKey(reference))
-                .OrderBy(
-                    reference => GameObjectName(byOldId[reference], byOldId),
-                    StringComparer.Ordinal)
-                .ThenBy(reference => byOldId[reference].Body, StringComparer.Ordinal)
+                .Select(reference => byOldId[reference])
                 .ToList();
+
+            // Review M-9 / TD-060 M-9: the old tiebreak used the raw body,
+            // which still contained the pseudo-random old fileIDs, so two
+            // same-named roots could canonicalize in a different order across
+            // saves. Group by (name, id-scrubbed body) first: a true ambiguity
+            // (structural twins) is refused loudly instead of ordered by
+            // whatever IDs Unity happened to assign, and otherwise the order
+            // is fully determined by stable content.
+            var byStableKey = new Dictionary<string, SceneDocument>(StringComparer.Ordinal);
+            foreach (SceneDocument root in roots)
+            {
+                string key = GameObjectName(root, byOldId) + "\u0000" + StableBodyKey(root.Body);
+                if (byStableKey.ContainsKey(key))
+                {
+                    throw new InvalidDataException(
+                        "Canonicalization found two structurally identical scene roots named '"
+                            + GameObjectName(root, byOldId)
+                            + "'; their order cannot be made renumber-independent. Rename one root.");
+                }
+
+                byStableKey.Add(key, root);
+            }
+
+            return roots
+                .OrderBy(
+                    root => GameObjectName(root, byOldId),
+                    StringComparer.Ordinal)
+                .ThenBy(root => StableBodyKey(root.Body), StringComparer.Ordinal)
+                .Select(root => root.OldId)
+                .ToList();
+        }
+
+        /// <summary>
+        /// The document body with every <c>{fileID: n}</c> reference rewritten
+        /// to a placeholder, so the canonical root tiebreak no longer depends
+        /// on the pseudo-random old IDs (TD-060 M-9).
+        /// </summary>
+        public static string StableBodyKey(string body)
+        {
+            return body == null ? string.Empty : FileIdPattern.Replace(body, "fileID: #}");
         }
 
         private static string GameObjectName(
