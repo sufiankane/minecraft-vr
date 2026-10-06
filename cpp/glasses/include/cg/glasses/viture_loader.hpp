@@ -64,9 +64,12 @@ enum class DllPathDecision : std::uint8_t {
 /// caller's `RPATH`), so the vendor `.so`'s own dependencies are not
 /// constrained by this policy; POSIX exists for CI type-checking and
 /// development, not as a hardened deployment. Signature verification remains
-/// the open residual. The vendor symbol table is provisional and documented in
-/// `viture_loader.cpp`; the exact export names are a HIL question recorded in
-/// ADR-0009.
+/// the open residual. The vendor symbol table binds the real VITURE Windows
+/// SDK exports (observed 2026-10-05, documented in `viture_loader.cpp`); the
+/// live pose-rate/latency and display-mode answers (U-01/U-08) remain HIL
+/// questions recorded in ADR-0009. `CreateDevice` resolves the product id
+/// `xr_device_provider_create` requires from `CG_VITURE_PRODUCT_ID`
+/// (decimal or 0x-hex) or, when unset, from a USB scan for VID 0x35CA.
 [[nodiscard]] Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path);
 
 } // namespace cg::glasses

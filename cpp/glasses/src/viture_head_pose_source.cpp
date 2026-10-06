@@ -240,6 +240,7 @@ void VitureHeadPoseSource::PollLoop(const std::stop_token &stop) noexcept {
     Duration backoff = kInitialBackoff;
     int attempts = 0;
     last_success_ns_ = clock_.Now();
+    grace_anchor_ns_ = last_success_ns_;
     quiet_state_ = TrackState::Stable;
 
     for (;;) {
@@ -291,6 +292,19 @@ void VitureHeadPoseSource::PollLoop(const std::stop_token &stop) noexcept {
         }
 
         PublishQuiet(now);
+        // HIL finding (2026-10-06): the Carina VIO engine can fail the first
+        // poll(s) after `start` (one `-3` in the vendor quick-start, then
+        // success) while the pipeline warms up. A failure streak younger than
+        // `kReconnectAfter` keeps the session and retries; only a sustained
+        // streak is a real loss and tears the device down. The streak is
+        // measured from the session start, not from the last successful poll:
+        // the quiet-state anchor must keep advancing across reconnects.
+        if (now - grace_anchor_ns_ < kReconnectAfter.ns) {
+            if (!WaitBackoff(kReconnectRetryDelay, stop)) {
+                break;
+            }
+            continue;
+        }
         if (attempts < kMaxReconnectAttempts) {
             ++attempts;
             device_alive_.store(false, std::memory_order_release);
@@ -312,6 +326,10 @@ void VitureHeadPoseSource::PollLoop(const std::stop_token &stop) noexcept {
                 api_.DestroyDevice();
                 continue;
             }
+            // A fresh session gets the full warm-up grace: the first polls can
+            // fail while the VIO starts (see the failure branch above). Only
+            // the grace anchor moves; the quiet-state anchor is untouched.
+            grace_anchor_ns_ = clock_.Now();
         } else if (!WaitBackoff(kMaxBackoff, stop)) {
             break;
         }

@@ -23,4 +23,8 @@ target_link_libraries(cg_glasses PUBLIC cg::core_math cg_warnings)
 target_link_libraries(cg_glasses PRIVATE cg_analyze)
 if(NOT WIN32)
     target_link_libraries(cg_glasses PRIVATE ${CMAKE_DL_LIBS})
+else()
+    # The real VITURE binding enumerates the USB bus via SetupAPI to resolve
+    # the product id `xr_device_provider_create` needs (`viture_loader.cpp`).
+    target_link_libraries(cg_glasses PRIVATE setupapi)
 endif()

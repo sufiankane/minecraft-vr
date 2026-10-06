@@ -3,20 +3,35 @@
 // (ADR-0001, ADR-0009): the SDK surface arrives through the function table
 // below, resolved at load time.
 //
-// HIL QUESTION (pending, recorded in ADR-0009 under "Vendor symbol binding"):
-// the exact exported names, the calling convention and the poll-blocking
-// behaviour of the vendor library are not covered by dossier facts
-// F-01..F-10. F-02 and F-04 describe the Carina poll and recentre calls in
-// prose, but the device lifecycle spellings and the display-mode surface
-// (U-08) are unknown. The symbol names in this table are therefore
-// placeholders: the two with a dossier citation are best-effort
-// transcriptions and the rest are guesses in the same spelling style. The
-// function-pointer signatures are contract-shaped placeholders as well, so
-// the adapter at the bottom is a thin status mapper rather than the final
-// binding. Until the HIL run answers the question, loading the real DLL fails
-// with `Unsupported` naming the first unresolved placeholder, which is the
-// documented pre-HIL behaviour. When the answers exist, this one translation
-// unit is rewritten; nothing else changes.
+// This table binds the real VITURE Windows SDK (`viture sdk/include/*.h` and
+// `x86_64/glasses.dll`, exports observed 2026-10-05). The pre-HIL placeholder
+// spellings that never existed (`xr_device_provider_start_pose`,
+// `..._get_display_refresh_rate`, `..._get_sdk_version`) are gone; create,
+// poll and reset now use the vendor's true signatures, including the product
+// id `create` requires and the out-parameter poll.
+//
+// Calling convention: the SDK header marks every entry point
+// `__declspec(dllexport)` with no explicit convention, i.e. the platform
+// default (`__cdecl`; on x64 there is only the unified Microsoft convention).
+//
+// What the HIL run still has to answer (ADR-0009 "U-01"/"U-08"):
+// - U-01: does 3DoF Carina polling work on Windows, at what rate and latency,
+//   and what does `pose_status` mean in practice (the header documents only
+//   `0 = stable`, `1 = unstable`)? The rate is measurable from the poll
+//   cadence; the latency estimate needs an SDK timestamp, and the poll call
+//   returns none — the stamped reference is the Carina pose callback
+//   (registered below), whose `double timestamp` is the SDK monotonic clock.
+//   `PollPose` therefore stamps each polled pose with the newest callback
+//   stamp (falling back to a host steady clock only until the first callback
+//   arrives, which the HIL report must note). If the callback is too slow for
+//   a usable latency bound, the fallback decision is recorded from the run.
+// - U-08: live display-mode switching. The mode constants and the
+//   set/get/switch calls come from `viture_protocol_public.h`; the run has to
+//   confirm the encoding, the SBS signalling and the refresh behaviour.
+//
+// Security: the DLL path policy, the optional SHA-256 pin (TD-051), the
+// dependency search constraints and the vendor-handle lifetime rules are
+// unchanged from the pre-HIL binding.
 
 #include "cg/glasses/viture_loader.hpp"
 
@@ -24,16 +39,21 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <charconv>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -46,6 +66,10 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+
+#include <setupapi.h>
+
+#pragma comment(lib, "setupapi.lib")
 #else
 #include <dlfcn.h>
 #endif
@@ -188,6 +212,36 @@ void CloseLibrary(LibraryHandle handle) noexcept {
 #endif
 }
 
+/// `CG_VITURE_DEBUG=1` enables verbose seam tracing on stderr (HIL only):
+/// the trace pinpoints whether a vendor call blocks, which a silent hang
+/// cannot.
+[[nodiscard]] bool DebugTracesEnabled() {
+    static const bool enabled = ReadEnvironment("CG_VITURE_DEBUG") == "1";
+    return enabled;
+}
+
+/// Debug trace helpers. Tracing must never throw out of a noexcept caller
+/// (DestroyDevice), so the integer formatter uses `std::to_chars` into a stack
+/// buffer plus C stdio: no allocation and no C varargs.
+constexpr std::size_t kMaxIntTextSize = 12; // enough for "-2147483648" and slack
+
+void TraceText(const char *text) noexcept { (void)std::fputs(text, stderr); }
+
+void TraceInt(const char *prefix, int value) noexcept {
+    (void)std::fputs(prefix, stderr);
+    std::array<char, kMaxIntTextSize> text{};
+    // `std::to_chars` takes raw, non-const pointers; the array bounds them.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    char *const last = text.data() + text.size();
+    const std::to_chars_result result = std::to_chars(text.data(), last, value);
+    if (result.ec == std::errc{}) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) — a difference within the array.
+        const std::size_t length = static_cast<std::size_t>(result.ptr - text.data());
+        (void)std::fwrite(text.data(), 1, length, stderr);
+    }
+    (void)std::fputc('\n', stderr);
+}
+
 /// Outcome of validating a caller-supplied vendor-DLL path.
 ///
 /// A path is accepted only when it is absolute and either outside the working
@@ -275,43 +329,99 @@ constexpr std::size_t kMaxInternedMessages = 64;
     return stable;
 }
 
-// --- Provisional vendor binding table (see the HIL note at the top) --------
+// --- Vendor binding (real VITURE Windows SDK, exports observed 2026-10-05) -
 
-using CreateDeviceFn = cg_status (*)();
-using DestroyDeviceFn = void (*)();
-using StartPoseFn = cg_status (*)();
-using PollPoseFn = cg_status (*)(cg_head_sample *out);
-/// The SDK hands a pointer to seven floats ([px, py, pz, qw, qx, qy, qz]);
-/// a pointer parameter is ABI-identical to the vendor's `float[7]` and keeps
-/// the length in `kViturePoseFloatCount` instead of the type.
-using ResetOriginCarinaFn = cg_status (*)(const float *pose);
-using SetDisplayModeFn = cg_status (*)(std::uint32_t refresh_hz, bool sbs);
-using GetRefreshHzFn = cg_status (*)(std::uint32_t *out_refresh_hz);
-using SdkVersionFn = const char *(*)();
+/// Opaque `XRDeviceProviderHandle` from `viture_glasses_provider.h`.
+using XrDeviceProviderHandle = void *;
 
+/// `xr_device_provider_create(int product_id)` -> handle or null.
+using CreateDeviceFn = XrDeviceProviderHandle (*)(int product_id);
+/// `xr_device_provider_initialize(handle, custom_config, cache_file_dir)`.
+using InitializeFn = int (*)(XrDeviceProviderHandle handle, const char *custom_config, const char *cache_file_dir);
+/// `xr_device_provider_start(handle)`.
+using StartFn = int (*)(XrDeviceProviderHandle handle);
+/// `xr_device_provider_stop(handle)`.
+using StopFn = int (*)(XrDeviceProviderHandle handle);
+/// `xr_device_provider_shutdown(handle)`.
+using ShutdownFn = int (*)(XrDeviceProviderHandle handle);
+/// `xr_device_provider_destroy(handle)`.
+using DestroyDeviceFn = void (*)(XrDeviceProviderHandle handle);
+/// `xr_device_provider_set_dof_type_carina(handle, is_6dof)`; 0 selects 3DoF.
+using SetDofTypeCarinaFn = int (*)(XrDeviceProviderHandle handle, int is_6dof);
+/// `XRPoseCallback(float* pose, double timestamp)`, layout
+/// `[px, py, pz, qw, qx, qy, qz]`, timestamp in SDK monotonic seconds.
+using XrPoseCallbackFn = void (*)(float *pose, double timestamp);
+/// `XRVSyncCallback(double timestamp)`.
+using XrVSyncCallbackFn = void (*)(double timestamp);
+/// `XRImuCallback(float* imu, double timestamp)`.
+using XrImuCallbackFn = void (*)(float *imu, double timestamp);
+/// `XRCameraCallback(...)`.
+using XrCameraCallbackFn = void (*)(char *left0, char *right0, char *left1, char *right1, double timestamp, int width,
+                                    int height);
+/// `xr_device_provider_register_callbacks_carina(handle, pose, vsync, imu, camera)`.
+using RegisterCallbacksCarinaFn = int (*)(XrDeviceProviderHandle handle, XrPoseCallbackFn pose_callback,
+                                          XrVSyncCallbackFn vsync_callback, XrImuCallbackFn imu_callback,
+                                          XrCameraCallbackFn camera_callback);
+/// `xr_device_provider_get_gl_pose_carina(handle, pose, predict_time, pose_status)`.
+using GetGlPoseCarinaFn = int (*)(XrDeviceProviderHandle handle, float *pose, double predict_time, int *pose_status);
+/// `xr_device_provider_reset_origin_carina(handle, float pose[7])`.
+using ResetOriginCarinaFn = int (*)(XrDeviceProviderHandle handle, float *pose);
+/// `xr_device_provider_set_display_mode(handle, display_mode)`.
+using SetDisplayModeFn = int (*)(XrDeviceProviderHandle handle, int display_mode);
+/// `xr_device_provider_get_display_mode(handle)` -> mode value or negative error.
+using GetDisplayModeFn = int (*)(XrDeviceProviderHandle handle);
+/// `xr_device_provider_get_glasses_version(handle, response, length)`.
+using GetGlassesVersionFn = int (*)(XrDeviceProviderHandle handle, char *response, int *length);
+/// `GlassStateCallback(int glass_state_id, int glass_value)`.
+using GlassStateCallbackFn = void (*)(int glass_state_id, int glass_value);
+/// `xr_device_provider_register_state_callback(handle, callback)`.
+using RegisterStateCallbackFn = int (*)(XrDeviceProviderHandle handle, GlassStateCallbackFn callback);
+/// `xr_device_provider_is_product_id_valid(product_id)` -> 1/0.
+using IsProductIdValidFn = int (*)(int product_id);
+/// `xr_device_provider_set_log_level(level)` (global).
+using SetLogLevelFn = void (*)(int level);
+
+/// The resolved vendor entry points. Every pointer is required: a library
+/// missing one is refused by name (the pre-HIL behaviour kept as the HIL
+/// evidence path).
 struct VitureApiFns {
-    CreateDeviceFn create_device = nullptr;
-    DestroyDeviceFn destroy_device = nullptr;
-    StartPoseFn start_pose = nullptr;
-    PollPoseFn poll_pose = nullptr;
+    CreateDeviceFn create = nullptr;
+    InitializeFn initialize = nullptr;
+    StartFn start = nullptr;
+    StopFn stop = nullptr;
+    ShutdownFn shutdown = nullptr;
+    DestroyDeviceFn destroy = nullptr;
+    SetDofTypeCarinaFn set_dof_type_carina = nullptr;
+    RegisterCallbacksCarinaFn register_callbacks_carina = nullptr;
+    GetGlPoseCarinaFn get_gl_pose_carina = nullptr;
     ResetOriginCarinaFn reset_origin_carina = nullptr;
     SetDisplayModeFn set_display_mode = nullptr;
-    GetRefreshHzFn get_refresh_hz = nullptr;
-    SdkVersionFn sdk_version = nullptr;
+    GetDisplayModeFn get_display_mode = nullptr;
+    GetGlassesVersionFn get_glasses_version = nullptr;
+    RegisterStateCallbackFn register_state_callback = nullptr;
+    IsProductIdValidFn is_product_id_valid = nullptr;
+    SetLogLevelFn set_log_level = nullptr;
 };
 
-// Placeholder export names (see the HIL note at the top).
+constexpr const char *kCreateDeviceSymbol = "xr_device_provider_create";
+constexpr const char *kInitializeSymbol = "xr_device_provider_initialize";
+constexpr const char *kStartSymbol = "xr_device_provider_start";
+constexpr const char *kStopSymbol = "xr_device_provider_stop";
+constexpr const char *kShutdownSymbol = "xr_device_provider_shutdown";
+constexpr const char *kDestroyDeviceSymbol = "xr_device_provider_destroy";
+constexpr const char *kSetDofTypeCarinaSymbol = "xr_device_provider_set_dof_type_carina";
+constexpr const char *kRegisterCallbacksCarinaSymbol = "xr_device_provider_register_callbacks_carina";
+constexpr const char *kGetGlPoseCarinaSymbol = "xr_device_provider_get_gl_pose_carina";
+constexpr const char *kResetOriginCarinaSymbol = "xr_device_provider_reset_origin_carina";
+constexpr const char *kSetDisplayModeSymbol = "xr_device_provider_set_display_mode";
+constexpr const char *kGetDisplayModeSymbol = "xr_device_provider_get_display_mode";
+constexpr const char *kGetGlassesVersionSymbol = "xr_device_provider_get_glasses_version";
+constexpr const char *kRegisterStateCallbackSymbol = "xr_device_provider_register_state_callback";
+constexpr const char *kIsProductIdValidSymbol = "xr_device_provider_is_product_id_valid";
+constexpr const char *kSetLogLevelSymbol = "xr_device_provider_set_log_level";
+
 /// Length of a lower-case SHA-256 digest in hex characters (TD-051 pin).
 constexpr std::size_t kSha256HexLength = 64;
-
-constexpr const char *kCreateDeviceSymbol = "xr_device_provider_create";
-constexpr const char *kDestroyDeviceSymbol = "xr_device_provider_destroy";
-constexpr const char *kStartPoseSymbol = "xr_device_provider_start_pose";
-constexpr const char *kPollPoseSymbol = "xr_device_provider_get_gl_pose_carina";     // F-02
-constexpr const char *kResetOriginSymbol = "xr_device_provider_reset_origin_carina"; // F-04
-constexpr const char *kSetDisplayModeSymbol = "xr_device_provider_set_display_mode";
-constexpr const char *kGetRefreshHzSymbol = "xr_device_provider_get_display_refresh_rate";
-constexpr const char *kSdkVersionSymbol = "xr_device_provider_get_sdk_version";
 
 /// Resolves `name` into the function pointer `out`. A missing symbol is not an
 /// error here; the caller names it in the `Unsupported` status.
@@ -333,7 +443,7 @@ template <typename Function>
     // documented portable workaround for the missing standard conversion
     // (casting between function pointer types is conditionally supported and
     // MSVC warns with C4191, an error under /WX). The sizes are static_asserted
-    // above on every supported ABI.
+    // here on every supported ABI.
     // NOLINTBEGIN(bugprone-bitwise-pointer-cast, bugprone-multi-level-implicit-pointer-conversion)
     static_assert(sizeof(Function) == sizeof(symbol), "a function pointer must fit in a loader symbol");
     std::memcpy(&out, &symbol, sizeof(Function));
@@ -342,111 +452,685 @@ template <typename Function>
 }
 
 [[nodiscard]] bool ResolveVitureSymbols(LibraryHandle handle, VitureApiFns &fns, const char *&missing) noexcept {
-    if (!ResolveSymbol(handle, kCreateDeviceSymbol, fns.create_device)) {
+    if (!ResolveSymbol(handle, kCreateDeviceSymbol, fns.create)) {
         missing = kCreateDeviceSymbol;
         return false;
     }
-    if (!ResolveSymbol(handle, kDestroyDeviceSymbol, fns.destroy_device)) {
+    if (!ResolveSymbol(handle, kInitializeSymbol, fns.initialize)) {
+        missing = kInitializeSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kStartSymbol, fns.start)) {
+        missing = kStartSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kStopSymbol, fns.stop)) {
+        missing = kStopSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kShutdownSymbol, fns.shutdown)) {
+        missing = kShutdownSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kDestroyDeviceSymbol, fns.destroy)) {
         missing = kDestroyDeviceSymbol;
         return false;
     }
-    if (!ResolveSymbol(handle, kStartPoseSymbol, fns.start_pose)) {
-        missing = kStartPoseSymbol;
+    if (!ResolveSymbol(handle, kSetDofTypeCarinaSymbol, fns.set_dof_type_carina)) {
+        missing = kSetDofTypeCarinaSymbol;
         return false;
     }
-    if (!ResolveSymbol(handle, kPollPoseSymbol, fns.poll_pose)) {
-        missing = kPollPoseSymbol;
+    if (!ResolveSymbol(handle, kRegisterCallbacksCarinaSymbol, fns.register_callbacks_carina)) {
+        missing = kRegisterCallbacksCarinaSymbol;
         return false;
     }
-    if (!ResolveSymbol(handle, kResetOriginSymbol, fns.reset_origin_carina)) {
-        missing = kResetOriginSymbol;
+    if (!ResolveSymbol(handle, kGetGlPoseCarinaSymbol, fns.get_gl_pose_carina)) {
+        missing = kGetGlPoseCarinaSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kResetOriginCarinaSymbol, fns.reset_origin_carina)) {
+        missing = kResetOriginCarinaSymbol;
         return false;
     }
     if (!ResolveSymbol(handle, kSetDisplayModeSymbol, fns.set_display_mode)) {
         missing = kSetDisplayModeSymbol;
         return false;
     }
-    if (!ResolveSymbol(handle, kGetRefreshHzSymbol, fns.get_refresh_hz)) {
-        missing = kGetRefreshHzSymbol;
+    if (!ResolveSymbol(handle, kGetDisplayModeSymbol, fns.get_display_mode)) {
+        missing = kGetDisplayModeSymbol;
         return false;
     }
-    if (!ResolveSymbol(handle, kSdkVersionSymbol, fns.sdk_version)) {
-        missing = kSdkVersionSymbol;
+    if (!ResolveSymbol(handle, kGetGlassesVersionSymbol, fns.get_glasses_version)) {
+        missing = kGetGlassesVersionSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kRegisterStateCallbackSymbol, fns.register_state_callback)) {
+        missing = kRegisterStateCallbackSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kIsProductIdValidSymbol, fns.is_product_id_valid)) {
+        missing = kIsProductIdValidSymbol;
+        return false;
+    }
+    if (!ResolveSymbol(handle, kSetLogLevelSymbol, fns.set_log_level)) {
+        missing = kSetLogLevelSymbol;
         return false;
     }
     return true;
 }
 
-[[nodiscard]] Result<void> ToResult(cg_status status) noexcept {
-    if (status == CG_OK) {
-        return Ok();
+// Vendor protocol constants (`viture_result.h`, `viture_protocol_public.h`;
+// the vendor headers are never included, ADR-0001). The names mirror the
+// vendor enumerations so the binding reads against the SDK documentation.
+constexpr int kVitureErrorInvalidParam = -1;   // VITURE_GLASSES_ERROR_INVALID_PARAM
+constexpr int kVitureErrorUsbUnavailable = -2; // VITURE_GLASSES_ERROR_USB_UNAVAILABLE
+constexpr int kVitureErrorUsbExec = -3;        // VITURE_GLASSES_ERROR_USB_EXEC
+constexpr int kVitureErrorNotSupported = -4;   // VITURE_GLASSES_ERROR_NOT_SUPPORTED
+constexpr int kVitureErrorNoData = -5;         // VITURE_GLASSES_ERROR_NO_DATA
+constexpr int kVitureErrorDataParse = -6;      // VITURE_GLASSES_ERROR_DATA_PARSE
+constexpr int kVitureErrorDeviceRejected = -7; // VITURE_GLASSES_ERROR_DEVICE_REJECTED
+constexpr int kVitureErrorCalibInit = -8;      // VITURE_GLASSES_ERROR_CALIB_INIT
+constexpr int kVitureErrorSerialFetch = -9;    // VITURE_GLASSES_ERROR_SERIAL_FETCH
+constexpr int kVitureErrorInvalidState = -10;  // VITURE_GLASSES_ERROR_INVALID_STATE
+
+constexpr int kVitureMode1920x1080At60Hz = 0x31;  // VITURE_DISPLAY_MODE_1920_1080_60HZ
+constexpr int kVitureMode3840x1080At60Hz = 0x32;  // VITURE_DISPLAY_MODE_3840_1080_60HZ (3D)
+constexpr int kVitureMode1920x1080At90Hz = 0x33;  // VITURE_DISPLAY_MODE_1920_1080_90HZ
+constexpr int kVitureMode1920x1080At120Hz = 0x34; // VITURE_DISPLAY_MODE_1920_1080_120HZ
+constexpr int kVitureMode3840x1080At90Hz = 0x35;  // VITURE_DISPLAY_MODE_3840_1080_90HZ (3D)
+constexpr int kVitureMode1920x1200At60Hz = 0x41;  // VITURE_DISPLAY_MODE_1920_1200_60HZ
+constexpr int kVitureMode3840x1200At60Hz = 0x42;  // VITURE_DISPLAY_MODE_3840_1200_60HZ (3D)
+constexpr int kVitureMode1920x1200At90Hz = 0x43;  // VITURE_DISPLAY_MODE_1920_1200_90HZ
+constexpr int kVitureMode1920x1200At120Hz = 0x44; // VITURE_DISPLAY_MODE_1920_1200_120HZ
+constexpr int kVitureMode3840x1200At90Hz = 0x45;  // VITURE_DISPLAY_MODE_3840_1200_90HZ (3D)
+
+constexpr std::uint32_t kRefresh60Hz = 60;
+constexpr std::uint32_t kRefresh90Hz = 90;
+constexpr std::uint32_t kRefresh120Hz = 120;
+
+constexpr int kProductIdDecimalBase = 10;
+constexpr int kProductIdHexBase = 16;
+constexpr std::size_t kProductIdHexPrefixLength = 2;
+constexpr unsigned int kMaxProductId = 0x7FFFFFFFU;
+constexpr std::size_t kPidHexDigits = 4;
+constexpr std::size_t kHardwareIdBufferSize = 4096;
+constexpr std::size_t kFirmwareVersionBufferSize = 128;
+constexpr double kNanosecondsPerSecond = 1e9;
+
+constexpr std::string_view kVitureVendorIdText = "VID_35CA";
+constexpr std::string_view kPidPrefix = "PID_";
+
+// Offsets into the vendor pose layout [px, py, pz, qw, qx, qy, qz]
+// (viture_device_carina.h), named so the sample assembly reads declaratively.
+constexpr std::size_t kPoseIndexPx = 0;
+constexpr std::size_t kPoseIndexPy = 1;
+constexpr std::size_t kPoseIndexPz = 2;
+constexpr std::size_t kPoseIndexQw = 3;
+constexpr std::size_t kPoseIndexQx = 4;
+constexpr std::size_t kPoseIndexQy = 5;
+constexpr std::size_t kPoseIndexQz = 6;
+
+/// Maps a VITURE_GLASSES_ERROR_* code (`viture_result.h`) onto the status
+/// vocabulary. The vendor codes are negative; `0` is success and is never
+/// passed here.
+[[nodiscard]] StatusCode VendorStatusCode(int code) noexcept {
+    switch (code) {
+    case kVitureErrorInvalidParam:
+        return StatusCode::InvalidArgument;
+    case kVitureErrorUsbUnavailable:
+    case kVitureErrorUsbExec:
+        return StatusCode::Device;
+    case kVitureErrorNotSupported:
+        return StatusCode::Unsupported;
+    case kVitureErrorNoData:
+        return StatusCode::Timeout;
+    case kVitureErrorDataParse:
+    case kVitureErrorDeviceRejected:
+    case kVitureErrorCalibInit:
+    case kVitureErrorSerialFetch:
+        return StatusCode::Device;
+    case kVitureErrorInvalidState:
+        return StatusCode::NotReady;
+    default: // VITURE_GLASSES_ERROR_UNKNOWN and out-of-range values
+        return StatusCode::Internal;
     }
-    return Err<void>(FromCgStatus(status));
 }
 
-/// Thin adapter over a resolved provisional table. It owns the library handle,
-/// so the resolved pointers stay valid exactly as long as the API object.
+/// A failure status naming the vendor call and its raw code; the message is
+/// interned because `Status` stores a non-owning pointer.
+[[nodiscard]] Status VendorFailure(std::string_view operation, int code) {
+    return Status{VendorStatusCode(code), InternMessage("viture_loader: " + std::string(operation) +
+                                                        " failed with VITURE code " + std::to_string(code))};
+}
+
+/// Parses `CG_VITURE_PRODUCT_ID`: decimal, or `0x`-prefixed hexadecimal.
+[[nodiscard]] std::optional<int> ParseProductId(std::string_view text) noexcept {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    std::string_view digits = text;
+    int base = kProductIdDecimalBase;
+    if (digits.starts_with("0x") || digits.starts_with("0X")) {
+        base = kProductIdHexBase;
+        digits.remove_prefix(kProductIdHexPrefixLength);
+    }
+    if (digits.empty()) {
+        return std::nullopt;
+    }
+    unsigned int value = 0;
+    // `std::from_chars` takes raw pointers; the view bounded them already.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const char *const last = digits.data() + digits.size();
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) — bounded by `last`.
+    const std::from_chars_result result = std::from_chars(digits.data(), last, value, base);
+    if (result.ec != std::errc{} || result.ptr != last || value > kMaxProductId) {
+        return std::nullopt;
+    }
+    return static_cast<int>(value);
+}
+
+#ifdef _WIN32
+
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) — SetupAPI takes a
+// PBYTE registry buffer; the reinterpret_cast is the documented Win32 contract.
+/// Finds the first present USB device with `VID_35CA` whose product id the
+/// SDK accepts, mirroring the vendor demo's SetupAPI fallback (the Carina is a
+/// bulk-transfer device, so the HID enumeration path does not see it).
+/// Returns `std::nullopt` when the glasses are not attached.
+[[nodiscard]] std::optional<int> EnumerateVitureProductId(const VitureApiFns &fns) noexcept {
+    HDEVINFO info = SetupDiGetClassDevsA(nullptr, "USB", nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+    if (info == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+
+    std::optional<int> found;
+    SP_DEVINFO_DATA device{};
+    device.cbSize = sizeof(device);
+    for (DWORD index = 0; SetupDiEnumDeviceInfo(info, index, &device); ++index) {
+        std::array<char, kHardwareIdBufferSize> buffer{};
+        DWORD length = 0;
+        if (SetupDiGetDeviceRegistryPropertyA(info, &device, SPDRP_HARDWAREID, nullptr,
+                                              reinterpret_cast<PBYTE>(buffer.data()), static_cast<DWORD>(buffer.size()),
+                                              &length) == FALSE) {
+            continue;
+        }
+        // Hardware IDs are a REG_MULTI_SZ list of upper-case strings such as
+        // "USB\VID_35CA&PID_0201"; walk the list and test each id string.
+        const std::string_view ids{buffer.data(), std::min<std::size_t>(length, buffer.size())};
+        std::string_view remaining = ids;
+        while (!remaining.empty() && remaining.front() != '\0') {
+            const std::size_t terminator = remaining.find('\0');
+            const std::string_view id = remaining.substr(0, terminator);
+            remaining = terminator == std::string_view::npos ? std::string_view{} : remaining.substr(terminator + 1U);
+            const std::size_t vendor = id.find(kVitureVendorIdText);
+            if (vendor == std::string_view::npos) {
+                continue;
+            }
+            const std::size_t product = id.find(kPidPrefix, vendor);
+            if (product == std::string_view::npos) {
+                continue;
+            }
+            const std::string_view hex = id.substr(product + kPidPrefix.size(), kPidHexDigits);
+            if (hex.size() != kPidHexDigits) {
+                continue;
+            }
+            unsigned int product_id = 0;
+            // `std::from_chars` takes raw pointers; the view bounded them already.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            const char *const hex_last = hex.data() + hex.size();
+            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) — bounded by `hex_last`.
+            const std::from_chars_result result = std::from_chars(hex.data(), hex_last, product_id, kProductIdHexBase);
+            if (result.ec != std::errc{}) {
+                continue;
+            }
+            if (fns.is_product_id_valid(static_cast<int>(product_id)) != 0) {
+                found = static_cast<int>(product_id);
+                break;
+            }
+        }
+        if (found.has_value()) {
+            break;
+        }
+    }
+    SetupDiDestroyDeviceInfoList(info);
+    return found;
+}
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+
+#else
+
+/// POSIX builds exist for CI type-checking and development (no vendor runtime
+/// is shipped for them); product-id enumeration is Windows-only.
+[[nodiscard]] std::optional<int> EnumerateVitureProductId(const VitureApiFns & /*fns*/) noexcept {
+    return std::nullopt;
+}
+
+#endif
+
+/// Resolves the product id `xr_device_provider_create` needs: the explicit
+/// `CG_VITURE_PRODUCT_ID` override first (validated against the SDK), then a
+/// USB scan. A missing device is a `Device` failure naming VID 0x35CA.
+[[nodiscard]] Result<int> ResolveProductId(const VitureApiFns &fns) {
+    const std::string override_text = ReadEnvironment("CG_VITURE_PRODUCT_ID");
+    if (!override_text.empty()) {
+        const std::optional<int> parsed = ParseProductId(override_text);
+        if (!parsed.has_value()) {
+            return Err<int>(Status{StatusCode::InvalidArgument,
+                                   InternMessage("viture_loader: CG_VITURE_PRODUCT_ID='" + override_text +
+                                                 "' is not a decimal or 0x-hex product id")});
+        }
+        if (fns.is_product_id_valid(*parsed) == 0) {
+            return Err<int>(Status{StatusCode::InvalidArgument,
+                                   InternMessage("viture_loader: CG_VITURE_PRODUCT_ID=" + override_text +
+                                                 " is not a product id this SDK accepts")});
+        }
+        return Ok(*parsed);
+    }
+
+    const std::optional<int> enumerated = EnumerateVitureProductId(fns);
+    if (!enumerated.has_value()) {
+        return Err<int>(Status{StatusCode::Device,
+                               "viture_loader: no VITURE device found on USB (VID 0x35CA); connect the glasses, "
+                               "install the vendor USB driver, or set CG_VITURE_PRODUCT_ID"});
+    }
+    return Ok(*enumerated);
+}
+
+/// `VITURE_DISPLAY_MODE_*` for the `{refresh_hz, sbs}` pair (F-09: SBS modes
+/// are 3840x1080 at 60 or 90 Hz; 120 Hz is 2D only). Returns `std::nullopt`
+/// for an unsupported pair.
+[[nodiscard]] std::optional<int> DisplayModeFor(std::uint32_t refresh_hz, bool sbs) noexcept {
+    if (!sbs) {
+        switch (refresh_hz) {
+        case kRefresh60Hz:
+            return kVitureMode1920x1080At60Hz;
+        case kRefresh90Hz:
+            return kVitureMode1920x1080At90Hz;
+        case kRefresh120Hz:
+            return kVitureMode1920x1080At120Hz;
+        default:
+            return std::nullopt;
+        }
+    }
+    switch (refresh_hz) {
+    case kRefresh60Hz:
+        return kVitureMode3840x1080At60Hz;
+    case kRefresh90Hz:
+        return kVitureMode3840x1080At90Hz;
+    default:
+        return std::nullopt;
+    }
+}
+
+/// The refresh rate a `VITURE_DISPLAY_MODE_*` value encodes, for every mode
+/// constant in `viture_protocol_public.h` (both the 1080p and the 1200p
+/// families). Unknown values return `std::nullopt`.
+[[nodiscard]] std::optional<std::uint32_t> RefreshHzForMode(int mode) noexcept {
+    switch (mode) {
+    case kVitureMode1920x1080At60Hz: // 1920x1080@60
+    case kVitureMode3840x1080At60Hz: // 3840x1080@60 (3D)
+    case kVitureMode1920x1200At60Hz: // 1920x1200@60
+    case kVitureMode3840x1200At60Hz: // 3840x1200@60 (3D)
+        return kRefresh60Hz;
+    case kVitureMode1920x1080At90Hz: // 1920x1080@90
+    case kVitureMode3840x1080At90Hz: // 3840x1080@90 (3D)
+    case kVitureMode1920x1200At90Hz: // 1920x1200@90
+    case kVitureMode3840x1200At90Hz: // 3840x1200@90 (3D)
+        return kRefresh90Hz;
+    case kVitureMode1920x1080At120Hz: // 1920x1080@120
+    case kVitureMode1920x1200At120Hz: // 1920x1200@120
+        return kRefresh120Hz;
+    default:
+        return std::nullopt;
+    }
+}
+
+/// Monotonic host seconds, used only as the SDK-stamp fallback until the first
+/// pose callback arrives (see the file header).
+[[nodiscard]] double SteadySeconds() noexcept {
+#ifdef _WIN32
+    LARGE_INTEGER counter{};
+    LARGE_INTEGER frequency{};
+    if (::QueryPerformanceCounter(&counter) == 0 || ::QueryPerformanceFrequency(&frequency) == 0 ||
+        frequency.QuadPart == 0) {
+        return 0.0;
+    }
+    return static_cast<double>(counter.QuadPart) / static_cast<double>(frequency.QuadPart);
+#else
+    timespec now{};
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0.0;
+    }
+    return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) / kNanosecondsPerSecond;
+#endif
+}
+
+/// The process-wide target of the vendor's context-less pose callback. Only
+/// one `VendorVitureApi` is live at a time; the newest created instance owns
+/// the callback and `ReleaseCallback` clears it.
+class VendorVitureApi;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) — the vendor pose callback carries no context.
+std::atomic<VendorVitureApi *> g_pose_callback_target{nullptr};
+void ViturePoseCallback(float *pose, double timestamp);
+
+/// No-op state callback: the SDK expects one to be registered, the adapter
+/// does not consume device state events. Under `CG_VITURE_DEBUG=1` every
+/// event is traced (HIL diagnosis: wear/proximity, brightness, volume, film).
+void VitureStateCallback(int glass_state_id, int glass_value) {
+    if (DebugTracesEnabled()) {
+        TraceInt("viture-state: id=", glass_state_id);
+        TraceInt("viture-state: value=", glass_value);
+    }
+}
+
+/// No-op stereo camera callback: the Carina VIO engine captures the camera
+/// callback pointer at start time (vendor demo note), so the S5 adapter
+/// registers one even though it does not consume camera frames.
+void VitureCameraCallback(char * /*left0*/, char * /*right0*/, char * /*left1*/, char * /*right1*/,
+                          double /*timestamp*/, int /*width*/, int /*height*/) {}
+
+/// The vendor-backed API. It owns the library handle and the device handle and
+/// keeps the resolved pointers valid exactly as long as the API object.
+///
+/// The pose callback is the SDK's only true timestamped pose source, so its
+/// `double timestamp` is the SDK monotonic clock reference for `PollPose`
+/// (U-01 latency analysis). The callback arrives on an SDK thread; the stamp
+/// transfer to the polling thread is a lock-free atomic pair, the same
+/// discipline as `VitureHeadPoseSource::LastSdkSeconds`. Only one instance may
+/// be live per process (the vendor callback carries no context pointer); the
+/// newest created instance owns the callback, and `DestroyDevice` releases it.
 class VendorVitureApi final : public IVitureApi {
   public:
-    VendorVitureApi(LibraryHandle handle, const VitureApiFns &fns) noexcept : handle_(handle), fns_(fns) {}
+    explicit VendorVitureApi(VitureApiFns fns) noexcept : fns_(fns) {}
 
-    ~VendorVitureApi() override { CloseLibrary(handle_); }
+    ~VendorVitureApi() override { DestroyDevice(); }
 
     VendorVitureApi(const VendorVitureApi &) = delete;
     VendorVitureApi &operator=(const VendorVitureApi &) = delete;
     VendorVitureApi(VendorVitureApi &&) = delete;
     VendorVitureApi &operator=(VendorVitureApi &&) = delete;
 
-    Result<void> CreateDevice() override { return ToResult(fns_.create_device()); }
+    Result<void> CreateDevice() override {
+        if (handle_ != nullptr) {
+            return Err<void>(Status{StatusCode::Device, "viture: a device is already created"});
+        }
+        const Result<int> product_id = ResolveProductId(fns_);
+        if (!product_id.ok()) {
+            return Err<void>(product_id.status());
+        }
+        const bool trace = DebugTracesEnabled();
 
-    void DestroyDevice() noexcept override { fns_.destroy_device(); }
+        handle_ = fns_.create(*product_id);
+        if (trace) {
+            TraceInt("viture-device: create(pid=", *product_id);
+            TraceText(handle_ != nullptr ? "viture-device: create: ok\n" : "viture-device: create: null\n");
+        }
+        if (handle_ == nullptr) {
+            return Err<void>(Status{StatusCode::Device,
+                                    InternMessage("viture: xr_device_provider_create(" + std::to_string(*product_id) +
+                                                  ") returned null; is the glasses connected and the vendor USB "
+                                                  "driver installed?")});
+        }
+
+        // F-03: the S5 adapter runs the Carina in 3DoF; the call must precede
+        // initialize (viture_device_carina.h). HIL instrumentation (U-01):
+        // CG_VITURE_DOF=6dof selects 6DoF so the fallback (6DoF with the
+        // position discarded) can be measured; anything else means 3DoF.
+        const int is_6dof = ReadEnvironment("CG_VITURE_DOF") == "6dof" ? 1 : 0;
+        int code = fns_.set_dof_type_carina(handle_, is_6dof);
+        if (trace) {
+            TraceText(is_6dof != 0 ? "viture-device: set_dof_type_carina(6dof)\n"
+                                   : "viture-device: set_dof_type_carina(3dof)\n");
+            TraceInt("viture-device: set_dof_type_carina rc=", code);
+        }
+        if (code != 0) {
+            const Status status = VendorFailure("xr_device_provider_set_dof_type_carina(3DoF)", code);
+            DestroyHandle();
+            return Err<void>(status);
+        }
+
+        // The vendor demo passes null for the config and cache-directory
+        // strings; the SDK owns any caching it needs.
+        code = fns_.initialize(handle_, nullptr, nullptr);
+        if (trace) {
+            TraceInt("viture-device: initialize rc=", code);
+        }
+        if (code != 0) {
+            const Status status = VendorFailure("xr_device_provider_initialize", code);
+            DestroyHandle();
+            return Err<void>(status);
+        }
+
+        // The library expects a state callback before start (the vendor demo
+        // always registers one; without it the USB thread logs
+        // "m_StateCallback is not initialized" on the first state event). The
+        // S5 adapter does not consume brightness/volume/film events, so the
+        // callback is a no-op.
+        code = fns_.register_state_callback(handle_, &VitureStateCallback);
+        if (trace) {
+            TraceInt("viture-device: register_state_callback rc=", code);
+        }
+        if (code != 0) {
+            const Status status = VendorFailure("xr_device_provider_register_state_callback", code);
+            DestroyHandle();
+            return Err<void>(status);
+        }
+
+        // The Carina VIO engine captures the callback pointers at start time,
+        // so registration happens before StartPose (vendor demo comment). The
+        // pose callback supplies the SDK timestamp for polled poses; the
+        // camera callback is a no-op the VIO engine expects to be present;
+        // vsync and IMU frames are not consumed by the S5 adapter.
+        g_pose_callback_target.store(this, std::memory_order_release);
+        code = fns_.register_callbacks_carina(handle_, &ViturePoseCallback, nullptr, nullptr, &VitureCameraCallback);
+        if (trace) {
+            TraceInt("viture-device: register_callbacks_carina rc=", code);
+        }
+        if (code != 0) {
+            const Status status = VendorFailure("xr_device_provider_register_callbacks_carina", code);
+            DestroyHandle();
+            return Err<void>(status);
+        }
+        return Ok();
+    }
+
+    // Vendor entry points are not noexcept-annotated, but they report every
+    // failure through return codes; the tracing helpers are noexcept.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
+    void DestroyDevice() noexcept override {
+        if (handle_ == nullptr) {
+            return;
+        }
+        const bool trace = DebugTracesEnabled();
+        ReleaseCallback();
+        if (started_) {
+            const int stop_code = fns_.stop(handle_);
+            if (trace) {
+                TraceInt("viture-device: stop rc=", stop_code);
+            }
+            const int shutdown_code = fns_.shutdown(handle_);
+            if (trace) {
+                TraceInt("viture-device: shutdown rc=", shutdown_code);
+            }
+        }
+        fns_.destroy(handle_);
+        if (trace) {
+            TraceText("viture-device: destroy done\n");
+        }
+        handle_ = nullptr;
+        started_ = false;
+        stop_requested_.store(false, std::memory_order_relaxed);
+    }
 
     Result<void> StartPose() override {
+        if (handle_ == nullptr) {
+            return Err<void>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
+        }
+        if (started_) {
+            return Ok();
+        }
         stop_requested_.store(false, std::memory_order_relaxed);
-        return ToResult(fns_.start_pose());
+        const int code = fns_.start(handle_);
+        if (DebugTracesEnabled()) {
+            TraceInt("viture-device: start rc=", code);
+        }
+        if (code != 0) {
+            return Err<void>(VendorFailure("xr_device_provider_start", code));
+        }
+        started_ = true;
+        return Ok();
     }
 
     Result<cg_head_sample> PollPose() override {
         if (stop_requested_.load(std::memory_order_relaxed)) {
             return Err<cg_head_sample>(Status{StatusCode::Timeout, "viture: poll interrupted by RequestStop"});
         }
-        cg_head_sample sample{};
-        const cg_status status = fns_.poll_pose(&sample);
-        if (status != CG_OK) {
-            return Err<cg_head_sample>(FromCgStatus(status));
+        if (handle_ == nullptr) {
+            return Err<cg_head_sample>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
         }
+
+        std::array<float, kViturePoseFloatCount> pose{};
+        int pose_status = 1;
+        const bool trace = DebugTracesEnabled();
+        if (trace) {
+            TraceText("viture-poll: enter\n");
+        }
+        const int code = fns_.get_gl_pose_carina(handle_, pose.data(), 0.0, &pose_status);
+        if (trace) {
+            TraceInt("viture-poll: exit rc=", code);
+            TraceInt("viture-poll: exit status=", pose_status);
+        }
+        if (code != 0) {
+            return Err<cg_head_sample>(VendorFailure("xr_device_provider_get_gl_pose_carina", code));
+        }
+
+        // The poll API carries no timestamp: use the newest Carina pose
+        // callback stamp (SDK monotonic seconds) as the sample's SDK time.
+        // Until the first callback arrives the fallback is the host steady
+        // clock, which the HIL report must treat as host-derived (the offset
+        // estimate is then ~0 rather than a pipeline latency).
+        const double stamp_seconds = has_stamp_.load(std::memory_order_acquire)
+                                         ? stamp_seconds_.load(std::memory_order_relaxed)
+                                         : SteadySeconds();
+
+        cg_head_sample sample{};
+        sample.host_time = static_cast<cg_time_ns>(std::llround(stamp_seconds * kNanosecondsPerSecond));
+        // The vendor layout is [px, py, pz, qw, qx, qy, qz] (viture_device_carina.h);
+        // the named indices plus the bounds-checked accessor keep the lint quiet.
+        sample.pose = cg_pose{
+            cg_vec3{pose.at(kPoseIndexPx), pose.at(kPoseIndexPy), pose.at(kPoseIndexPz)},
+            cg_quat{pose.at(kPoseIndexQw), pose.at(kPoseIndexQx), pose.at(kPoseIndexQy), pose.at(kPoseIndexQz)}};
+        sample.state = pose_status == 0 ? CG_TRACK_STABLE : CG_TRACK_UNSTABLE;
+        sample.sequence = ++sequence_;
         return Ok(sample);
     }
 
     Result<void> ResetOriginCarina(const std::array<float, kViturePoseFloatCount> &pose) override {
-        return ToResult(fns_.reset_origin_carina(pose.data()));
+        if (handle_ == nullptr) {
+            return Err<void>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
+        }
+        std::array<float, kViturePoseFloatCount> mutable_pose = pose;
+        const int code = fns_.reset_origin_carina(handle_, mutable_pose.data());
+        if (code != 0) {
+            return Err<void>(VendorFailure("xr_device_provider_reset_origin_carina", code));
+        }
+        return Ok();
     }
 
     Result<void> SetDisplayMode(std::uint32_t refresh_hz, bool sbs) override {
-        return ToResult(fns_.set_display_mode(refresh_hz, sbs));
+        if (handle_ == nullptr) {
+            return Err<void>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
+        }
+        const std::optional<int> mode = DisplayModeFor(refresh_hz, sbs);
+        if (!mode.has_value()) {
+            return Err<void>(
+                Status{StatusCode::Unsupported,
+                       InternMessage("viture: unsupported display mode " + std::to_string(refresh_hz) + " Hz " +
+                                     (sbs ? "SBS" : "2D") + "; supported: 2D 60/90/120 Hz, SBS 60/90 Hz (F-09)")});
+        }
+        const int code = fns_.set_display_mode(handle_, *mode);
+        if (code != 0) {
+            return Err<void>(VendorFailure("xr_device_provider_set_display_mode", code));
+        }
+        return Ok();
     }
 
     Result<std::uint32_t> GetRefreshHz() override {
-        std::uint32_t refresh_hz = 0;
-        const cg_status status = fns_.get_refresh_hz(&refresh_hz);
-        if (status != CG_OK) {
-            return Err<std::uint32_t>(FromCgStatus(status));
+        if (handle_ == nullptr) {
+            return Err<std::uint32_t>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
         }
-        return Ok(refresh_hz);
+        const int mode = fns_.get_display_mode(handle_);
+        if (mode < 0) {
+            return Err<std::uint32_t>(VendorFailure("xr_device_provider_get_display_mode", mode));
+        }
+        const std::optional<std::uint32_t> refresh_hz = RefreshHzForMode(mode);
+        if (!refresh_hz.has_value()) {
+            return Err<std::uint32_t>(
+                Status{StatusCode::Unsupported,
+                       InternMessage("viture: unknown display mode value " + std::to_string(mode) + " from the SDK")});
+        }
+        return Ok(*refresh_hz);
     }
 
     std::string SdkVersion() const override {
-        const char *version = fns_.sdk_version();
-        return version == nullptr ? std::string{} : std::string{version};
+        if (handle_ == nullptr) {
+            return {};
+        }
+        // The real SDK exposes the glasses firmware string, not an SDK version
+        // getter (`carina_a1088_viture_get_sdk_version` lives in the internal
+        // carina_vio library, which this loader does not open). Diagnostics
+        // only.
+        std::array<char, kFirmwareVersionBufferSize> buffer{};
+        int length = static_cast<int>(buffer.size());
+        if (fns_.get_glasses_version(handle_, buffer.data(), &length) != 0 || length <= 0) {
+            return {};
+        }
+        const std::size_t count =
+            std::min<std::size_t>(static_cast<std::size_t>(length), static_cast<std::size_t>(buffer.size() - 1U));
+        return std::string{buffer.data(), count};
     }
 
     void RequestStop() noexcept override { stop_requested_.store(true, std::memory_order_relaxed); }
 
+    /// SDK-thread entry point for the Carina pose callback (lock-free).
+    void OnPoseCallback(double timestamp) noexcept {
+        stamp_seconds_.store(timestamp, std::memory_order_relaxed);
+        has_stamp_.store(true, std::memory_order_release);
+    }
+
   private:
-    LibraryHandle handle_ = nullptr;
+    /// Releases the device handle of a failed `CreateDevice` (not started, so
+    /// no stop/shutdown call).
+    void DestroyHandle() noexcept {
+        ReleaseCallback();
+        fns_.destroy(handle_);
+        handle_ = nullptr;
+    }
+
+    /// Clears the process-wide callback target if this instance owns it.
+    void ReleaseCallback() noexcept {
+        VendorVitureApi *expected = this;
+        g_pose_callback_target.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+    }
+
     VitureApiFns fns_{};
+    XrDeviceProviderHandle handle_ = nullptr;
+    bool started_ = false;
     std::atomic<bool> stop_requested_{false};
+    std::uint32_t sequence_ = 0;
+
+    // SDK-thread -> polling-thread stamp transfer (same discipline as the
+    // wrapper's `LastSdkSeconds`).
+    std::atomic<double> stamp_seconds_{0.0};
+    std::atomic<bool> has_stamp_{false};
 };
+
+void ViturePoseCallback(float * /*pose*/, double timestamp) {
+    VendorVitureApi *target = g_pose_callback_target.load(std::memory_order_acquire);
+    if (target != nullptr) {
+        target->OnPoseCallback(timestamp);
+    }
+}
 
 } // namespace
 
@@ -552,10 +1236,19 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
             Status{StatusCode::Unsupported, InternMessage(std::string{missing} + ": symbol not found in " + dll_path)});
     }
 
+    // Keep SDK chatter (USB retries, calibration notices) off the probe's
+    // stdout so the HIL log stays parseable; errors still reach the default
+    // logger. The null check keeps MSVC /analyze (C6011) quiet: the symbol is
+    // required by ResolveVitureSymbols above, but the analyzer cannot see
+    // through the out-parameter struct.
+    if (fns.set_log_level != nullptr) {
+        fns.set_log_level(1);
+    }
+
     // CXX-11: construct with `new (std::nothrow)` so an allocation failure
     // cannot throw out of this function and cannot leak the library handle
     // (the constructor is noexcept; only the allocation itself can fail).
-    std::unique_ptr<IVitureApi> api(new (std::nothrow) VendorVitureApi(handle, fns));
+    std::unique_ptr<IVitureApi> api(new (std::nothrow) VendorVitureApi(fns));
     if (api == nullptr) {
         CloseLibrary(handle);
         return Err<std::unique_ptr<IVitureApi>>(

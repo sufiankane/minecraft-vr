@@ -30,10 +30,13 @@
 //
 // Exit codes: 0 when at least one sample was read; 2 when the viture library
 // fails to load (any LoadVitureApi failure, including InvalidArgument for an
-// empty path) or the source reports Unsupported/NotReady; 1 for every other
+// empty path) or the source reports Unsupported/NotReady; 3 when the vendor
+// teardown wedged (`source.Stop()` did not return within 5 s — the run's
+// report and CSV are already written when this exit occurs); 1 for every other
 // failure (usage, bad dataset, no samples, output error).
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -129,6 +132,7 @@ struct Options {
     double seconds = 5.0;
     double rate_hz = 90.0;
     bool rate_set = false;
+    bool display = false;
     std::string out;
     std::uint64_t print_every = 0;
 };
@@ -163,6 +167,8 @@ void PrintUsage(std::FILE *stream) {
                "                   the measured rate/jitter) are unchanged. viture: ignored.\n"
                "  --out FILE       write the samples to FILE (replay-compatible CSV)\n"
                "  --print-every N  print a progress line every N samples (default 0 = off)\n"
+               "  --display        viture: run the U-08 display check on the live\n"
+               "                   session (refresh read, 90 Hz SBS round trip)\n"
                "  -h, --help       print this help\n"
                "\n"
                "csv columns: host_time_ns,sdk_time_s,px,py,pz,qw,qx,qy,qz,status\n"
@@ -178,7 +184,7 @@ void PrintUsage(std::FILE *stream) {
                "\n"
                "exit codes: 0 at least one sample; 2 loader failure (any viture library\n"
                "load failure, including InvalidArgument) or source Unsupported/NotReady;\n"
-               "1 otherwise.\n",
+               "3 vendor teardown wedged (report and CSV already written); 1 otherwise.\n",
                stream);
 }
 
@@ -292,6 +298,10 @@ ParseOutcome ParseOptions(int argc, char **argv, Options &options, std::string &
                 error = "--print-every must be a non-negative integer";
                 return ParseOutcome::Error;
             }
+            continue;
+        }
+        if (arg == "--display") {
+            options.display = true;
             continue;
         }
 
@@ -475,6 +485,66 @@ int ExitForStatus(const Status &status) {
     return 1;
 }
 
+/// Status word for the `--display` report (diagnostics only).
+const char *StatusCodeName(StatusCode code) noexcept {
+    switch (code) {
+    case StatusCode::Ok:
+        return "ok";
+    case StatusCode::InvalidArgument:
+        return "invalid-argument";
+    case StatusCode::NotReady:
+        return "not-ready";
+    case StatusCode::Device:
+        return "device";
+    case StatusCode::Timeout:
+        return "timeout";
+    case StatusCode::Unsupported:
+        return "unsupported";
+    case StatusCode::Internal:
+        return "internal";
+    }
+    return "?";
+}
+
+/// `--display`: reads the current refresh rate and reports it.
+void ReportRefresh(IVitureApi &api, const char *label) {
+    const cg::Result<std::uint32_t> refresh = api.GetRefreshHz();
+    if (refresh.ok()) {
+        std::printf("display: %s: %u Hz\n", label, static_cast<unsigned>(*refresh));
+    } else {
+        std::printf("display: %s: failed: %s (%s)\n", label, refresh.status().message(),
+                    StatusCodeName(refresh.status().code()));
+    }
+}
+
+/// `--display`: reports a display-seam call's status.
+void PrintDisplayStatus(const char *label, const Status &status) {
+    if (status.code() == StatusCode::Ok) {
+        std::printf("display: %s: ok\n", label);
+    } else {
+        std::printf("display: %s: failed: %s (%s)\n", label, status.message(), StatusCodeName(status.code()));
+    }
+}
+
+/// `--display` (U-08 HIL check): runs on the live session created and started
+/// by the source (a display-only create/destroy window crashes inside the
+/// vendor `destroy`, observed on HIL 2026-10-06). Reads the refresh rate,
+/// switches 90 Hz SBS and back to 2D 90, settling 500 ms between a set and
+/// its readback so an asynchronous mode switch is observable.
+void RunDisplayCheck(IVitureApi &api) {
+    std::printf("display: HIL check (U-08, live session)\n");
+    const std::string version = api.SdkVersion();
+    std::printf("display: sdk/firmware: %s\n", version.empty() ? "(unavailable)" : version.c_str());
+    ReportRefresh(api, "initial refresh");
+    PrintDisplayStatus("set 90 Hz SBS", api.SetDisplayMode(90, true).status());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ReportRefresh(api, "refresh after SBS 90");
+    PrintDisplayStatus("set 90 Hz 2D", api.SetDisplayMode(90, false).status());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    ReportRefresh(api, "refresh after 2D 90");
+    PrintDisplayStatus("restore 2D 60", api.SetDisplayMode(60, false).status());
+}
+
 /// Shared tail: no samples is an error, then the report and the optional CSV.
 int Finish(const Options &options, const SampleLog &log) {
     if (log.samples.empty()) {
@@ -643,22 +713,68 @@ int RunViture(const Options &options, SampleLog &log) {
 
     SteadyHostClock clock;
     VitureHeadPoseSource source(api, clock);
+    std::fprintf(stderr, "source: starting (create + start)\n");
     const cg::Result<void> started = source.Start();
     if (!started.ok()) {
         return ExitForStatus(started.status());
     }
+    std::fprintf(stderr, "source: started; polling for %.3f s\n", options.seconds);
+
+    if (options.display) {
+        RunDisplayCheck(api);
+    }
 
     const auto start = std::chrono::steady_clock::now();
+    HostTime next_heartbeat_ns = 0;
     for (;;) {
         const HostTime elapsed_ns = ElapsedSince(start);
         if (TimeLimitReached(elapsed_ns, options.seconds)) {
             break;
         }
+        if (elapsed_ns >= next_heartbeat_ns) {
+            // HIL heartbeat: shows whether samples arrive at all and whether the
+            // SDK stamp (pose callback) is advancing, even when the report is
+            // still far away.
+            const std::optional<double> sdk = source.LastSdkSeconds();
+            char stamp_text[32] = "none";
+            if (sdk.has_value()) {
+                static_cast<void>(std::snprintf(stamp_text, sizeof(stamp_text), "%.6f", *sdk));
+            }
+            std::fprintf(stderr, "poll: %.1f s, samples=%zu, sdk_stamp=%s\n", ToSeconds(elapsed_ns), log.samples.size(),
+                         stamp_text);
+            next_heartbeat_ns += 1'000'000'000;
+        }
         TryRecordNewest(source, options, log, &source);
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    std::fprintf(stderr, "source: stopping\n");
+
+    // Report and CSV before teardown: a vendor teardown that never returns
+    // (observed on HIL when the USB data stream wedges) must not lose the run.
+    const int finish_code = Finish(options, log);
+
+    // Bounded Stop: the seam contract says Stop joins the polling thread; when
+    // the vendor call blocks inside PollPose or teardown, the join can never
+    // complete. The watchdog turns that into a documented exit code 3 instead
+    // of a hung HIL log.
+    std::atomic<bool> stop_returned{false};
+    std::thread watchdog([&stop_returned] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!stop_returned.load(std::memory_order_acquire)) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                std::fprintf(stderr, "cg-pose-probe: source.Stop() did not return within 5 s; the vendor teardown is "
+                                     "wedged, forcing exit (the report and CSV above are already written)\n");
+                std::fflush(stderr);
+                std::_Exit(3);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    });
     source.Stop();
-    return Finish(options, log);
+    stop_returned.store(true, std::memory_order_release);
+    watchdog.join();
+    std::fprintf(stderr, "source: stopped\n");
+    return finish_code;
 }
 
 } // namespace
@@ -684,6 +800,10 @@ int main(int argc, char **argv) {
 #ifdef _WIN32
     const ScopedTimerResolution timer_resolution;
 #endif
+
+    // Unbuffered stdout: this is the HIL instrument, and a vendor-library fault
+    // must not swallow the progress log with the CRT buffer.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     SampleLog log;
     switch (options.source) {
