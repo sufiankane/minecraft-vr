@@ -159,3 +159,32 @@ powershell -File scripts/sync-unity-plugins.ps1
 release workflow with the Unity licence secrets), per R50. Record the
 resolution in this file (dated) and link it to the release notes and any ADR
 update before archiving this escalation.
+
+## Defect 1 (2026-10-06, fixed; re-test deferred by the owner)
+
+- **Symptom:** in the first CI-built player run on the glasses, LMB break and
+  RMB place did nothing and mouse look was dead; the owner could not exercise
+  the no-stuck-states or break/place/save/reload items. Keyboard movement,
+  snap turn, vignette, view-distance/90 Hz, stereo sanity and HUD all passed.
+- **Root cause:** the player never locked the OS cursor. The pointer stayed on
+  the laptop display while the game ran fullscreen on the glasses, so the
+  legacy mouse path (`Input.GetMouseButton(0/1)` and the mouse-look deltas)
+  never reached the game window; the keyboard kept working because focus
+  follows the fullscreen window. Evidence: `GetCursorPos` showed the pointer
+  on the laptop display during the run, and no `Cursor.lockState`/
+  `Cursor.visible` code existed anywhere in the packages.
+- **Fix:** `GameBoot` locks and hides the cursor in a player
+  (`ShouldLockCursor`; never in the Editor preview) at `Start`, re-locks it on
+  focus regain, and exposes `LockCursorInPlayer`; pinned by
+  `GameBootCursorTests` (EditMode, three policy tests). The rebuilt player
+  assembly was verified to contain the fix.
+- **Re-test (owner, next session):** checklist items 2 (both inputs), 4 (no
+  stuck states) and 5 (break/place/save/reload, including a quit and relaunch)
+  with the rebuilt player, plus a quick re-confirm of the already-ticked items.
+  The gamepad item remains untested (no controller available); the gamepad
+  parity path stays software-pinned.
+- **Gate:** `stage-7-complete` and `v0.1.0` stay withheld until the checklist
+  is complete and re-committed. The CI player artefact is rebuilt with the fix
+  before the re-test.
+- **Evidence:** `docs/notes/s7-hil/session-start.png` (the run state before the
+  defect was hit).
