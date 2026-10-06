@@ -1,0 +1,84 @@
+source: starting (create + start)
+[CARINA][TIME]:146972006287	[PID:3056][TID:41388]	get exp flag status: Host Command Invalid
+[CARINA][TIME]:146972220478	[PID:3056][TID:41388]	remain sync data transfer :15872 15872
+Current thread priority is 0x0
+[CARINA][TIME]:146972227844	[PID:3056][TID:41388]	init open_vst_str: off
+source: started; polling for 60.000 s
+display: HIL check (U-08, live session)
+display: sdk/firmware: 12.0.01.101_20260605
+display: initial refresh: 90 Hz
+display: set 90 Hz SBS: ok
+display: refresh after SBS 90: 90 Hz
+display: set 90 Hz 2D: ok
+display: refresh after 2D 90: 90 Hz
+display: restore 2D 60: failed: viture_loader: xr_device_provider_set_display_mode failed with VITURE code -3 (device)
+poll: 0.0 s, samples=0, sdk_stamp=146972.232520
+poll: 1.0 s, samples=508, sdk_stamp=146974.243000
+poll: 2.0 s, samples=797, sdk_stamp=146975.245100
+poll: 3.0 s, samples=862, sdk_stamp=146976.256100
+poll: 4.0 s, samples=926, sdk_stamp=146977.253000
+poll: 5.0 s, samples=990, sdk_stamp=146978.249000
+poll: 6.0 s, samples=1054, sdk_stamp=146979.245100
+poll: 7.0 s, samples=1119, sdk_stamp=146980.252200
+poll: 8.0 s, samples=1183, sdk_stamp=146981.247100
+poll: 9.0 s, samples=1247, sdk_stamp=146982.244200
+poll: 10.0 s, samples=1311, sdk_stamp=146983.243200
+poll: 11.0 s, samples=1376, sdk_stamp=146984.251200
+poll: 12.0 s, samples=1440, sdk_stamp=146985.243200
+poll: 13.0 s, samples=1505, sdk_stamp=146986.255300
+poll: 14.0 s, samples=1569, sdk_stamp=146987.246300
+poll: 15.0 s, samples=1634, sdk_stamp=146988.257500
+poll: 16.0 s, samples=1698, sdk_stamp=146989.247300
+poll: 17.0 s, samples=1762, sdk_stamp=146990.242300
+poll: 18.0 s, samples=1827, sdk_stamp=146991.254400
+poll: 19.0 s, samples=1891, sdk_stamp=146992.252400
+poll: 20.0 s, samples=1956, sdk_stamp=146993.256400
+poll: 21.0 s, samples=2020, sdk_stamp=146994.250400
+poll: 22.0 s, samples=2084, sdk_stamp=146995.243400
+poll: 23.0 s, samples=2149, sdk_stamp=146996.251500
+poll: 24.0 s, samples=2213, sdk_stamp=146997.245600
+poll: 25.0 s, samples=2277, sdk_stamp=146998.252600
+poll: 26.0 s, samples=2341, sdk_stamp=146999.244600
+poll: 27.0 s, samples=2406, sdk_stamp=147000.249500
+poll: 28.0 s, samples=2471, sdk_stamp=147001.256000
+poll: 29.0 s, samples=2535, sdk_stamp=147002.252100
+poll: 30.0 s, samples=2599, sdk_stamp=147003.246200
+poll: 31.0 s, samples=2664, sdk_stamp=147004.254100
+poll: 32.0 s, samples=2728, sdk_stamp=147005.249900
+poll: 33.0 s, samples=2792, sdk_stamp=147006.243200
+poll: 34.0 s, samples=2857, sdk_stamp=147007.257200
+poll: 35.0 s, samples=2921, sdk_stamp=147008.253300
+poll: 36.0 s, samples=2985, sdk_stamp=147009.245300
+poll: 37.0 s, samples=3050, sdk_stamp=147010.254300
+poll: 38.0 s, samples=3114, sdk_stamp=147011.246200
+poll: 39.0 s, samples=3179, sdk_stamp=147012.249300
+poll: 40.0 s, samples=3244, sdk_stamp=147013.252300
+poll: 41.0 s, samples=3308, sdk_stamp=147014.242400
+poll: 42.0 s, samples=3373, sdk_stamp=147015.250300
+poll: 43.0 s, samples=3437, sdk_stamp=147016.244300
+poll: 44.0 s, samples=3502, sdk_stamp=147017.254400
+poll: 45.0 s, samples=3566, sdk_stamp=147018.250600
+poll: 46.0 s, samples=3630, sdk_stamp=147019.247400
+poll: 47.0 s, samples=3695, sdk_stamp=147020.257500
+poll: 48.0 s, samples=3759, sdk_stamp=147021.248500
+poll: 49.0 s, samples=3824, sdk_stamp=147022.255500
+poll: 50.0 s, samples=3888, sdk_stamp=147023.245500
+poll: 51.0 s, samples=3953, sdk_stamp=147024.252600
+poll: 52.0 s, samples=4017, sdk_stamp=147025.244600
+poll: 53.0 s, samples=4082, sdk_stamp=147026.253500
+poll: 54.0 s, samples=4146, sdk_stamp=147027.246500
+poll: 55.0 s, samples=4210, sdk_stamp=147028.243600
+poll: 56.0 s, samples=4275, sdk_stamp=147029.251700
+poll: 57.0 s, samples=4340, sdk_stamp=147030.253600
+poll: 58.0 s, samples=4404, sdk_stamp=147031.248600
+poll: 59.0 s, samples=4468, sdk_stamp=147032.242600
+source: stopping
+source: viture
+samples: 4533  sample span: 59.994776050 s  measured rate: 75.540 Hz
+jitter (|interval - mean|): p50=2367.290 us  p95=11245.303 us  p99=11777.719 us
+status: stable=4529 unstable=4 lost=0
+polls: 4534 (failed: 1)
+first: t=146973.242872200 s seq=1296353 state=unstable pos=(0.000000, 0.000000, 0.000000) quat=(1.000000, 0.000000, 0.000000, 0.000000)
+last : t=147033.237648250 s seq=7858768 state=stable pos=(0.001047, -0.172389, -0.039762) quat=(0.966550, -0.256462, -0.001052, 0.002789)
+csv: wrote 4533 samples to docs\notes\s5-hil\pose_probe.csv
+source: stopped

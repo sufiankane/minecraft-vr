@@ -140,3 +140,26 @@ for the S5 software decisions.
 answers U-01 and U-08 (S5 Task 5). Record the resolution in this file, dated,
 and link it to the ADR update; archive this file only once that link exists
 (`docs/questions/README.md`, process steps 3–4).
+
+## Resolution (2026-10-06)
+
+Answered from a live run (owner laptop, firmware `12.0.01.101_20260605`, SDK
+2.4.0, SpaceWalker closed, `VitureXrRuntime` stopped):
+
+- `docs/notes/s5-hil/pose_probe.csv` + `pose_probe.log` are committed (60 s,
+  `cg-pose-probe --source viture --display`).
+- ADR-0009 amended: **U-01 answered** (3DoF works; 75.5 Hz measured poll rate
+  in the 60 s run, 203 Hz in a short run; 99.9% stable; ~0.65 ms median
+  latency proxy; the pose callback is the SDK timestamp source at ~67 Hz) and
+  **U-08 answered** (set/get display mode works; SBS is mode 0x35; the switch
+  is asynchronous, needs a settle, and a rapid third switch can return -3).
+  ADR status: **accepted**.
+- The run also found and fixed a wrapper defect: the first poll after `start`
+  fails with `-3` while the VIO warms up, and the pre-HIL fault policy tore
+  the device down on that first error, so no sample was ever published on real
+  hardware. The warm-up grace is pinned by
+  `VitureFault.TransientPollErrorsInsideTheGraceKeepTheSession`.
+- Gate rule satisfied: `stage-5-complete` is eligible once the run's commit is
+  green in CI.
+- Archive: this file stays the escalation record; the answers live in
+  ADR-0009 (amendment 2026-10-06).

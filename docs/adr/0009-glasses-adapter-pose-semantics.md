@@ -1,7 +1,7 @@
 # 0009. Glasses adapter: status mapping, pose slot, recentre and predict semantics
 
-- Status: proposed (U-01 and U-08 answers are pending HIL; the rest is accepted
-  for S5 software)
+- Status: accepted (U-01 and U-08 answered by the S5 HIL run 2026-10-06; see
+  the amendment at the end)
 - Date: 2026-10-02
 - Deciders: Sufyan Khan (owner)
 - Consulted: Stage S5 build agents
@@ -178,16 +178,19 @@ cannot be opened, or an unresolved entry point, is `Unsupported` with the path
 or symbol name in the message (the message is interned because `Status` is
 non-owning). The returned API owns the library handle.
 
-**Vendor symbol binding (pending HIL).** The exact exported symbol names, the
-calling convention and the blocking behaviour of the VITURE SDK are not covered
-by dossier facts F-01..F-10; F-02/F-04 describe the Carina poll and recentre
-calls in prose only, and the display-mode surface is U-08. The function-pointer
-table in `viture_loader.cpp` therefore uses documented placeholder names and
-contract-shaped signatures. Until the HIL run answers this, loading the real
-library fails with `Unsupported` naming the first unresolved placeholder; the
-table and its thin adapter are rewritten in that single TU when the answers
-exist. The loader is tested on the error paths only (missing library, empty
-path), which is all that is testable without the vendor DLL.
+**Vendor symbol binding (HIL-observed, 2026-10-06).** The exact exported symbol
+names, the calling convention and the blocking behaviour of the VITURE Windows
+SDK were not covered by dossier facts F-01..F-10; F-02/F-04 describe the
+Carina poll and recentre calls in prose only, and the display-mode surface was
+U-08. The function-pointer table in `viture_loader.cpp` now binds the real
+`glasses.dll` exports observed from the vendor SDK (create/initialize/start/
+stop/shutdown/destroy, `set_dof_type_carina`, `register_state_callback`,
+`register_callbacks_carina`, `get_gl_pose_carina`, `reset_origin_carina`,
+`set/get_display_mode`, `get_glasses_version`, `is_product_id_valid`,
+`set_log_level`), with the SetupAPI product-id scan for VID 0x35CA and the
+`CG_VITURE_PRODUCT_ID`/`CG_VITURE_DOF`/`CG_VITURE_DEBUG` overrides. The full
+table and the observed semantics are recorded in the amendment below; the
+loader error-path tests are unchanged (missing library, empty path).
 
 ### Polling policy (Task 2)
 
@@ -215,9 +218,11 @@ device recreate restarts it, the wrapper resets `ClockMapper` and re-seeds it
 from that first post-reconnect sample whenever the mapped time would fall
 below the last published time, so a reconnect cannot publish time in the past.
 
-**Fault and quiet policy.** A `Device`/`Timeout` (or any other) poll failure
-destroys the device and waits an interruptible backoff of 100 ms doubling to a
-2 s cap. After `kMaxReconnectAttempts` = 10 consecutive failed recreates the
+**Fault and quiet policy.** A poll failure younger than `kReconnectAfter`
+(250 ms) is a warm-up transient and keeps the session (HIL finding, see the
+amendment); a sustained failure past that grace destroys the device and waits
+an interruptible backoff of 100 ms doubling to a 2 s cap. After
+`kMaxReconnectAttempts` = 10 consecutive failed recreates the
 thread stops recreating and probes every 2 s, reporting `Lost` until a poll
 succeeds; a success resets the attempt counter, the backoff and the quiet
 state. A device-alive flag is cleared before every `DestroyDevice` and set
@@ -301,20 +306,50 @@ full turn. The replay source composes the same yaw/pitch delta onto its
 recorded rotation, which preserves a recorded roll (matching the Viture
 adapter) instead of rebuilding the pose from absolute yaw and pitch.
 
-### U-01 (pending HIL)
+### U-01 (answered 2026-10-06)
 
-Status: **unanswered**. `docs/questions/S5-HIL.md` is the escalation record;
-the owner runs `cg-pose-probe` against the Luma Ultra and commits the measured
-rate, latency and status semantics under `docs/notes/s5-hil/`. This section is
-filled in from those artefacts (and the S5 note's 6DoF-and-discard-position
-decision, if 3DoF pose fails) before `stage-5-complete`.
+Status: **answered — 3DoF Carina polling works on Luma Ultra on Windows.**
+Evidence: `docs/notes/s5-hil/pose_probe.csv` + `pose_probe.log` (60 s,
+`cg-pose-probe --source viture --display`), run on the owner's HP laptop with
+the glasses on its USB-C port chain.
 
-### U-08 (pending HIL)
+- 4,533 samples over 59.995 s = **75.5 Hz** measured poll rate in the 60 s run
+  (an 8 s probe run measured 203 Hz; the SDK's `get_gl_pose_carina` cadence
+  varies with load and mode).
+- Status semantics: `pose_status` 0/1 map to Stable/Unstable as documented;
+  over 60 s: **stable = 4,529 (99.9%), unstable = 4 (all in the first
+  moments), lost = 0**. There is no lost status from the poll call.
+- Polls 4,534, failed 1: the single failure is the warm-up `-3` right after
+  `start` (see the amendment; the vendor quick-start ignores it).
+- Jitter `|interval − mean|`: p50 2.37 ms, p95 11.25 ms, p99 11.78 ms.
+- Latency proxy (`ClockMapper` offset = published host time − raw SDK stamp):
+  after 4 warm-up samples, p50 **0.65 ms**, p95 1.03 ms, max 1.53 ms
+  (min −0.15 ms). The first 4 samples carry a ~1.01 s stale callback stamp.
+- The poll call returns no timestamp. The loader's SDK stamp is the Carina
+  **pose callback** timestamp (median step 15 ms ≈ **66.7 Hz**, the only true
+  SDK timebase); the HIL log records the fallback to the host steady clock
+  before the first callback.
+- 3DoF is usable, so the 6DoF-and-discard-position fallback is **not needed**
+  (`CG_VITURE_DOF=6dof` remains available for experiments).
 
-Status: **unanswered**. The display mode API, SBS signalling and refresh-rate
-behaviour are confirmed by the same hardware run (Task 3's `IDisplayControl`
-is provisional until then). This section is filled in before
-`stage-5-complete`.
+### U-08 (answered 2026-10-06)
+
+Status: **answered — the display-mode API works while the pose source is
+stopped or live; the mode is persistent and observable after a settle.**
+Evidence: the same run's `display:` lines.
+
+- `xr_device_provider_set_display_mode` accepts the F-09 constants:
+  90 Hz SBS (0x35) and 90 Hz 2D (0x33) both returned `ok` on a live session;
+  `get_display_mode` reported 90 Hz after a 500 ms settle (an earlier check
+  without the settle read the pre-switch 60 Hz — the switch is asynchronous).
+- SBS signalling is a display mode, not a separate call: 0x35 selects
+  3840x1080@90 and the next session's initial read-back was already 90 Hz, so
+  the mode persists across sessions.
+- Switching twice in quick succession (SBS 90 → 2D 90 → 2D 60) failed the
+  third call with `-3` (VITURE_GLASSES_ERROR_USB_EXEC); treat `-3` around mode
+  changes as retryable and set the mode once per session.
+- Refresh decode maps every `VITURE_DISPLAY_MODE_*` value (0x31..0x35,
+  0x41..0x45); 120 Hz is 2D-only (F-09).
 
 ## Consequences
 
@@ -331,8 +366,10 @@ is provisional until then). This section is filled in before
 - Bad: prediction is linear in yaw/pitch and frozen after 100 ms, so fast
   reversals inside one frame are not modelled; a real predictor is a later
   stage concern.
-- Follow-up: U-01/U-08 answers, and the real adapter's status/timeout mapping,
-  must be added to this ADR before `stage-5-complete` (S5 Task 5).
+- Follow-up: U-01/U-08 answers are in this ADR (amendment 2026-10-06); the
+  warm-up grace and the real adapter's status mapping are pinned by
+  `VitureFault.TransientPollErrorsInsideTheGraceKeepTheSession` and the S5 HIL
+  artefacts under `docs/notes/s5-hil/`.
 
 ## Confirmation
 
@@ -357,8 +394,10 @@ is provisional until then). This section is filled in before
     withdraws the read-time correction, a posted recentre survives a device
     loss and is applied exactly once after a successful recreate+publish, the
     fake's device lifetime, `StartPose`-failure teardown and clean
-    retry, seam-crossing prediction, and the reconnect clock-restart mapper
-    guard. The contract suite includes `RecenterBeforeTheFirstSampleIsNotReady`
+    retry, seam-crossing prediction, the reconnect clock-restart mapper
+    guard, and the S5 HIL warm-up grace
+    (`TransientPollErrorsInsideTheGraceKeepTheSession`, 2026-10-06). The
+    contract suite includes `RecenterBeforeTheFirstSampleIsNotReady`
     for every factory.
 - `cpp/tests/glasses/display_control_tests.cpp` pins the enforced display rule:
   `Get`/`Set` are `NotReady` and make no seam call while a refusing gate is
@@ -407,3 +446,67 @@ ordering). Exhausting the 64-read retry window drops a correction for one frame
 surface. U-08-dependent: Stop() can block behind an in-flight vendor display
 call now that lifecycle and display calls share lifecycle_mutex_; the
 acceptable bound is to be measured at HIL (TD-051 class).
+
+## Amendment (2026-10-06, S5 HIL run)
+
+### The warm-up transient and the wrapper bug it exposed
+
+The vendor quick-start (and the prebuilt `glasses-demo.exe`) poll
+`get_gl_pose_carina` in a loop and **ignore poll errors**. On real hardware the
+first poll after `start` returns `-3`
+(`VITURE_GLASSES_ERROR_USB_EXEC`) while the Carina VIO engine warms up; the
+second poll succeeds and the stream runs at the measured rates above. A
+clean-room program mirroring the published quick-start verbatim
+(`create → get_device_type → initialize(NULL,NULL) → start → poll x100`)
+reproduced this: poll 0 `rc=-3`, polls 1..99 `rc=0` (99/100), with real pose
+data.
+
+The pre-HIL wrapper did the opposite: the first poll error destroyed the
+device and reconnected, and every recreated session failed its first poll the
+same way, so the source never published a sample on real hardware (the probe
+saw create/destroy cycles and vendor teardown wedges). Fix:
+
+- `kReconnectAfter` = 250 ms warm-up grace: a failure streak younger than the
+  grace is retried without teardown, paced by `kReconnectRetryDelay` = 2 ms;
+- `grace_anchor_ns_` is separate from `last_success_ns_`: the grace restarts
+  per session (thread start or successful `StartPose`), while the quiet-state
+  progression (`Unstable` 500 ms, `Lost` 1000 ms) keeps advancing across
+  reconnects as before;
+- the backoff/recreate path and the 10-attempt cap are unchanged once the
+  grace passes.
+
+`VitureFault.TransientPollErrorsInsideTheGraceKeepTheSession` pins the grace;
+the reconnect/backoff/cap tests were updated to sustain failures past the
+grace (the manual clock now also pumps the grace).
+
+### Verified line-by-line against the vendor quick-start
+
+The clean-room run above matches the documented flow exactly (SetupAPI
+enumeration for `0x1104`, `initialize(NULL, NULL)`, `start`, poll loop) and
+worked; the wrapper's deviation (teardown on the first error) was the sole
+cause of the failures. `--display` runs on the live session because a
+display-only create/destroy window crashes inside the vendor `destroy`
+(observed twice, `0xC0000409`); the vendor demo itself also prints
+`get exp flag status: Host Command Invalid` and `get_film_mode ... -7` during
+normal operation, both harmless on Luma Ultra.
+
+### Vendor binding table (observed exports)
+
+`create`, `initialize`, `start`, `stop`, `shutdown`, `destroy`,
+`set_dof_type_carina`, `register_state_callback`,
+`register_callbacks_carina`, `get_gl_pose_carina`, `reset_origin_carina`,
+`set_display_mode`, `get_display_mode`, `get_glasses_version`,
+`is_product_id_valid`, `set_log_level` from `glasses.dll`; product id resolved
+by SetupAPI scan (VID 0x35CA) or `CG_VITURE_PRODUCT_ID`; 3DoF selected before
+`initialize` (`CG_VITURE_DOF=6dof` overrides); a no-op state callback and a
+no-op camera callback are registered (the library expects both pointers), and
+the pose callback supplies the SDK timestamp for polled poses;
+`CG_VITURE_DEBUG=1` traces every vendor call.
+
+### HIL run conditions
+
+Owner's HP laptop, glasses on the USB-C port chain (`USB\VID_35CA&PID_1104`
+behind a USB 2.0-class hub on `XHC3/PRT1`; the stream works through it),
+SpaceWalker closed, `VitureXrRuntime` service stopped, firmware
+`12.0.01.101_20260605`, SDK 2.4.0. Artefacts:
+`docs/notes/s5-hil/pose_probe.csv` (4,533 rows) and `pose_probe.log`.
