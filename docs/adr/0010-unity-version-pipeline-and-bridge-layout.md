@@ -1,6 +1,6 @@
 # 0010. Unity version, stereo pipeline and the bridge layout
 
-- Status: proposed (U-09 answer pending HIL; the rest is accepted for S6 software)
+- Status: accepted (U-09 answered by the S6 HIL run 2026-10-06; see the amendment at the end)
 - Date: 2026-10-02
 - Deciders: Sufyan Khan (owner)
 - Consulted: Stage S6 build agents
@@ -24,10 +24,11 @@ also rises from 1 to 2: the hand slot payload grew from the pre-S6 shorthand to
 `cg_hand_frame`, so the region's payload shape is no longer the v1 shape and a
 mixed-version pair must be rejected (programme review 2026-10-03, I-2).
 
-Two dossier unknowns live here and are **not** answered by this ADR:
-**U-09** (is per-eye distortion correction needed, and what are the real FOV
-defaults?) is pending HIL. Distortion defaults to none and the FOV is a config
-value until the owner's HIL run records the answer.
+The dossier unknown **U-09** (is per-eye distortion correction needed, and what
+are the real FOV defaults?) lived in this ADR: distortion defaulted to none and
+the FOV was a provisional config value until the owner's HIL run. The run
+answered U-09 on 2026-10-06 (distortion none, per-eye FOV 45°, IPD 64 mm); the
+amendment at the end records the evidence.
 
 ## Decision drivers
 
@@ -111,9 +112,9 @@ the remaining tuning. Defaults live in code and are covered by tests:
 
 | Setting | Default | Provenance |
 |---|---|---|
-| IPD | 64 mm | ADR default, config-overridable; pending HIL |
-| Per-eye horizontal FOV | 45° | ADR default, config-overridable; applied as the vertical `Camera.fieldOfView` through `vertical = 2·atan(tan(horizontal/2)/aspect)`, `aspect = (screenWidth·0.5)/screenHeight`; pending HIL |
-| Distortion | none | U-09 pending HIL |
+| IPD | 64 mm | ADR default, config-overridable; confirmed by the S6 HIL run 2026-10-06 |
+| Per-eye horizontal FOV | 45° | ADR default, config-overridable; applied as the vertical `Camera.fieldOfView` through `vertical = 2·atan(tan(horizontal/2)/aspect)`, `aspect = (screenWidth·0.5)/screenHeight`; confirmed by the S6 HIL run 2026-10-06 |
+| Distortion | none | U-09 answered 2026-10-06: none needed (S6 HIL checklist) |
 
 If the HIL run shows that the glasses need a different FOV or distortion
 correction, only the defaults/correction spec change; the config surface and
@@ -134,7 +135,10 @@ while the pose source is running, because display calls must never be
 concurrent with `PollPose`. S6 therefore applies display mode, refresh and
 window settings **before** `IHeadPoseSource::Start` and after `Stop`; the Unity
 adapter never calls display APIs while tracking is live. This is a sequencing
-rule, not a new API.
+rule, not a new API. Confirmed on hardware by the S6 HIL run (2026-10-06): the
+SBS panel mode and the primary-display assignment were applied before the
+player started, `WindowManager` then applied the borderless 3840x1080@90 mode
+at `Awake`, and the player log shows no read-back mismatch.
 
 ### Contract additions and version bump (R42)
 
@@ -301,11 +305,13 @@ macros in the frozen header).
   - Bad: a region left over from a v1 writer is rejected until the writer is
     upgraded, so a partial deployment of hand service/readers fails closed
     (intended; upgrade both sides together).
-- Bad: distortion is off until U-09 is answered, so the HIL checklist may
-  reject the image and require a correction pass before the S6 tag.
-- Follow-up: U-09 (distortion/FOV) is answered by the S6 HIL run
-  (`docs/questions/S6-HIL.md`, Task 4); the S12 real writer replaces the
-  test-only writer on the production path under the same layout.
+- Bad: distortion is off. The S6 HIL run (2026-10-06) found none needed on the
+  tested Luma Ultra; if a later optic/firmware revision shows bowing or
+  fringing, the correction pass reopens this ADR.
+- Follow-up: U-09 is answered (S6 HIL run 2026-10-06,
+  [`../notes/s6-hil/checklist.md`](../notes/s6-hil/checklist.md)); the S12 real
+  writer replaces the test-only writer on the production path under the same
+  layout.
 
 ## Confirmation
 
@@ -346,3 +352,30 @@ macros in the frozen header).
   bytes, 5.6's "36" is the `state` offset shorthand, and the fixed slot offsets
   64/256 are unchanged).
 - Escalation: `docs/questions/S6-HIL.md` (U-09; created in Task 4).
+
+## Amendment (2026-10-06, S6 HIL run)
+
+The on-glasses visual run (`docs/notes/s6-hil/checklist.md`) ticked all eight
+items and answered U-09:
+
+- **Distortion none** — straight grid lines and the horizon show no bowing or
+  colour fringing at the edges on the tested Luma Ultra; the `Distortion: none`
+  default stands and no correction spec is opened.
+- **Per-eye FOV 45° confirmed** — the ±4 m markers at ~12 m sit at a natural
+  periphery; the value stays the code default and the config remains
+  overridable.
+- **IPD 64 mm retained** — the stereo pair aligned with no vertical disparity
+  or eye swap; the owner measured no different value.
+- **Display sequencing confirmed** — the SBS mode (0x35) and the
+  primary-display assignment were applied before the player started;
+  `WindowManager` then applied borderless 3840x1080@90 at `Awake` with no
+  read-back mismatch.
+- **Pose** — the run used the S6 synthetic fallback by design (S12 owns the
+  real writer); the checklist exercises the rig, late latch, overlay and input
+  drive, not the bridge writer.
+
+Evidence: `docs/notes/s6-hil/checklist.md` and
+`docs/notes/s6-hil/calibration-sbs.png` (the 3840x1080 side-by-side frame
+captured from the glasses' display). The calibration player build adds
+`BuildPlayer.BuildCalibrationWindows64` because the committed build list boots
+the Game scene first.

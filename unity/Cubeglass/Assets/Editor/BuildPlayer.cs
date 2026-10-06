@@ -26,6 +26,60 @@ namespace Cubeglass.Editor
         public const string WindowsOutputRelativePath = "build/StandaloneWindows64/Cubeglass/Cubeglass.exe";
 
         /// <summary>
+        /// Calibration player output relative to the Unity project root; the
+        /// S6-HIL run boots straight into the calibration scene.
+        /// </summary>
+        public const string CalibrationWindowsOutputRelativePath = "build/CalibrationWindows64/Cubeglass/Cubeglass.exe";
+
+        /// <summary>
+        /// Builds the Windows x64 calibration player (S6-HIL): the committed
+        /// build list boots the Game scene first, so the visual checklist run
+        /// needs a player whose only scene is the calibration scene.
+        /// </summary>
+        public static void BuildCalibrationWindows64()
+        {
+            try
+            {
+                string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+                string outputPath = Path.Combine(
+                    projectRoot,
+                    CalibrationWindowsOutputRelativePath.Replace('/', Path.DirectorySeparatorChar));
+                var options = new BuildPlayerOptions
+                {
+                    scenes = new[] { CalibrationSceneBuilder.CalibrationScenePath },
+                    locationPathName = outputPath,
+                    target = BuildTarget.StandaloneWindows64,
+                    options = BuildOptions.None,
+                };
+
+                BuildReport report = BuildPipeline.BuildPlayer(options);
+                BuildSummary summary = report.summary;
+                if (summary.result != BuildResult.Succeeded)
+                {
+                    Debug.LogError(
+                        "BuildPlayer: the calibration player failed: " + summary.result
+                            + " (" + summary.totalErrors + " errors, " + summary.totalWarnings + " warnings)");
+                    EditorApplication.Exit(1);
+                    return;
+                }
+
+                Debug.Log(
+                    "BuildPlayer: wrote " + outputPath + " (" + summary.totalSize + " bytes, "
+                        + summary.totalTime + ")");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("BuildPlayer: failed to build the calibration player: " + exception);
+                if (Application.isBatchMode)
+                {
+                    EditorApplication.Exit(1);
+                }
+
+                throw;
+            }
+        }
+
+        /// <summary>
         /// Builds the Windows x64 standalone player for the current tree.
         /// </summary>
         public static void BuildWindows64()
