@@ -548,7 +548,7 @@ contract sources are the files under `contracts/`; the table below indexes them.
 
 | Contract / format | Source | Version / key facts | Consumers |
 | --- | --- | --- | --- |
-| Shared C types and C ABI | `contracts/cg_types.h` | `CG_ABI_VERSION 2`; `cg_time_ns` int64; `cg_vec3/cg_quat/cg_pose` float; `cg_status` 0..6; `cg_track_state` 0..2; `cg_head_sample` (48 B); `cg_hand`/`cg_hand_frame` (576 B) | C++ `cg-glasses`, `cpp/bridge`, C# `Cubeglass.Unity.Bridge` |
+| Shared C types and C ABI | `contracts/cg_types.h` | `CG_ABI_VERSION 3`; `cg_time_ns` int64; `cg_vec3/cg_quat/cg_pose` float; `cg_status` 0..6; `cg_track_state` 0..2; `cg_head_sample` (48 B); `cg_hand`/`cg_hand_frame` (576 B) | C++ `cg-glasses`, `cpp/bridge`, C# `Cubeglass.Unity.Bridge` |
 | Bridge C ABI | `contracts/cg_unity_bridge.h` | `cg_bridge_open/read_head/read_hands/send_command/close`, dossier 5.12 verbatim, no export macros (R44); Windows SHARED with `WINDOWS_EXPORT_ALL_SYMBOLS` | native `cg_unity_bridge.dll`; test-only writer in the separate `cg_bridge_test_support.dll` (TD-004/TD-067) |
 | Shared-memory region | `cpp/bridge/include/cg/bridge/shm_layout.hpp` | name `Local\cubeglass.v1.state`; magic `CGSHM001`; region ABI **2**; header 64 B (heartbeat at 24, command at 32, ack at 36); HeadSlot at 64 (64 B), HandSlot at 256 (592 B); min region 848 B; 250 ms exclusive staleness; magic published last | S12 writer, Unity reader, C++ tests |
 | C++ port vocabulary | `contracts/cpp/ports.hpp`, `contracts/cpp/result.hpp` | `Duration`, `TrackState`, `HeadSample`, `IHeadPoseSource` (5.2 verbatim); `StatusCode`/`Status`/`Result<T>` (no exceptions, no allocation) | `cg-glasses`, future `cg-handservice` |

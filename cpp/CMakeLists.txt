@@ -41,6 +41,7 @@ enable_testing()
 find_package(GTest CONFIG REQUIRED)
 
 add_subdirectory(core-math)
+add_subdirectory(capture)
 add_subdirectory(glasses)
 add_subdirectory(bridge)
 add_subdirectory(tools)

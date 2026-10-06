@@ -55,7 +55,7 @@ namespace cg {{ enum class StatusCode {{ Ok, Internal }}; }}
 def write_contracts(
     root: Path,
     *,
-    version: int = 2,
+    version: int = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"],
     field: str = "",
     function: str = "",
 ) -> None:
@@ -169,12 +169,14 @@ def test_bump_without_update_fails_then_update_passes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     initialise(tmp_path, capsys, monkeypatch)
-    write_contracts(tmp_path, version=3, field="\n  uint32_t flags;")
-    _refresh_code_constants(tmp_path, monkeypatch, version=3)
+    anchor = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"]
+    bumped = anchor + 1
+    write_contracts(tmp_path, version=bumped, field="\n  uint32_t flags;")
+    _refresh_code_constants(tmp_path, monkeypatch, version=bumped)
 
     code, lines = run_check(tmp_path, capsys)
     assert code == 1
-    assert "abiVersion 2 disagrees with CG_ABI_VERSION 3" in lines[0]
+    assert f"abiVersion {anchor} disagrees with CG_ABI_VERSION {bumped}" in lines[0]
 
     assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
     capsys.readouterr()
@@ -183,7 +185,7 @@ def test_bump_without_update_fails_then_update_passes(
     assert lines == []
 
     baseline = json.loads((tmp_path / "contracts" / "abi-baseline.json").read_text(encoding="utf-8"))
-    assert baseline["abiVersion"] == 3
+    assert baseline["abiVersion"] == bumped
     assert set(baseline["files"]) == set(contracts_module.KNOWN_FINGERPRINTS)
 
 
@@ -191,13 +193,15 @@ def test_source_bump_without_anchor_update_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     initialise(tmp_path, capsys, monkeypatch)
-    write_contracts(tmp_path, version=3, field="\n  uint32_t flags;")
+    anchor = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"]
+    bumped = anchor + 1
+    write_contracts(tmp_path, version=bumped, field="\n  uint32_t flags;")
     _refresh_code_constants(tmp_path, monkeypatch)
 
     code, lines = run_check(tmp_path, capsys)
     assert code == 1
     assert "KNOWN_ABI_VERSIONS" in lines[0]
-    assert "contracts/cg_types.h declares version 3" in lines[0]
+    assert f"contracts/cg_types.h declares version {bumped}" in lines[0]
 
     code, output = run_update(tmp_path, capsys)
     assert code == 1
@@ -210,14 +214,15 @@ def test_baseline_version_edited_alone_fails(
     initialise(tmp_path, capsys, monkeypatch)
     baseline_path = tmp_path / "contracts" / "abi-baseline.json"
     data = json.loads(baseline_path.read_text(encoding="utf-8"))
-    data["abiVersion"] = 3
+    anchor = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"]
+    data["abiVersion"] = anchor + 1
     baseline_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     code, lines = run_check(tmp_path, capsys)
     assert code == 1
     assert len(lines) == 1
-    assert "abiVersion 3" in lines[0]
-    assert "CG_ABI_VERSION 2" in lines[0]
+    assert f"abiVersion {anchor + 1}" in lines[0]
+    assert f"CG_ABI_VERSION {anchor}" in lines[0]
 
 
 def test_baseline_fingerprint_edited_alone_fails(
@@ -246,7 +251,7 @@ def test_consistently_rewritten_baseline_cannot_admit_drift(
     forged = {relative: "a" * 64 for relative in data["files"]}
     data["files"] = forged
     data["fingerprint"] = contracts_module._fingerprint(forged)
-    data["abiVersion"] = 2
+    data["abiVersion"] = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"]
     baseline_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     code, lines = run_check(tmp_path, capsys)
@@ -539,8 +544,9 @@ def test_since_flags_a_surface_change_without_a_version_bump(
 
     code = main(["contracts", "--root", str(tmp_path), "--since", "main"])
     output = capsys.readouterr().out
+    anchor = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"]
     assert code == 1
-    assert "stayed at 2" in output
+    assert f"stayed at {anchor}" in output
     assert "bump" in output
 
 
@@ -552,8 +558,9 @@ def test_since_passes_when_the_version_was_bumped(
     _commit(tmp_path, "base surface")
     assert _git(tmp_path, "checkout", "-q", "-b", "pr").returncode == 0
 
-    write_contracts(tmp_path, version=3, field="\n  uint32_t flags;")
-    _refresh_code_constants(tmp_path, monkeypatch, version=3)
+    bumped = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"] + 1
+    write_contracts(tmp_path, version=bumped, field="\n  uint32_t flags;")
+    _refresh_code_constants(tmp_path, monkeypatch, version=bumped)
     assert main(["contracts", "--root", str(tmp_path), "--update"]) == 0
     capsys.readouterr()
     _commit(tmp_path, "change surface with an ABI bump")
@@ -580,8 +587,9 @@ def test_since_is_read_from_the_environment(
     monkeypatch.setenv("CG_CONTRACT_BASE_REF", "main")
     code = main(["contracts", "--root", str(tmp_path)])
     output = capsys.readouterr().out
+    anchor = contracts_module.KNOWN_ABI_VERSIONS["contracts/cg_types.h"]
     assert code == 1
-    assert "stayed at 2" in output
+    assert f"stayed at {anchor}" in output
 
 
 def test_without_since_the_local_no_git_fallback_still_passes(

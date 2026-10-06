@@ -13,6 +13,6 @@ namespace Cubeglass.CoreMath
     /// </remarks>
     public static class AbiVersion
     {
-        public const int Value = 2;
+        public const int Value = 3;
     }
 }

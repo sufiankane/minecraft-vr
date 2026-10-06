@@ -12,7 +12,7 @@ it after any job rename.
 
 | Check context | Runner | Enforces |
 | --- | --- | --- |
-| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, MSVC `/analyze` over every `core-math`, `glasses` and `bridge` source (TD-030), `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `glasses` and `bridge` source (see below) |
+| `cpp-windows` | `windows-latest` | MSVC build (warnings as errors), `ctest`, MSVC `/analyze` over every `core-math`, `capture`, `glasses` and `bridge` source (TD-030), `clang-format --dry-run --Werror` over every `cpp/**` source/header, `clang-tidy` over every `core-math`, `capture`, `glasses` and `bridge` source (see below) |
 | `cpp-linux-asan` | `ubuntu-latest` | Linux ASan/UBSan `ctest`, the TSan preset and concurrency tests, plus the `linux-coverage` build and the `core-math` coverage floor |
 | `dotnet` | `ubuntu-latest` | `dotnet build Cubeglass.sln --configuration Release`, per-project `dotnet test` with `XPlat Code Coverage`, and the module coverage floors |
 | `python` | `ubuntu-latest` | `ruff check`, strict `mypy`, `pytest` |
@@ -167,12 +167,12 @@ the S1 follow-up did not happen until then. The gate was hardened after the
 are frozen by the contract gate above instead.
 
 `clang-tidy` runs over every `*.cpp` in `cpp/core-math/src`,
-`cpp/glasses/src` and `cpp/bridge/src` with the pinned LLVM 23.1.2 (TD-029),
-using the same `--header-filter` as the local invocation below. All three
-module directories must stay clean under the repository `.clang-tidy` policy
-(`WarningsAsErrors: '*'`). `cpp/tests` and `cpp/tools` remain outside
-clang-tidy by design (the negative format fixture and any Unity C# are not
-module sources).
+`cpp/capture/src`, `cpp/glasses/src` and `cpp/bridge/src` with the pinned LLVM
+23.1.2 (TD-029), using the same `--header-filter` as the local invocation
+below. All four module directories must stay clean under the repository
+`.clang-tidy` policy (`WarningsAsErrors: '*'`). `cpp/tests` and `cpp/tools`
+remain outside clang-tidy by design (the negative format fixture and any Unity
+C# are not module sources).
 
 ## MSVC static analysis scope (TD-030)
 
@@ -181,7 +181,7 @@ The `cpp-windows` job configures the `windows-analyze` preset
 
 ```powershell
 cmake --preset windows-analyze
-cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
+cmake --build --preset windows-analyze --target cg_core_math cg_capture cg_glasses cg_bridge cg_bridge_test_support
 ```
 
 The option adds `/analyze /analyze:external-` to those targets only, while
@@ -236,9 +236,9 @@ cmake --preset windows-msvc
 cmake --build --preset windows-msvc
 ctest --preset ci
 cmake --preset windows-analyze
-cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
+cmake --build --preset windows-analyze --target cg_core_math cg_capture cg_glasses cg_bridge cg_bridge_test_support
 clang-format --dry-run --Werror @(git ls-files cpp | Where-Object { $_ -match '\.(cpp|hpp|h|hh|cc|cxx)$' })
-clang-tidy --header-filter='[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p build/windows-msvc @(git ls-files core-math/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
+clang-tidy --header-filter='[\\/](core-math|capture|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$' -p build/windows-msvc @(git ls-files core-math/src capture/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
 ```
 
 The `--header-filter` deliberately narrows the repository header filter to the
