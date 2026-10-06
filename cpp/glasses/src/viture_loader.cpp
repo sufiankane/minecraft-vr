@@ -220,6 +220,35 @@ void CloseLibrary(LibraryHandle handle) noexcept {
     return enabled;
 }
 
+/// Debug trace helpers. Tracing is noexcept and allocation-failure safe (the
+/// composition inside the helper is swallowed on failure), so it can be called
+/// from the noexcept teardown path, and it uses no C varargs.
+void TraceText(const char *text) noexcept {
+    try {
+        (void)std::fputs(text, stderr);
+    } catch (...) {
+        // Tracing must never throw out of noexcept teardown (std::terminate).
+    }
+}
+
+void TraceInt(const char *prefix, int value) noexcept {
+    try {
+        const std::string line = std::string{prefix} + std::to_string(value) + "\n";
+        (void)std::fputs(line.c_str(), stderr);
+    } catch (...) {
+        // Tracing must never throw out of noexcept teardown (std::terminate).
+    }
+}
+
+void TraceTwoInts(const char *prefix, int first, const char *middle, int second) noexcept {
+    try {
+        const std::string line = std::string{prefix} + std::to_string(first) + middle + std::to_string(second) + "\n";
+        (void)std::fputs(line.c_str(), stderr);
+    } catch (...) {
+        // Tracing must never throw out of noexcept teardown (std::terminate).
+    }
+}
+
 /// Outcome of validating a caller-supplied vendor-DLL path.
 ///
 /// A path is accepted only when it is absolute and either outside the working
@@ -497,26 +526,67 @@ template <typename Function>
     return true;
 }
 
+// Vendor protocol constants (`viture_result.h`, `viture_protocol_public.h`;
+// the vendor headers are never included, ADR-0001). The names mirror the
+// vendor enumerations so the binding reads against the SDK documentation.
+constexpr int kVitureErrorInvalidParam = -1;   // VITURE_GLASSES_ERROR_INVALID_PARAM
+constexpr int kVitureErrorUsbUnavailable = -2; // VITURE_GLASSES_ERROR_USB_UNAVAILABLE
+constexpr int kVitureErrorUsbExec = -3;        // VITURE_GLASSES_ERROR_USB_EXEC
+constexpr int kVitureErrorNotSupported = -4;   // VITURE_GLASSES_ERROR_NOT_SUPPORTED
+constexpr int kVitureErrorNoData = -5;         // VITURE_GLASSES_ERROR_NO_DATA
+constexpr int kVitureErrorDataParse = -6;      // VITURE_GLASSES_ERROR_DATA_PARSE
+constexpr int kVitureErrorDeviceRejected = -7; // VITURE_GLASSES_ERROR_DEVICE_REJECTED
+constexpr int kVitureErrorCalibInit = -8;      // VITURE_GLASSES_ERROR_CALIB_INIT
+constexpr int kVitureErrorSerialFetch = -9;    // VITURE_GLASSES_ERROR_SERIAL_FETCH
+constexpr int kVitureErrorInvalidState = -10;  // VITURE_GLASSES_ERROR_INVALID_STATE
+
+constexpr int kVitureMode1920x1080At60Hz = 0x31;  // VITURE_DISPLAY_MODE_1920_1080_60HZ
+constexpr int kVitureMode3840x1080At60Hz = 0x32;  // VITURE_DISPLAY_MODE_3840_1080_60HZ (3D)
+constexpr int kVitureMode1920x1080At90Hz = 0x33;  // VITURE_DISPLAY_MODE_1920_1080_90HZ
+constexpr int kVitureMode1920x1080At120Hz = 0x34; // VITURE_DISPLAY_MODE_1920_1080_120HZ
+constexpr int kVitureMode3840x1080At90Hz = 0x35;  // VITURE_DISPLAY_MODE_3840_1080_90HZ (3D)
+constexpr int kVitureMode1920x1200At60Hz = 0x41;  // VITURE_DISPLAY_MODE_1920_1200_60HZ
+constexpr int kVitureMode3840x1200At60Hz = 0x42;  // VITURE_DISPLAY_MODE_3840_1200_60HZ (3D)
+constexpr int kVitureMode1920x1200At90Hz = 0x43;  // VITURE_DISPLAY_MODE_1920_1200_90HZ
+constexpr int kVitureMode1920x1200At120Hz = 0x44; // VITURE_DISPLAY_MODE_1920_1200_120HZ
+constexpr int kVitureMode3840x1200At90Hz = 0x45;  // VITURE_DISPLAY_MODE_3840_1200_90HZ (3D)
+
+constexpr std::uint32_t kRefresh60Hz = 60;
+constexpr std::uint32_t kRefresh90Hz = 90;
+constexpr std::uint32_t kRefresh120Hz = 120;
+
+constexpr int kProductIdDecimalBase = 10;
+constexpr int kProductIdHexBase = 16;
+constexpr std::size_t kProductIdHexPrefixLength = 2;
+constexpr unsigned int kMaxProductId = 0x7FFFFFFFU;
+constexpr std::size_t kPidHexDigits = 4;
+constexpr std::size_t kHardwareIdBufferSize = 4096;
+constexpr std::size_t kFirmwareVersionBufferSize = 128;
+constexpr double kNanosecondsPerSecond = 1e9;
+
+constexpr std::string_view kVitureVendorIdText = "VID_35CA";
+constexpr std::string_view kPidPrefix = "PID_";
+
 /// Maps a VITURE_GLASSES_ERROR_* code (`viture_result.h`) onto the status
 /// vocabulary. The vendor codes are negative; `0` is success and is never
 /// passed here.
 [[nodiscard]] StatusCode VendorStatusCode(int code) noexcept {
     switch (code) {
-    case -1: // VITURE_GLASSES_ERROR_INVALID_PARAM
+    case kVitureErrorInvalidParam:
         return StatusCode::InvalidArgument;
-    case -2: // VITURE_GLASSES_ERROR_USB_UNAVAILABLE
-    case -3: // VITURE_GLASSES_ERROR_USB_EXEC
+    case kVitureErrorUsbUnavailable:
+    case kVitureErrorUsbExec:
         return StatusCode::Device;
-    case -4: // VITURE_GLASSES_ERROR_NOT_SUPPORTED
+    case kVitureErrorNotSupported:
         return StatusCode::Unsupported;
-    case -5: // VITURE_GLASSES_ERROR_NO_DATA
+    case kVitureErrorNoData:
         return StatusCode::Timeout;
-    case -6: // VITURE_GLASSES_ERROR_DATA_PARSE
-    case -7: // VITURE_GLASSES_ERROR_DEVICE_REJECTED
-    case -8: // VITURE_GLASSES_ERROR_CALIB_INIT
-    case -9: // VITURE_GLASSES_ERROR_SERIAL_FETCH
+    case kVitureErrorDataParse:
+    case kVitureErrorDeviceRejected:
+    case kVitureErrorCalibInit:
+    case kVitureErrorSerialFetch:
         return StatusCode::Device;
-    case -10: // VITURE_GLASSES_ERROR_INVALID_STATE
+    case kVitureErrorInvalidState:
         return StatusCode::NotReady;
     default: // VITURE_GLASSES_ERROR_UNKNOWN and out-of-range values
         return StatusCode::Internal;
@@ -535,17 +605,21 @@ template <typename Function>
     if (text.empty()) {
         return std::nullopt;
     }
-    int base = 10;
-    std::size_t start = 0;
-    if (text.size() > 2U && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
-        base = 16;
-        start = 2;
+    std::string_view digits = text;
+    int base = kProductIdDecimalBase;
+    if (digits.starts_with("0x") || digits.starts_with("0X")) {
+        base = kProductIdHexBase;
+        digits.remove_prefix(kProductIdHexPrefixLength);
+    }
+    if (digits.empty()) {
+        return std::nullopt;
     }
     unsigned int value = 0;
-    const char *first = text.data() + start;
-    const char *last = text.data() + text.size();
-    const std::from_chars_result result = std::from_chars(first, last, value, base);
-    if (result.ec != std::errc{} || result.ptr != last || value > 0x7FFFFFFFU) {
+    // `std::from_chars` takes raw pointers; the view bounded them already.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const char *const last = digits.data() + digits.size();
+    const std::from_chars_result result = std::from_chars(digits.data(), last, value, base);
+    if (result.ec != std::errc{} || result.ptr != last || value > kMaxProductId) {
         return std::nullopt;
     }
     return static_cast<int>(value);
@@ -553,6 +627,8 @@ template <typename Function>
 
 #ifdef _WIN32
 
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) — SetupAPI takes a
+// PBYTE registry buffer; the reinterpret_cast is the documented Win32 contract.
 /// Finds the first present USB device with `VID_35CA` whose product id the
 /// SDK accepts, mirroring the vendor demo's SetupAPI fallback (the Carina is a
 /// bulk-transfer device, so the HID enumeration path does not see it).
@@ -567,7 +643,7 @@ template <typename Function>
     SP_DEVINFO_DATA device{};
     device.cbSize = sizeof(device);
     for (DWORD index = 0; SetupDiEnumDeviceInfo(info, index, &device); ++index) {
-        std::array<char, 4096> buffer{};
+        std::array<char, kHardwareIdBufferSize> buffer{};
         DWORD length = 0;
         if (SetupDiGetDeviceRegistryPropertyA(info, &device, SPDRP_HARDWAREID, nullptr,
                                               reinterpret_cast<PBYTE>(buffer.data()), static_cast<DWORD>(buffer.size()),
@@ -577,21 +653,28 @@ template <typename Function>
         // Hardware IDs are a REG_MULTI_SZ list of upper-case strings such as
         // "USB\VID_35CA&PID_0201"; walk the list and test each id string.
         const std::string_view ids{buffer.data(), std::min<std::size_t>(length, buffer.size())};
-        std::size_t offset = 0;
-        while (offset < ids.size() && ids[offset] != '\0') {
-            const std::string_view id = ids.substr(offset);
-            offset += id.size() + 1U;
-            const std::size_t vendor = id.find("VID_35CA");
+        std::string_view remaining = ids;
+        while (!remaining.empty() && remaining.front() != '\0') {
+            const std::size_t terminator = remaining.find('\0');
+            const std::string_view id = remaining.substr(0, terminator);
+            remaining = terminator == std::string_view::npos ? std::string_view{} : remaining.substr(terminator + 1U);
+            const std::size_t vendor = id.find(kVitureVendorIdText);
             if (vendor == std::string_view::npos) {
                 continue;
             }
-            const std::size_t product = id.find("PID_", vendor);
-            if (product == std::string_view::npos || product + 8U > id.size()) {
+            const std::size_t product = id.find(kPidPrefix, vendor);
+            if (product == std::string_view::npos) {
+                continue;
+            }
+            const std::string_view hex = id.substr(product + kPidPrefix.size(), kPidHexDigits);
+            if (hex.size() != kPidHexDigits) {
                 continue;
             }
             unsigned int product_id = 0;
-            const char *first = id.data() + product + 4U;
-            const std::from_chars_result result = std::from_chars(first, first + 4U, product_id, 16);
+            // `std::from_chars` takes raw pointers; the view bounded them already.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            const char *const hex_last = hex.data() + hex.size();
+            const std::from_chars_result result = std::from_chars(hex.data(), hex_last, product_id, kProductIdHexBase);
             if (result.ec != std::errc{}) {
                 continue;
             }
@@ -607,6 +690,7 @@ template <typename Function>
     SetupDiDestroyDeviceInfoList(info);
     return found;
 }
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
 #else
 
@@ -653,21 +737,21 @@ template <typename Function>
 [[nodiscard]] std::optional<int> DisplayModeFor(std::uint32_t refresh_hz, bool sbs) noexcept {
     if (!sbs) {
         switch (refresh_hz) {
-        case 60:
-            return 0x31; // VITURE_DISPLAY_MODE_1920_1080_60HZ
-        case 90:
-            return 0x33; // VITURE_DISPLAY_MODE_1920_1080_90HZ
-        case 120:
-            return 0x34; // VITURE_DISPLAY_MODE_1920_1080_120HZ
+        case kRefresh60Hz:
+            return kVitureMode1920x1080At60Hz;
+        case kRefresh90Hz:
+            return kVitureMode1920x1080At90Hz;
+        case kRefresh120Hz:
+            return kVitureMode1920x1080At120Hz;
         default:
             return std::nullopt;
         }
     }
     switch (refresh_hz) {
-    case 60:
-        return 0x32; // VITURE_DISPLAY_MODE_3840_1080_60HZ (3D mode)
-    case 90:
-        return 0x35; // VITURE_DISPLAY_MODE_3840_1080_90HZ (3D mode)
+    case kRefresh60Hz:
+        return kVitureMode3840x1080At60Hz;
+    case kRefresh90Hz:
+        return kVitureMode3840x1080At90Hz;
     default:
         return std::nullopt;
     }
@@ -678,19 +762,19 @@ template <typename Function>
 /// families). Unknown values return `std::nullopt`.
 [[nodiscard]] std::optional<std::uint32_t> RefreshHzForMode(int mode) noexcept {
     switch (mode) {
-    case 0x31: // 1920x1080@60
-    case 0x32: // 3840x1080@60 (3D)
-    case 0x41: // 1920x1200@60
-    case 0x42: // 3840x1200@60 (3D)
-        return 60U;
-    case 0x33: // 1920x1080@90
-    case 0x35: // 3840x1080@90 (3D)
-    case 0x43: // 1920x1200@90
-    case 0x45: // 3840x1200@90 (3D)
-        return 90U;
-    case 0x34: // 1920x1080@120
-    case 0x44: // 1920x1200@120
-        return 120U;
+    case kVitureMode1920x1080At60Hz: // 1920x1080@60
+    case kVitureMode3840x1080At60Hz: // 3840x1080@60 (3D)
+    case kVitureMode1920x1200At60Hz: // 1920x1200@60
+    case kVitureMode3840x1200At60Hz: // 3840x1200@60 (3D)
+        return kRefresh60Hz;
+    case kVitureMode1920x1080At90Hz: // 1920x1080@90
+    case kVitureMode3840x1080At90Hz: // 3840x1080@90 (3D)
+    case kVitureMode1920x1200At90Hz: // 1920x1200@90
+    case kVitureMode3840x1200At90Hz: // 3840x1200@90 (3D)
+        return kRefresh90Hz;
+    case kVitureMode1920x1080At120Hz: // 1920x1080@120
+    case kVitureMode1920x1200At120Hz: // 1920x1200@120
+        return kRefresh120Hz;
     default:
         return std::nullopt;
     }
@@ -712,7 +796,7 @@ template <typename Function>
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
         return 0.0;
     }
-    return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) / 1e9;
+    return static_cast<double>(now.tv_sec) + static_cast<double>(now.tv_nsec) / kNanosecondsPerSecond;
 #endif
 }
 
@@ -720,6 +804,8 @@ template <typename Function>
 /// one `VendorVitureApi` is live at a time; the newest created instance owns
 /// the callback and `ReleaseCallback` clears it.
 class VendorVitureApi;
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) — the SDK pose callback carries no context, so
+// the single live instance is routed through this process-wide atomic target.
 std::atomic<VendorVitureApi *> g_pose_callback_target{nullptr};
 void ViturePoseCallback(float *pose, double timestamp);
 
@@ -728,7 +814,7 @@ void ViturePoseCallback(float *pose, double timestamp);
 /// event is traced (HIL diagnosis: wear/proximity, brightness, volume, film).
 void VitureStateCallback(int glass_state_id, int glass_value) {
     if (DebugTracesEnabled()) {
-        std::fprintf(stderr, "viture-state: id=%d value=%d\n", glass_state_id, glass_value);
+        TraceTwoInts("viture-state: id=", glass_state_id, " value=", glass_value);
     }
 }
 
@@ -771,7 +857,8 @@ class VendorVitureApi final : public IVitureApi {
 
         handle_ = fns_.create(*product_id);
         if (trace) {
-            std::fprintf(stderr, "viture-device: create(pid=%d) -> %p\n", *product_id, handle_);
+            TraceInt("viture-device: create(pid=", *product_id);
+            TraceText(handle_ != nullptr ? "viture-device: create: ok\n" : "viture-device: create: null\n");
         }
         if (handle_ == nullptr) {
             return Err<void>(Status{StatusCode::Device,
@@ -787,8 +874,9 @@ class VendorVitureApi final : public IVitureApi {
         const int is_6dof = ReadEnvironment("CG_VITURE_DOF") == "6dof" ? 1 : 0;
         int code = fns_.set_dof_type_carina(handle_, is_6dof);
         if (trace) {
-            std::fprintf(stderr, "viture-device: set_dof_type_carina(%s) rc=%d\n", is_6dof != 0 ? "6dof" : "3dof",
-                         code);
+            TraceText(is_6dof != 0 ? "viture-device: set_dof_type_carina(6dof)\n"
+                                   : "viture-device: set_dof_type_carina(3dof)\n");
+            TraceInt("viture-device: set_dof_type_carina rc=", code);
         }
         if (code != 0) {
             const Status status = VendorFailure("xr_device_provider_set_dof_type_carina(3DoF)", code);
@@ -800,7 +888,7 @@ class VendorVitureApi final : public IVitureApi {
         // strings; the SDK owns any caching it needs.
         code = fns_.initialize(handle_, nullptr, nullptr);
         if (trace) {
-            std::fprintf(stderr, "viture-device: initialize rc=%d\n", code);
+            TraceInt("viture-device: initialize rc=", code);
         }
         if (code != 0) {
             const Status status = VendorFailure("xr_device_provider_initialize", code);
@@ -815,7 +903,7 @@ class VendorVitureApi final : public IVitureApi {
         // callback is a no-op.
         code = fns_.register_state_callback(handle_, &VitureStateCallback);
         if (trace) {
-            std::fprintf(stderr, "viture-device: register_state_callback rc=%d\n", code);
+            TraceInt("viture-device: register_state_callback rc=", code);
         }
         if (code != 0) {
             const Status status = VendorFailure("xr_device_provider_register_state_callback", code);
@@ -831,7 +919,7 @@ class VendorVitureApi final : public IVitureApi {
         g_pose_callback_target.store(this, std::memory_order_release);
         code = fns_.register_callbacks_carina(handle_, &ViturePoseCallback, nullptr, nullptr, &VitureCameraCallback);
         if (trace) {
-            std::fprintf(stderr, "viture-device: register_callbacks_carina rc=%d\n", code);
+            TraceInt("viture-device: register_callbacks_carina rc=", code);
         }
         if (code != 0) {
             const Status status = VendorFailure("xr_device_provider_register_callbacks_carina", code);
@@ -850,19 +938,16 @@ class VendorVitureApi final : public IVitureApi {
         if (started_) {
             const int stop_code = fns_.stop(handle_);
             if (trace) {
-                std::fprintf(stderr, "viture-device: stop rc=%d\n", stop_code);
-                std::fflush(stderr);
+                TraceInt("viture-device: stop rc=", stop_code);
             }
             const int shutdown_code = fns_.shutdown(handle_);
             if (trace) {
-                std::fprintf(stderr, "viture-device: shutdown rc=%d\n", shutdown_code);
-                std::fflush(stderr);
+                TraceInt("viture-device: shutdown rc=", shutdown_code);
             }
         }
         fns_.destroy(handle_);
         if (trace) {
-            std::fprintf(stderr, "viture-device: destroy done\n");
-            std::fflush(stderr);
+            TraceText("viture-device: destroy done\n");
         }
         handle_ = nullptr;
         started_ = false;
@@ -879,7 +964,7 @@ class VendorVitureApi final : public IVitureApi {
         stop_requested_.store(false, std::memory_order_relaxed);
         const int code = fns_.start(handle_);
         if (DebugTracesEnabled()) {
-            std::fprintf(stderr, "viture-device: start rc=%d\n", code);
+            TraceInt("viture-device: start rc=", code);
         }
         if (code != 0) {
             return Err<void>(VendorFailure("xr_device_provider_start", code));
@@ -896,16 +981,15 @@ class VendorVitureApi final : public IVitureApi {
             return Err<cg_head_sample>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
         }
 
-        float pose[kViturePoseFloatCount] = {};
+        std::array<float, kViturePoseFloatCount> pose{};
         int pose_status = 1;
         const bool trace = DebugTracesEnabled();
         if (trace) {
-            std::fprintf(stderr, "viture-poll: enter\n");
-            std::fflush(stderr);
+            TraceText("viture-poll: enter\n");
         }
-        const int code = fns_.get_gl_pose_carina(handle_, pose, 0.0, &pose_status);
+        const int code = fns_.get_gl_pose_carina(handle_, pose.data(), 0.0, &pose_status);
         if (trace) {
-            std::fprintf(stderr, "viture-poll: exit rc=%d status=%d\n", code, pose_status);
+            TraceTwoInts("viture-poll: exit rc=", code, " status=", pose_status);
         }
         if (code != 0) {
             return Err<cg_head_sample>(VendorFailure("xr_device_provider_get_gl_pose_carina", code));
@@ -921,7 +1005,9 @@ class VendorVitureApi final : public IVitureApi {
                                          : SteadySeconds();
 
         cg_head_sample sample{};
-        sample.host_time = static_cast<cg_time_ns>(std::llround(stamp_seconds * 1e9));
+        sample.host_time = static_cast<cg_time_ns>(std::llround(stamp_seconds * kNanosecondsPerSecond));
+        // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers) — [px, py, pz, qw, qx, qy, qz] per
+        // viture_device_carina.h; the indices are the vendor's documented layout.
         sample.pose = cg_pose{cg_vec3{pose[0], pose[1], pose[2]}, cg_quat{pose[3], pose[4], pose[5], pose[6]}};
         sample.state = pose_status == 0 ? CG_TRACK_STABLE : CG_TRACK_UNSTABLE;
         sample.sequence = ++sequence_;
@@ -983,7 +1069,7 @@ class VendorVitureApi final : public IVitureApi {
         // getter (`carina_a1088_viture_get_sdk_version` lives in the internal
         // carina_vio library, which this loader does not open). Diagnostics
         // only.
-        std::array<char, 128> buffer{};
+        std::array<char, kFirmwareVersionBufferSize> buffer{};
         int length = static_cast<int>(buffer.size());
         if (fns_.get_glasses_version(handle_, buffer.data(), &length) != 0 || length <= 0) {
             return {};
