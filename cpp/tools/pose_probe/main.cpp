@@ -167,8 +167,8 @@ void PrintUsage(std::FILE *stream) {
                "                   the measured rate/jitter) are unchanged. viture: ignored.\n"
                "  --out FILE       write the samples to FILE (replay-compatible CSV)\n"
                "  --print-every N  print a progress line every N samples (default 0 = off)\n"
-               "  --display        viture: run the U-08 display check (read refresh, switch\n"
-               "                   90 Hz SBS then 90 Hz 2D) before the pose run\n"
+               "  --display        viture: run the U-08 display check on the live\n"
+               "                   session (refresh read, 90 Hz SBS round trip)\n"
                "  -h, --help       print this help\n"
                "\n"
                "csv columns: host_time_ns,sdk_time_s,px,py,pz,qw,qx,qy,qz,status\n"
@@ -526,27 +526,23 @@ void PrintDisplayStatus(const char *label, const Status &status) {
     }
 }
 
-/// `--display` (U-08 HIL check): creates the device outside the source's
-/// lifecycle, reads the refresh rate, switches 90 Hz SBS and back to 90 Hz
-/// 2D, then releases the device so the normal pose run starts clean. The seam
-/// requires display calls while no poll can be in flight, which this
-/// create/configure/destroy window satisfies.
+/// `--display` (U-08 HIL check): runs on the live session created and started
+/// by the source (a display-only create/destroy window crashes inside the
+/// vendor `destroy`, observed on HIL 2026-10-06). Reads the refresh rate,
+/// switches 90 Hz SBS and back to 2D 90, settling 500 ms between a set and
+/// its readback so an asynchronous mode switch is observable.
 void RunDisplayCheck(IVitureApi &api) {
-    std::printf("display: HIL check (U-08)\n");
-    const cg::Result<void> created = api.CreateDevice();
-    if (!created.ok()) {
-        std::printf("display: CreateDevice: failed: %s (%s)\n", created.status().message(),
-                    StatusCodeName(created.status().code()));
-        return;
-    }
+    std::printf("display: HIL check (U-08, live session)\n");
     const std::string version = api.SdkVersion();
     std::printf("display: sdk/firmware: %s\n", version.empty() ? "(unavailable)" : version.c_str());
     ReportRefresh(api, "initial refresh");
     PrintDisplayStatus("set 90 Hz SBS", api.SetDisplayMode(90, true).status());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     ReportRefresh(api, "refresh after SBS 90");
     PrintDisplayStatus("set 90 Hz 2D", api.SetDisplayMode(90, false).status());
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     ReportRefresh(api, "refresh after 2D 90");
-    api.DestroyDevice();
+    PrintDisplayStatus("restore 2D 60", api.SetDisplayMode(60, false).status());
 }
 
 /// Shared tail: no samples is an error, then the report and the optional CSV.
@@ -715,10 +711,6 @@ int RunViture(const Options &options, SampleLog &log) {
     }
     IVitureApi &api = **loaded;
 
-    if (options.display) {
-        RunDisplayCheck(api);
-    }
-
     SteadyHostClock clock;
     VitureHeadPoseSource source(api, clock);
     std::fprintf(stderr, "source: starting (create + start)\n");
@@ -727,6 +719,10 @@ int RunViture(const Options &options, SampleLog &log) {
         return ExitForStatus(started.status());
     }
     std::fprintf(stderr, "source: started; polling for %.3f s\n", options.seconds);
+
+    if (options.display) {
+        RunDisplayCheck(api);
+    }
 
     const auto start = std::chrono::steady_clock::now();
     HostTime next_heartbeat_ns = 0;

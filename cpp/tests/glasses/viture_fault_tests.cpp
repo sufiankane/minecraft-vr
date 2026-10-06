@@ -184,15 +184,17 @@ TEST(VitureFault, FirstPublishedSampleIsAnchoredToTheHostTimeline) {
     source.Stop();
 }
 
-/// A poll failure tears the device down and reconnects on a clock-gated
-/// backoff: 100 ms first, then 200 ms for the second consecutive failure.
+/// A sustained poll failure (past the 250 ms warm-up grace) tears the device
+/// down and reconnects on a clock-gated backoff: 100 ms first, then 200 ms for
+/// the second consecutive failure. Failures *inside* the grace keep the
+/// session (`TransientPollErrorsInsideTheGraceKeepTheSession`).
 TEST(VitureFault, PollErrorsReconnectWithDoublingBackoff) {
     FakeVitureApi api;
     ManualHostClock clock;
-    api.poll_script = {Ok(CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 0.0)),
-                       Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}),
-                       Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}),
-                       Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 1.0))};
+    api.poll_script = {Ok(CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 0.0))};
+    // Everything after the scripted sample fails: the streak must persist
+    // through the warm-up grace before the device is torn down.
+    api.empty_poll_result = Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"});
 
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
@@ -200,35 +202,61 @@ TEST(VitureFault, PollErrorsReconnectWithDoublingBackoff) {
     ASSERT_TRUE(WaitForSample(source, first, 1U));
     EXPECT_EQ(first.seq, 1U);
 
-    // The first failure destroys the device and parks in the 100 ms backoff.
-    // The clock is frozen, so the reconnect deadline (armed at the current
-    // instant or later) cannot be reached by any amount of real time.
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() == 1U; }));
+    // The first sustained failure destroys the device. The wait pumps the
+    // clock, because the retry pacing inside the grace is clock-gated.
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() == 1U; }));
     EXPECT_EQ(api.create_calls.load(), 1U);
 
-    // Release the first backoff. The wait pumps the clock, so a deadline armed
-    // after an advance is reached by the next one.
-    ASSERT_TRUE(
-        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.create_calls.load() == 2U; }));
+    // The first backoff is 100 ms: after spending half of it no reconnect may
+    // be in flight.
+    clock.Advance(Duration{50 * kMillisecondNs});
+    EXPECT_EQ(api.create_calls.load(), 1U) << "the 100 ms backoff must not release after 50 ms";
 
-    // The second consecutive failure doubles the backoff to 200 ms. Freeze the
-    // clock while the destroy is observed, then spend exactly half the doubled
-    // backoff: the deadline is at least 200 ms past this instant, so no create
-    // may be in flight yet.
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() == 2U; }));
+    // Release the first backoff and let the recreated session fail again.
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{50 * kMillisecondNs}, [&] { return api.create_calls.load() == 2U; }));
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() == 2U; }));
+
+    // The second consecutive failure doubles the backoff to 200 ms.
     clock.Advance(Duration{kHundredMillisecondsNs});
     EXPECT_EQ(api.create_calls.load(), 2U) << "the doubled backoff must not release after 100 ms";
 
-    // Pump the rest of the doubled backoff and wait for the reconnected sample.
-    // `state == Stable` keeps quiet synthetics (which carry the previous pose)
-    // out of the observation; the yaw pins that this is the scripted sample.
+    // Let the third session succeed and publish the second scripted sample.
+    api.empty_poll_result = Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 1.0));
     HeadSample second = PlaceholderSample();
-    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] {
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{200 * kMillisecondNs}, [&] {
         return source.TryGetLatest(second, Duration{0}) && second.state == TrackState::Stable && second.seq >= 2U;
     }));
+    EXPECT_EQ(api.create_calls.load(), 3U);
     EXPECT_GT(second.seq, first.seq);
     EXPECT_NEAR(YawDegrees(second.pose), 1.0, 0.1) << "the reconnected sample must be the next scripted one";
     EXPECT_GT(second.time, first.time) << "the reconnected sample must advance the mapped time";
+    source.Stop();
+}
+
+/// HIL finding (2026-10-06): the Carina VIO engine fails the first poll(s)
+/// right after `start` and recovers within milliseconds. Failures inside
+/// `kReconnectAfter` must keep the session alive: the previous policy
+/// recreated the device on the first `-3` and never published a sample on real
+/// hardware, while the vendor quick-start (which ignores the error) streams
+/// fine from the second poll.
+TEST(VitureFault, TransientPollErrorsInsideTheGraceKeepTheSession) {
+    FakeVitureApi api;
+    ManualHostClock clock;
+    api.poll_script = {Err<cg_head_sample>(Status{StatusCode::Device, "fake: warm-up -3"}),
+                       Err<cg_head_sample>(Status{StatusCode::Device, "fake: warm-up -3"}),
+                       Ok(CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 2.0))};
+
+    VitureHeadPoseSource source(api, clock);
+    ASSERT_TRUE(source.Start().ok());
+    HeadSample sample = PlaceholderSample();
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{1 * kMillisecondNs}, [&] {
+        return source.TryGetLatest(sample, Duration{0}) && sample.seq >= 1U;
+    }));
+    EXPECT_EQ(api.create_calls.load(), 1U) << "a warm-up error must not recreate the device";
+    EXPECT_EQ(api.destroy_calls.load(), 0U) << "a warm-up error must not tear the device down";
+    EXPECT_NEAR(YawDegrees(sample.pose), 2.0, 0.1) << "the session must publish once warm-up succeeds";
     source.Stop();
 }
 
@@ -245,12 +273,11 @@ TEST(VitureFault, RemovalMidStreamDowngradesStableUnstableLost) {
     ASSERT_TRUE(WaitForSample(source, sample, 2U));
     ASSERT_EQ(sample.state, TrackState::Stable);
 
-    // The feed is exhausted: the next poll fails, destroys the device and
-    // parks in the 100 ms backoff.
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
-
-    // Quiet for 400 ms: still Stable. The threshold is 500 ms and the clock
-    // only moves here, so no transition can have been published yet.
+    // The feed is exhausted. The failing polls first stay inside the warm-up
+    // grace (the session is kept, quiet synthetics take over) and only a
+    // sustained outage past the grace tears the device down.
+    //
+    // Quiet for 400 ms: still Stable (threshold 500 ms, clock frozen here).
     clock.Advance(Duration{400 * kMillisecondNs});
     ASSERT_TRUE(source.TryGetLatest(sample, Duration{0}));
     EXPECT_EQ(sample.state, TrackState::Stable);
@@ -268,6 +295,10 @@ TEST(VitureFault, RemovalMidStreamDowngradesStableUnstableLost) {
     clock.Advance(Duration{600 * kMillisecondNs});
     ASSERT_TRUE(WaitForState(source, TrackState::Lost, sample));
     EXPECT_GE(sample.time, 1000 * kMillisecondNs);
+
+    // The sustained outage has long passed the grace: the device was torn down.
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() >= 1U; }));
     source.Stop();
 }
 
@@ -468,7 +499,11 @@ TEST(VitureFault, RecentreDuringBackoffIsNotReady) {
     HeadSample sample = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, sample, 1U));
 
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    // The feed is exhausted: the sustained failure (past the grace) tears the
+    // device down and parks in the 100 ms backoff. The wait pumps the clock
+    // because the retry pacing inside the grace is clock-gated.
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() >= 1U; }));
     ASSERT_FALSE(api.device_alive.load());
     const std::uint64_t resets_before = api.reset_origin_calls.load();
 
@@ -491,9 +526,9 @@ TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
     constexpr std::int64_t kSdkNs = 1'000'000'000;
     api.poll_script = {Ok(CgSample(1, kSdkNs, CG_TRACK_STABLE, 3.0)),
                        Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"})};
-    // Every poll after the reconnect succeeds, so the recreated device
-    // publishes a fresh session sample for the pending reset to target.
-    api.empty_poll_result = Ok(CgSample(2, kSdkNs + 10'000'000, CG_TRACK_STABLE, 4.0));
+    // Until the reconnect every poll fails: the outage is sustained and the
+    // device is torn down once the warm-up grace has passed.
+    api.empty_poll_result = Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"});
     api.SetPollGate(true);
 
     VitureHeadPoseSource source(api, clock);
@@ -514,10 +549,16 @@ TEST(VitureFault, RecentreWorksAfterSuccessfulRecreate) {
     ASSERT_EQ(armed.seq, 1U);
     EXPECT_NEAR(YawDegrees(armed.pose), 0.0, 0.1);
 
-    // Release the failing poll: the device dies with the request still posted.
+    // Release the failing poll with the clock already past the warm-up grace:
+    // the device dies with the request still posted.
+    clock.Advance(Duration{300 * kMillisecondNs});
     api.AllowOnePoll();
     ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
     EXPECT_FALSE(api.device_alive.load());
+
+    // Every poll of the recreated device succeeds, so it publishes a fresh
+    // session sample for the pending reset to target.
+    api.empty_poll_result = Ok(CgSample(2, kSdkNs + 10'000'000, CG_TRACK_STABLE, 4.0));
     EXPECT_EQ(api.reset_origin_calls.load(), 0U) << "a destroyed device must never see the seam";
     HeadSample during = PlaceholderSample();
     ASSERT_TRUE(source.TryGetLatest(during, Duration{0}));
@@ -689,8 +730,9 @@ TEST(VitureFault, SdkClockRestartAfterReconnectDoesNotRegressMappedTime) {
         api.poll_script.push_back(
             Ok(CgSample(i + 1, kSdkBefore + static_cast<std::int64_t>(i) * 10'000'000, CG_TRACK_STABLE, 0.1 * i)));
     }
-    api.poll_script.push_back(Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}));
-    api.poll_script.push_back(Ok(CgSample(99, 1'000'000'000, CG_TRACK_STABLE, 1.0)));
+    // After the scripted feed every poll fails: the outage must pass the
+    // warm-up grace before the device is torn down.
+    api.empty_poll_result = Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"});
 
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
@@ -699,7 +741,10 @@ TEST(VitureFault, SdkClockRestartAfterReconnectDoesNotRegressMappedTime) {
     HeadSample last_before = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, last_before, 9U));
 
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() >= 1U; }));
+    // The recreated session reports a restarted SDK clock.
+    api.empty_poll_result = Ok(CgSample(99, 1'000'000'000, CG_TRACK_STABLE, 1.0));
     // Pump the backoff clock and require a *Stable* sample: a deadline armed
     // after an advance is reached by a later one, and quiet synthetics cannot
     // satisfy the predicate.
@@ -720,13 +765,10 @@ TEST(VitureFault, ReconnectCapStopsRecreatingAndRecoversOnLostProbe) {
     api.poll_delay_ns = 1'000'000; // 1 ms per poll: paces the fake, no assertion depends on it.
     const std::int64_t kSdkStart = 1'000'000'000;
     api.poll_script.push_back(Ok(CgSample(1, kSdkStart, CG_TRACK_STABLE, 0.0)));
-    for (int i = 0; i < 20; ++i) {
-        api.poll_script.push_back(Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}));
-    }
-    for (std::uint32_t i = 0; i < 100; ++i) {
-        api.poll_script.push_back(Ok(CgSample(i + 2, kSdkStart + static_cast<std::int64_t>(i + 1) * 10'000'000,
-                                              CG_TRACK_STABLE, 0.1 * static_cast<double>(i + 1))));
-    }
+    // Every poll after the first sample fails until the recovery below: each
+    // recreate attempt requires the warm-up grace to pass, and the cache of
+    // scripted errors must not run out mid-way through the cap.
+    api.empty_poll_result = Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"});
 
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
@@ -759,7 +801,8 @@ TEST(VitureFault, ReconnectCapStopsRecreatingAndRecoversOnLostProbe) {
 
     // A successful poll resets the streak and continues the sequence. Each
     // capped probe re-arms its 2 s deadline from the current clock, so keep
-    // pumping until the scripted success is reached.
+    // pumping until the recovered sample is reached.
+    api.empty_poll_result = Ok(CgSample(2, kSdkStart + 10'000'000, CG_TRACK_STABLE, 1.0));
     HeadSample recovered = PlaceholderSample();
     ASSERT_TRUE(WaitForAdvancing(clock, VitureHeadPoseSource::kMaxBackoff, [&] {
         return source.TryGetLatest(recovered, Duration{0}) && recovered.state == TrackState::Stable &&
@@ -782,9 +825,10 @@ TEST(VitureFault, NoReconnectAfterStop) {
     HeadSample sample = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, sample, 1U));
 
-    // The feed is exhausted now; the first timeout tears the device down and
-    // parks in the 100 ms backoff (the clock is frozen at zero).
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    // The feed is exhausted now; the sustained failure (past the warm-up
+    // grace) tears the device down and parks in the 100 ms backoff.
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() >= 1U; }));
     EXPECT_EQ(api.create_calls.load(), 1U);
 
     source.Stop();
@@ -802,16 +846,20 @@ TEST(VitureFault, NoReconnectAfterStop) {
 TEST(VitureFault, SequenceStaysMonotonicAcrossReconnect) {
     FakeVitureApi api;
     ManualHostClock clock;
-    api.poll_script = {Ok(CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 1.0)),
-                       Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"}),
-                       Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 2.0))};
+    api.poll_script = {Ok(CgSample(1, 1'000'000'000, CG_TRACK_STABLE, 1.0))};
+    // After the scripted sample every poll fails: the outage must pass the
+    // warm-up grace before the reconnect.
+    api.empty_poll_result = Err<cg_head_sample>(Status{StatusCode::Timeout, "fake: dropped"});
 
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
     HeadSample first = PlaceholderSample();
     ASSERT_TRUE(WaitForSample(source, first, 1U));
 
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
+    ASSERT_TRUE(
+        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() >= 1U; }));
+    // The recreated session publishes the next sample.
+    api.empty_poll_result = Ok(CgSample(2, 1'010'000'000, CG_TRACK_STABLE, 2.0));
     // Pump the backoff clock and require the next *Stable* sample: a deadline
     // armed after an advance is reached by a later one, and quiet synthetics
     // (which repeat the previous pose) cannot satisfy the predicate.
@@ -904,10 +952,9 @@ TEST(VitureFault, PredictionDoesNotExtrapolateThroughQuietSamples) {
     // The pair establishes 10 degrees per 10 ms; a 50 ms prediction on a live
     // sample would add 50 degrees, so the quiet checks below have teeth.
 
-    // Exhaust the feed: the next gated poll fails, the device is torn down and
-    // the quiet synthetics take over.
+    // Exhaust the feed: the next gated poll fails; the session stays inside
+    // the warm-up grace while the quiet synthetics take over.
     api.AllowOnePoll();
-    ASSERT_TRUE(WaitFor([&] { return api.destroy_calls.load() >= 1U; }));
 
     const auto check_quiet = [&](TrackState expected) {
         HeadSample raw = PlaceholderSample();

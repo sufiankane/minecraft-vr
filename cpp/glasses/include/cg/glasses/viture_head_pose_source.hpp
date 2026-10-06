@@ -34,11 +34,17 @@ namespace cg::glasses {
 /// Fault policy:
 /// - a quiet feed (no successful poll) is reported as `Unstable` after 500 ms
 ///   and `Lost` after 1000 ms, carrying the last pose and the host time;
-/// - `Device`/`Timeout` (or any other poll failure) tears the device down and
-///   reconnects on an interruptible backoff: 100 ms doubling to 2 s per
+/// - a poll failure younger than `kReconnectAfter` (250 ms) is treated as a
+///   transient warm-up error and retried without tearing the session down:
+///   HIL finding (2026-10-06), the Carina VIO engine fails the first poll(s)
+///   right after `start` (one `-3` in the vendor quick-start) and recovers
+///   within milliseconds, so the old "first failure destroys the device"
+///   policy recreated the session forever and never published a sample;
+/// - once a failure streak passes `kReconnectAfter`, the device is torn down
+///   and reconnected on an interruptible backoff: 100 ms doubling to 2 s per
 ///   consecutive failure, at most `kMaxReconnectAttempts` recreate attempts,
 ///   after which the thread probes every 2 s and publishes `Lost` until a poll
-///   succeeds.
+///   succeeds. A successful poll or a new session resets the failure anchor.
 ///
 /// `Stop` is idempotent and total: it sets the API stop flag, interrupts a
 /// blocked poll and a pending backoff, joins, destroys the device and keeps
@@ -83,6 +89,13 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     static constexpr Duration kMaxBackoff{2'000'000'000};
     /// Consecutive recreate attempts before the thread stops recreating.
     static constexpr int kMaxReconnectAttempts = 10;
+    /// Continuous failure time after which a poll error tears the device down
+    /// (250 ms). Failures inside the window are warm-up transients (HIL
+    /// finding, 2026-10-06) and keep the session alive.
+    static constexpr Duration kReconnectAfter{250'000'000};
+    /// Pacing between retries inside the reconnect grace (2 ms), so a failing
+    /// seam is polled at a sane cadence instead of a hot spin.
+    static constexpr Duration kReconnectRetryDelay{2'000'000};
     /// Quiet time after which the source publishes `Unstable`.
     static constexpr Duration kUnstableAfter{500'000'000};
     /// Quiet time after which the source publishes `Lost`.
@@ -205,6 +218,12 @@ class VitureHeadPoseSource final : public IHeadPoseSource {
     // is `std::uint32_t`, so it wraps after 2^32 samples (~99 days at 500 Hz).
     std::uint32_t seq_ = 0;
     HostTime last_success_ns_ = 0;
+    /// Start instant of the current device session (thread start or a
+    /// successful `StartPose`), used only for the warm-up grace: a fresh
+    /// session may fail its first polls without being torn down. Kept separate
+    /// from `last_success_ns_`, which anchors the quiet-state progression and
+    /// therefore must NOT restart on a reconnect.
+    HostTime grace_anchor_ns_ = 0;
     TrackState quiet_state_ = TrackState::Stable;
     bool have_previous_ = false;
     double previous_yaw_deg_ = 0.0;
