@@ -1137,8 +1137,12 @@ Result<std::unique_ptr<IVitureApi>> LoadVitureApi(const std::string &dll_path) {
 
     // Keep SDK chatter (USB retries, calibration notices) off the probe's
     // stdout so the HIL log stays parseable; errors still reach the default
-    // logger.
-    fns.set_log_level(1);
+    // logger. The null check keeps MSVC /analyze (C6011) quiet: the symbol is
+    // required by ResolveVitureSymbols above, but the analyzer cannot see
+    // through the out-parameter struct.
+    if (fns.set_log_level != nullptr) {
+        fns.set_log_level(1);
+    }
 
     // CXX-11: construct with `new (std::nothrow)` so an allocation failure
     // cannot throw out of this function and cannot leak the library handle
