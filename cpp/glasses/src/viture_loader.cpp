@@ -722,8 +722,13 @@ std::atomic<VendorVitureApi *> g_pose_callback_target{nullptr};
 void ViturePoseCallback(float *pose, double timestamp);
 
 /// No-op state callback: the SDK expects one to be registered, the adapter
-/// does not consume device state events.
-void VitureStateCallback(int /*glass_state_id*/, int /*glass_value*/) {}
+/// does not consume device state events. Under `CG_VITURE_DEBUG=1` every
+/// event is traced (HIL diagnosis: wear/proximity, brightness, volume, film).
+void VitureStateCallback(int glass_state_id, int glass_value) {
+    if (DebugTracesEnabled()) {
+        std::fprintf(stderr, "viture-state: id=%d value=%d\n", glass_state_id, glass_value);
+    }
+}
 
 /// No-op stereo camera callback: the Carina VIO engine captures the camera
 /// callback pointer at start time (vendor demo note), so the S5 adapter
