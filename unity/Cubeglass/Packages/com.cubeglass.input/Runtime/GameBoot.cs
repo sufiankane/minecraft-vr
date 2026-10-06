@@ -37,6 +37,14 @@ namespace Cubeglass.Unity.Input
     /// (with one warning), so a late initialization cannot strand the player
     /// at the internal origin (review M-1).
     /// </para>
+    /// <para>
+    /// S7 HIL defect (2026-10-06): the first player run left the OS cursor on
+    /// another display, so the legacy mouse path (look, break, place) never
+    /// reached the fullscreen window while the keyboard kept working because
+    /// focus followed that window. The boot therefore locks and hides the
+    /// cursor in a player (<see cref="ShouldLockCursor"/>) and re-locks it when
+    /// the window regains focus; the Editor preview is never locked.
+    /// </para>
     /// </remarks>
     [DefaultExecutionOrder(-300)]
     [DisallowMultipleComponent]
@@ -50,6 +58,8 @@ namespace Cubeglass.Unity.Input
         [SerializeField] private SaveBatches saves;
         [SerializeField] private GameplayBridge bridge;
         [SerializeField] private PlayerRoot playerRoot;
+        [Tooltip("Lock and hide the OS cursor in the player (never in the Editor preview).")]
+        [SerializeField] private bool lockCursorInPlayer = true;
 
         private FileWorldStore store;
         private bool seeded;
@@ -108,6 +118,23 @@ namespace Cubeglass.Unity.Input
             set { playerRoot = value; }
         }
 
+        /// <summary>Whether the player locks the OS cursor at boot (the Editor preview never locks).</summary>
+        public bool LockCursorInPlayer
+        {
+            get { return lockCursorInPlayer; }
+            set { lockCursorInPlayer = value; }
+        }
+
+        /// <summary>
+        /// The boot-time cursor policy: a player locks and hides the OS cursor,
+        /// the Editor preview never does. See the class remarks for the S7 HIL
+        /// defect this fixes.
+        /// </summary>
+        public static bool ShouldLockCursor(bool lockEnabled, bool isEditor)
+        {
+            return lockEnabled && !isEditor;
+        }
+
         /// <summary>
         /// The shipped <c>config.json</c> values loaded at start (TD-014), or
         /// null when no file was found. <see cref="StereoRig"/> and
@@ -122,6 +149,11 @@ namespace Cubeglass.Unity.Input
 
         private void Start()
         {
+            if (ShouldLockCursor(lockCursorInPlayer, Application.isEditor))
+            {
+                LockCursor();
+            }
+
             GameConfigValues configValues;
             string configSource;
             string configError;
@@ -160,6 +192,25 @@ namespace Cubeglass.Unity.Input
             {
                 SeedPlayerFromSpawn();
             }
+        }
+
+        /// <summary>
+        /// Re-locks the cursor when the window regains focus in a player (the
+        /// OS releases the lock on focus loss, so without this one alt-tab
+        /// leaves the mouse path dead again).
+        /// </summary>
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            if (hasFocus && ShouldLockCursor(lockCursorInPlayer, Application.isEditor))
+            {
+                LockCursor();
+            }
+        }
+
+        private static void LockCursor()
+        {
+            Cursor.lockState = CursorLockMode.Locked;
+            Cursor.visible = false;
         }
 
         /// <summary>Destroys the store after draining queued writes.</summary>
