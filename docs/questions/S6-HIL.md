@@ -160,3 +160,26 @@ powershell -File scripts/sync-unity-plugins.ps1
 committed and ADR-0010 answers U-09 (S6 Task 5). Record the resolution in this
 file, dated, and link it to the ADR update; archive this file only once that
 link exists (`docs/questions/README.md`, process steps 3â€“4).
+
+## Resolution (2026-10-06)
+
+Answered from an on-glasses run (owner's laptop, firmware
+`12.0.01.101_20260605`, SDK 2.4.0, SpaceWalker closed):
+
+- `docs/notes/s6-hil/checklist.md` + `calibration-sbs.png` are committed; all
+  eight checklist items pass (horizon level, yaw, pitch, depth, recentre,
+  distortion, FOV, 90 Hz).
+- ADR-0010 amended: **U-09 answered** (distortion none; per-eye FOV 45°
+  confirmed; IPD 64 mm retained) and the display-sequencing rule confirmed on
+  hardware. ADR status: **accepted**.
+- The run needed a calibration-only player (the committed build list boots the
+  Game scene first): `BuildPlayer.BuildCalibrationWindows64` was added and is
+  part of this change.
+- Display method: the panel was switched to
+  `VITURE_DISPLAY_MODE_3840_1080_90HZ` (0x35) through the vendor SDK with a
+  one-off local helper (not shipped) and made the primary display at
+  3840x1080@90; the desktop was restored to laptop-only afterwards.
+- Gate rule satisfied: `stage-6-complete` is eligible once this change is green
+  in CI.
+- Archive: this file stays as the escalation record; the answers live in
+  ADR-0010 (amendment 2026-10-06).
