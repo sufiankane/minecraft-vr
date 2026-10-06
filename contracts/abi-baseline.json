@@ -3,9 +3,9 @@
   "files": {
     "contracts/cg_types.h": "e0d76b949966224211693b414a8d8be916461ca0493a941aa1a297037d0fbaf6",
     "contracts/cg_unity_bridge.h": "467727ee3306be1467d9b3408d7fffcbbca0f3036c2d0133a0e04cfb11ef089e",
-    "contracts/cpp/ports.hpp": "4e07756dce5528fc2a21f7f67364a084ca6f4666e2b2758373656cf88925f184",
+    "contracts/cpp/ports.hpp": "13149756e58b664c3e610fc18923f40aae49402dc664cb218e0638d670c4af05",
     "contracts/cpp/result.hpp": "2dce1d4b7ee35a7f4df6a2bc518320975a5ccd7390f0b0c1529fa4394e89dd64",
     "contracts/golden/transforms.json": "db36e68d8ac08af5cc8b18d70bb1c171229b6438e932fc68b7f47b43808854f0"
   },
-  "fingerprint": "29f73aaceec75410e0d8d1bcb29c00b2a148e4c453d0cea7d3d5bafdb80197e1"
+  "fingerprint": "0feafd8d255af2e82bc79dbe9f3811fb1b269f10bfd9c9dfa2cae651d55b1353"
 }
