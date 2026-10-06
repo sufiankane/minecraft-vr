@@ -12,10 +12,16 @@ namespace {
     return static_cast<std::size_t>(stride) * static_cast<std::size_t>(std::max(config.height, 0));
 }
 
+/// Per-stream pattern biases; distinct values make a crossed pair visible to
+/// the round-trip and pattern tests.
+constexpr std::uint8_t kRight0Bias = 0x40;
+constexpr std::uint8_t kLeft1Bias = 0x80;
+constexpr std::uint8_t kRight1Bias = 0xC0;
+
 } // namespace
 
 FakeStereoSource::FakeStereoSource(FakeStereoConfig config)
-    : config_(std::move(config)), next_seq_(config_.first_seq), next_time_(config_.first_time) {
+    : config_(config), next_seq_(config_.first_seq), next_time_(config_.first_time) {
     if (config_.stride <= 0) {
         config_.stride = config_.width;
     }
@@ -47,9 +53,9 @@ void FakeStereoSource::EmitFrame() noexcept {
     }
 
     Fill(left0_, static_cast<std::uint8_t>(next_seq_));
-    Fill(right0_, static_cast<std::uint8_t>(next_seq_ + 0x40U));
-    Fill(left1_, static_cast<std::uint8_t>(next_seq_ + 0x80U));
-    Fill(right1_, static_cast<std::uint8_t>(next_seq_ + 0xC0U));
+    Fill(right0_, static_cast<std::uint8_t>(next_seq_ + kRight0Bias));
+    Fill(left1_, static_cast<std::uint8_t>(next_seq_ + kLeft1Bias));
+    Fill(right1_, static_cast<std::uint8_t>(next_seq_ + kRight1Bias));
 
     const StereoFrame frame{next_time_, next_seq_, Image(left0_, right0_), Image(left1_, right1_)};
     sink_->OnFrame(frame);
@@ -83,8 +89,12 @@ const std::uint8_t *FakeStereoSource::Left1() const noexcept { return left1_.dat
 const std::uint8_t *FakeStereoSource::Right1() const noexcept { return right1_.data(); }
 
 void FakeStereoSource::Fill(std::vector<std::uint8_t> &buffer, std::uint8_t bias) noexcept {
-    for (std::size_t i = 0; i < buffer.size(); ++i) {
-        buffer[i] = static_cast<std::uint8_t>((i + bias) & 0xFFU);
+    // A running byte counter reproduces the byte-wise `(index + bias) & 0xFF`
+    // pattern without indexing: `std::uint8_t` arithmetic wraps by definition.
+    std::uint8_t value = bias;
+    for (std::uint8_t &byte : buffer) {
+        byte = value;
+        ++value;
     }
 }
 

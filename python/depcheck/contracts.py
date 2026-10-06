@@ -89,7 +89,7 @@ EXEMPT_CONTRACT_FILES: dict[str, str] = {
 # repository-relative paths; C/C++ headers are read for ``VERSION_MACRO`` and
 # JSON fixtures for their integer ``schema``.
 KNOWN_ABI_VERSIONS: dict[str, int] = {
-    "contracts/cg_types.h": 2,
+    "contracts/cg_types.h": 3,
     "contracts/golden/transforms.json": 1,
 }
 
@@ -99,7 +99,7 @@ KNOWN_ABI_VERSIONS: dict[str, int] = {
 # reviewed change, then regenerate the baseline with
 # ``python -m depcheck contracts --update``.
 KNOWN_FINGERPRINTS: dict[str, str] = {
-    "contracts/cg_types.h": "e0d76b949966224211693b414a8d8be916461ca0493a941aa1a297037d0fbaf6",
+    "contracts/cg_types.h": "6aecc2cd3fa944139de8550376e115a4edfa0f8a11fae5c23f4d70a6053d5f60",
     "contracts/cg_unity_bridge.h": "467727ee3306be1467d9b3408d7fffcbbca0f3036c2d0133a0e04cfb11ef089e",
     "contracts/cpp/ports.hpp": "13149756e58b664c3e610fc18923f40aae49402dc664cb218e0638d670c4af05",
     "contracts/cpp/result.hpp": "2dce1d4b7ee35a7f4df6a2bc518320975a5ccd7390f0b0c1529fa4394e89dd64",

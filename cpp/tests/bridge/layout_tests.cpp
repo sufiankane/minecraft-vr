@@ -22,7 +22,7 @@
 namespace cg::bridge {
 namespace {
 
-static_assert(CG_ABI_VERSION == 2, "R42: the hand frame addition bumps the contract version");
+static_assert(CG_ABI_VERSION == 3, "S8: the 5.3 stereo port addition bumps the contract version");
 
 static_assert(std::is_trivially_copyable_v<cg_head_sample>);
 static_assert(std::is_trivially_copyable_v<cg_hand>);

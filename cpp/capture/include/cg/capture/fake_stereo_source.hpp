@@ -8,15 +8,21 @@
 
 namespace cg::capture {
 
+/// Defaults for the synthetic pattern source; named so the lint gate sees the
+/// intent, not bare literals.
+inline constexpr int kFakeDefaultWidth = 640;
+inline constexpr int kFakeDefaultHeight = 480;
+inline constexpr Duration kFakeDefaultTimeStep{1'000'000}; // 1 ms per frame
+
 /// Configuration for the deterministic synthetic frame source.
 struct FakeStereoConfig {
-    int width = 640;
-    int height = 480;
+    int width = kFakeDefaultWidth;
+    int height = kFakeDefaultHeight;
     /// Row stride in bytes; 0 means `width` (packed rows).
     int stride = 0;
     std::uint64_t first_seq = 1;
     HostTime first_time{0};
-    Duration time_step{1'000'000}; // 1 ms per frame
+    Duration time_step{kFakeDefaultTimeStep};
 };
 
 /// A deterministic synthetic `IStereoFrameSource` (dossier 5.3: "FakeStereoSource

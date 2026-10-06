@@ -6,7 +6,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
-#define CG_ABI_VERSION 2
+#define CG_ABI_VERSION 3
 
 typedef int64_t cg_time_ns;            /* HostTime, monotonic nanoseconds */
 
