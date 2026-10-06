@@ -220,33 +220,26 @@ void CloseLibrary(LibraryHandle handle) noexcept {
     return enabled;
 }
 
-/// Debug trace helpers. Tracing is noexcept and allocation-failure safe (the
-/// composition inside the helper is swallowed on failure), so it can be called
-/// from the noexcept teardown path, and it uses no C varargs.
-void TraceText(const char *text) noexcept {
-    try {
-        (void)std::fputs(text, stderr);
-    } catch (...) {
-        // Tracing must never throw out of noexcept teardown (std::terminate).
-    }
-}
+/// Debug trace helpers. Tracing must never throw out of a noexcept caller
+/// (DestroyDevice), so the integer formatter uses `std::to_chars` into a stack
+/// buffer plus C stdio: no allocation and no C varargs.
+constexpr std::size_t kMaxIntTextSize = 12; // enough for "-2147483648" and slack
+
+void TraceText(const char *text) noexcept { (void)std::fputs(text, stderr); }
 
 void TraceInt(const char *prefix, int value) noexcept {
-    try {
-        const std::string line = std::string{prefix} + std::to_string(value) + "\n";
-        (void)std::fputs(line.c_str(), stderr);
-    } catch (...) {
-        // Tracing must never throw out of noexcept teardown (std::terminate).
+    (void)std::fputs(prefix, stderr);
+    std::array<char, kMaxIntTextSize> text{};
+    // `std::to_chars` takes raw, non-const pointers; the array bounds them.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    char *const last = text.data() + text.size();
+    const std::to_chars_result result = std::to_chars(text.data(), last, value);
+    if (result.ec == std::errc{}) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) — a difference within the array.
+        const std::size_t length = static_cast<std::size_t>(result.ptr - text.data());
+        (void)std::fwrite(text.data(), 1, length, stderr);
     }
-}
-
-void TraceTwoInts(const char *prefix, int first, const char *middle, int second) noexcept {
-    try {
-        const std::string line = std::string{prefix} + std::to_string(first) + middle + std::to_string(second) + "\n";
-        (void)std::fputs(line.c_str(), stderr);
-    } catch (...) {
-        // Tracing must never throw out of noexcept teardown (std::terminate).
-    }
+    (void)std::fputc('\n', stderr);
 }
 
 /// Outcome of validating a caller-supplied vendor-DLL path.
@@ -567,6 +560,16 @@ constexpr double kNanosecondsPerSecond = 1e9;
 constexpr std::string_view kVitureVendorIdText = "VID_35CA";
 constexpr std::string_view kPidPrefix = "PID_";
 
+// Offsets into the vendor pose layout [px, py, pz, qw, qx, qy, qz]
+// (viture_device_carina.h), named so the sample assembly reads declaratively.
+constexpr std::size_t kPoseIndexPx = 0;
+constexpr std::size_t kPoseIndexPy = 1;
+constexpr std::size_t kPoseIndexPz = 2;
+constexpr std::size_t kPoseIndexQw = 3;
+constexpr std::size_t kPoseIndexQx = 4;
+constexpr std::size_t kPoseIndexQy = 5;
+constexpr std::size_t kPoseIndexQz = 6;
+
 /// Maps a VITURE_GLASSES_ERROR_* code (`viture_result.h`) onto the status
 /// vocabulary. The vendor codes are negative; `0` is success and is never
 /// passed here.
@@ -618,6 +621,7 @@ constexpr std::string_view kPidPrefix = "PID_";
     // `std::from_chars` takes raw pointers; the view bounded them already.
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
     const char *const last = digits.data() + digits.size();
+    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) — bounded by `last`.
     const std::from_chars_result result = std::from_chars(digits.data(), last, value, base);
     if (result.ec != std::errc{} || result.ptr != last || value > kMaxProductId) {
         return std::nullopt;
@@ -674,6 +678,7 @@ constexpr std::string_view kPidPrefix = "PID_";
             // `std::from_chars` takes raw pointers; the view bounded them already.
             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             const char *const hex_last = hex.data() + hex.size();
+            // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) — bounded by `hex_last`.
             const std::from_chars_result result = std::from_chars(hex.data(), hex_last, product_id, kProductIdHexBase);
             if (result.ec != std::errc{}) {
                 continue;
@@ -804,8 +809,7 @@ constexpr std::string_view kPidPrefix = "PID_";
 /// one `VendorVitureApi` is live at a time; the newest created instance owns
 /// the callback and `ReleaseCallback` clears it.
 class VendorVitureApi;
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) — the SDK pose callback carries no context, so
-// the single live instance is routed through this process-wide atomic target.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) — the vendor pose callback carries no context.
 std::atomic<VendorVitureApi *> g_pose_callback_target{nullptr};
 void ViturePoseCallback(float *pose, double timestamp);
 
@@ -814,7 +818,8 @@ void ViturePoseCallback(float *pose, double timestamp);
 /// event is traced (HIL diagnosis: wear/proximity, brightness, volume, film).
 void VitureStateCallback(int glass_state_id, int glass_value) {
     if (DebugTracesEnabled()) {
-        TraceTwoInts("viture-state: id=", glass_state_id, " value=", glass_value);
+        TraceInt("viture-state: id=", glass_state_id);
+        TraceInt("viture-state: value=", glass_value);
     }
 }
 
@@ -929,6 +934,9 @@ class VendorVitureApi final : public IVitureApi {
         return Ok();
     }
 
+    // Vendor entry points are not noexcept-annotated, but they report every
+    // failure through return codes; the tracing helpers are noexcept.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     void DestroyDevice() noexcept override {
         if (handle_ == nullptr) {
             return;
@@ -989,7 +997,8 @@ class VendorVitureApi final : public IVitureApi {
         }
         const int code = fns_.get_gl_pose_carina(handle_, pose.data(), 0.0, &pose_status);
         if (trace) {
-            TraceTwoInts("viture-poll: exit rc=", code, " status=", pose_status);
+            TraceInt("viture-poll: exit rc=", code);
+            TraceInt("viture-poll: exit status=", pose_status);
         }
         if (code != 0) {
             return Err<cg_head_sample>(VendorFailure("xr_device_provider_get_gl_pose_carina", code));
@@ -1006,9 +1015,11 @@ class VendorVitureApi final : public IVitureApi {
 
         cg_head_sample sample{};
         sample.host_time = static_cast<cg_time_ns>(std::llround(stamp_seconds * kNanosecondsPerSecond));
-        // NOLINTNEXTLINE(cppcoreguidelines-avoid-magic-numbers) — [px, py, pz, qw, qx, qy, qz] per
-        // viture_device_carina.h; the indices are the vendor's documented layout.
-        sample.pose = cg_pose{cg_vec3{pose[0], pose[1], pose[2]}, cg_quat{pose[3], pose[4], pose[5], pose[6]}};
+        // The vendor layout is [px, py, pz, qw, qx, qy, qz] (viture_device_carina.h);
+        // the named indices plus the bounds-checked accessor keep the lint quiet.
+        sample.pose = cg_pose{
+            cg_vec3{pose.at(kPoseIndexPx), pose.at(kPoseIndexPy), pose.at(kPoseIndexPz)},
+            cg_quat{pose.at(kPoseIndexQw), pose.at(kPoseIndexQx), pose.at(kPoseIndexQy), pose.at(kPoseIndexQz)}};
         sample.state = pose_status == 0 ? CG_TRACK_STABLE : CG_TRACK_UNSTABLE;
         sample.sequence = ++sequence_;
         return Ok(sample);
