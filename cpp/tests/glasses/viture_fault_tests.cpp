@@ -251,9 +251,8 @@ TEST(VitureFault, TransientPollErrorsInsideTheGraceKeepTheSession) {
     VitureHeadPoseSource source(api, clock);
     ASSERT_TRUE(source.Start().ok());
     HeadSample sample = PlaceholderSample();
-    ASSERT_TRUE(WaitForAdvancing(clock, Duration{1 * kMillisecondNs}, [&] {
-        return source.TryGetLatest(sample, Duration{0}) && sample.seq >= 1U;
-    }));
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{1 * kMillisecondNs},
+                                 [&] { return source.TryGetLatest(sample, Duration{0}) && sample.seq >= 1U; }));
     EXPECT_EQ(api.create_calls.load(), 1U) << "a warm-up error must not recreate the device";
     EXPECT_EQ(api.destroy_calls.load(), 0U) << "a warm-up error must not tear the device down";
     EXPECT_NEAR(YawDegrees(sample.pose), 2.0, 0.1) << "the session must publish once warm-up succeeds";

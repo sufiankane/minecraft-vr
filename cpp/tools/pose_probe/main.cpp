@@ -762,9 +762,8 @@ int RunViture(const Options &options, SampleLog &log) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         while (!stop_returned.load(std::memory_order_acquire)) {
             if (std::chrono::steady_clock::now() >= deadline) {
-                std::fprintf(stderr,
-                             "cg-pose-probe: source.Stop() did not return within 5 s; the vendor teardown is "
-                             "wedged, forcing exit (the report and CSV above are already written)\n");
+                std::fprintf(stderr, "cg-pose-probe: source.Stop() did not return within 5 s; the vendor teardown is "
+                                     "wedged, forcing exit (the report and CSV above are already written)\n");
                 std::fflush(stderr);
                 std::_Exit(3);
             }

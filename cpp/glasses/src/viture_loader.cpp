@@ -334,8 +334,8 @@ using XrVSyncCallbackFn = void (*)(double timestamp);
 /// `XRImuCallback(float* imu, double timestamp)`.
 using XrImuCallbackFn = void (*)(float *imu, double timestamp);
 /// `XRCameraCallback(...)`.
-using XrCameraCallbackFn =
-    void (*)(char *left0, char *right0, char *left1, char *right1, double timestamp, int width, int height);
+using XrCameraCallbackFn = void (*)(char *left0, char *right0, char *left1, char *right1, double timestamp, int width,
+                                    int height);
 /// `xr_device_provider_register_callbacks_carina(handle, pose, vsync, imu, camera)`.
 using RegisterCallbacksCarinaFn = int (*)(XrDeviceProviderHandle handle, XrPoseCallbackFn pose_callback,
                                           XrVSyncCallbackFn vsync_callback, XrImuCallbackFn imu_callback,
@@ -570,8 +570,8 @@ template <typename Function>
         std::array<char, 4096> buffer{};
         DWORD length = 0;
         if (SetupDiGetDeviceRegistryPropertyA(info, &device, SPDRP_HARDWAREID, nullptr,
-                                              reinterpret_cast<PBYTE>(buffer.data()),
-                                              static_cast<DWORD>(buffer.size()), &length) == FALSE) {
+                                              reinterpret_cast<PBYTE>(buffer.data()), static_cast<DWORD>(buffer.size()),
+                                              &length) == FALSE) {
             continue;
         }
         // Hardware IDs are a REG_MULTI_SZ list of upper-case strings such as
@@ -612,7 +612,9 @@ template <typename Function>
 
 /// POSIX builds exist for CI type-checking and development (no vendor runtime
 /// is shipped for them); product-id enumeration is Windows-only.
-[[nodiscard]] std::optional<int> EnumerateVitureProductId(const VitureApiFns & /*fns*/) noexcept { return std::nullopt; }
+[[nodiscard]] std::optional<int> EnumerateVitureProductId(const VitureApiFns & /*fns*/) noexcept {
+    return std::nullopt;
+}
 
 #endif
 
@@ -785,7 +787,8 @@ class VendorVitureApi final : public IVitureApi {
         const int is_6dof = ReadEnvironment("CG_VITURE_DOF") == "6dof" ? 1 : 0;
         int code = fns_.set_dof_type_carina(handle_, is_6dof);
         if (trace) {
-            std::fprintf(stderr, "viture-device: set_dof_type_carina(%s) rc=%d\n", is_6dof != 0 ? "6dof" : "3dof", code);
+            std::fprintf(stderr, "viture-device: set_dof_type_carina(%s) rc=%d\n", is_6dof != 0 ? "6dof" : "3dof",
+                         code);
         }
         if (code != 0) {
             const Status status = VendorFailure("xr_device_provider_set_dof_type_carina(3DoF)", code);
@@ -913,8 +916,9 @@ class VendorVitureApi final : public IVitureApi {
         // Until the first callback arrives the fallback is the host steady
         // clock, which the HIL report must treat as host-derived (the offset
         // estimate is then ~0 rather than a pipeline latency).
-        const double stamp_seconds =
-            has_stamp_.load(std::memory_order_acquire) ? stamp_seconds_.load(std::memory_order_relaxed) : SteadySeconds();
+        const double stamp_seconds = has_stamp_.load(std::memory_order_acquire)
+                                         ? stamp_seconds_.load(std::memory_order_relaxed)
+                                         : SteadySeconds();
 
         cg_head_sample sample{};
         sample.host_time = static_cast<cg_time_ns>(std::llround(stamp_seconds * 1e9));
@@ -942,10 +946,10 @@ class VendorVitureApi final : public IVitureApi {
         }
         const std::optional<int> mode = DisplayModeFor(refresh_hz, sbs);
         if (!mode.has_value()) {
-            return Err<void>(Status{
-                StatusCode::Unsupported,
-                InternMessage("viture: unsupported display mode " + std::to_string(refresh_hz) + " Hz " +
-                              (sbs ? "SBS" : "2D") + "; supported: 2D 60/90/120 Hz, SBS 60/90 Hz (F-09)")});
+            return Err<void>(
+                Status{StatusCode::Unsupported,
+                       InternMessage("viture: unsupported display mode " + std::to_string(refresh_hz) + " Hz " +
+                                     (sbs ? "SBS" : "2D") + "; supported: 2D 60/90/120 Hz, SBS 60/90 Hz (F-09)")});
         }
         const int code = fns_.set_display_mode(handle_, *mode);
         if (code != 0) {
@@ -964,9 +968,9 @@ class VendorVitureApi final : public IVitureApi {
         }
         const std::optional<std::uint32_t> refresh_hz = RefreshHzForMode(mode);
         if (!refresh_hz.has_value()) {
-            return Err<std::uint32_t>(Status{StatusCode::Unsupported,
-                                             InternMessage("viture: unknown display mode value " +
-                                                           std::to_string(mode) + " from the SDK")});
+            return Err<std::uint32_t>(
+                Status{StatusCode::Unsupported,
+                       InternMessage("viture: unknown display mode value " + std::to_string(mode) + " from the SDK")});
         }
         return Ok(*refresh_hz);
     }
