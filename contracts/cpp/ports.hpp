@@ -41,4 +41,30 @@ class IHeadPoseSource {
     virtual Result<void> Recenter() = 0;
 };
 
+// Dossier section 5.3, verbatim:
+struct StereoImage { // views are valid only during the callback
+    const std::uint8_t *left;
+    const std::uint8_t *right;
+    int width;
+    int height;
+    int stride; // stride in bytes
+};
+struct StereoFrame {
+    HostTime time;
+    std::uint64_t seq;
+    StereoImage f0; // frame 0 pair
+    StereoImage f1; // frame 1 pair (semantics resolved by ADR from U-03)
+};
+class IStereoFrameSink {
+  public:
+    virtual ~IStereoFrameSink() = default;
+    virtual void OnFrame(const StereoFrame &frame) noexcept = 0; // must return quickly
+};
+class IStereoFrameSource {
+  public:
+    virtual ~IStereoFrameSource() = default;
+    virtual Result<void> Start(IStereoFrameSink *sink) = 0;
+    virtual void Stop() noexcept = 0;
+};
+
 } // namespace cg

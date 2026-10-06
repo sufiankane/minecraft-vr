@@ -153,7 +153,7 @@ jobs:
         working-directory: cpp
 
       - name: Build modules with MSVC /analyze (TD-030)
-        run: cmake --build --preset windows-analyze --target cg_core_math cg_glasses cg_bridge cg_bridge_test_support
+        run: cmake --build --preset windows-analyze --target cg_core_math cg_capture cg_glasses cg_bridge cg_bridge_test_support
         working-directory: cpp
 
       - name: clang-format (warnings as errors)
@@ -170,11 +170,11 @@ jobs:
           }
           clang-format --dry-run --Werror $files
 
-      - name: clang-tidy (native modules core-math, glasses, bridge)
+      - name: clang-tidy (native modules core-math, capture, glasses, bridge)
         # TD-029: the gate runs the pinned LLVM 23.1.2 over every native module
         # source, matching the documented local invocation in docs/ci.md
         # ("Reproduce locally"). The --header-filter narrows the repository
-        # header regex to the three module directories: .clang-tidy's default
+        # header regex to the module directories: .clang-tidy's default
         # (^|[/\\])cpp[/\\]... also matches the frozen, dossier-verbatim
         # headers under contracts/ once glasses and bridge include them.
         working-directory: cpp
@@ -183,8 +183,8 @@ jobs:
           if ($version -notmatch '23\.1\.2') {
             throw "clang-tidy is not the pinned LLVM 23.1.2 (got: $version); the pinned install step must have run first (TD-037)."
           }
-          $headerFilter = '[\\/](core-math|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$'
-          $files = @(git ls-files core-math/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
+          $headerFilter = '[\\/](core-math|capture|glasses|bridge)[\\/](include|src)[\\/].*\.(h|hpp)$'
+          $files = @(git ls-files core-math/src capture/src glasses/src bridge/src | Where-Object { $_ -match '\.cpp$' })
           if ($files.Count -eq 0) {
             throw "clang-tidy selector found no native module sources; the tidy gate would pass vacuously (TD-063)."
           }

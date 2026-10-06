@@ -36,6 +36,9 @@ set_tests_properties(core_math PROPERTIES ENVIRONMENT "RC_PARAMS=seed=20261004")
 add_subdirectory(glasses)
 add_test(NAME glasses COMMAND cg_glasses_tests)
 
+add_subdirectory(capture)
+add_test(NAME capture COMMAND cg_capture_tests)
+
 add_subdirectory(bridge)
 
 add_subdirectory(tools)
