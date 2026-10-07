@@ -90,3 +90,28 @@ the G-A fraction from the labels and, if it is ≥90 %, tags
 `stage-8-complete`; otherwise the runbook pauses for the escalation note in
 this file (6DoF-only operation, hand-position guidance, or an external camera,
 per the dossier's no-go path).
+
+## Status (2026-10-07)
+
+**Done on hardware** (owner's laptop, firmware `12.0.01.101_20260605`, SDK
+2.4.0, SpaceWalker closed; artefacts committed under `docs/notes/s8-hil/`):
+
+- Probes in both modes, 60 s each: **1,493 frames = 25.0 Hz, zero sequence
+  gaps**, 640x480 packed, `l0`/`r0` present and `l1`/`r1` **null** in both
+  3DoF and 6DoF (answers U-02: frames arrive in 3DoF; U-03: one stereo pair,
+  packed rows, `f0 != f1`; first stamp is a startup artifact).
+- `a1-left` recording: left-hand grid, 180 s, **4,494 frames, 0 drops**
+  (5.2 GB stored externally; manifest + `stereo.csv` committed). Sample
+  frames show the raised hand, palm to camera, sharp and well exposed.
+- Clock offset (U-05): the camera and pose stamps share the SDK monotonic
+  clock; a fresh 30 s pose probe measured 0.75 ms median / ~1 ms p95 to the
+  host clock (`clock-offset.md`).
+
+**Owner decision:** the right-hand and both-hands passes, the full 20-minute
+script set and the per-node labels are **deferred**; the owner asked to
+process the left-hand take only. U-06 and gate **G-A remain open** and
+`stage-8-complete` stays withheld. The two defects the run exposed (null
+`l1`/`r1` crash, startup-artifact rate) are fixed and merged (PR #74).
+
+**Resume:** run the remaining protocol scripts (A2/A3 right/both hands, B, C)
+with the beep pacer and complete the labels; the procedure above is unchanged.
