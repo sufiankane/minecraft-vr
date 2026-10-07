@@ -19,17 +19,19 @@ startup artifact (see `clock-offset.md`).
 
 | Session | Script | Mode | Seconds | Frames | Dropped | Storage | Location |
 |---|---|---|---|---|---|---|---|
-| `a1-left` | A1 left-hand grid (owner-scoped to left only) | 3dof | 180 | 4,494 | 0 | bin | `C:\Users\sufia\Documents\cgrec\s8\sessions\a1-left` (external, 5.2 GB) |
+| `a1-left` | A1 left-hand grid (owner-scoped to left only), second take | 3dof | 180 | 4,492 | 0 | bin | `C:\Users\sufia\Documents\cgrec\s8\sessions\a1-left` (external, 5.2 GB) |
 
 Committed per session: `manifests/<session>/manifest.json` + `stereo.csv`.
-Sample frames for visual inspection: `samples/a1-frame{1,1200,2500,4300}.png`
-(frame 1200 shows the raised left hand, palm to camera, fingers spread,
-sharp and well exposed).
+Sample frames for visual inspection: `samples/a1-frame{1,900,1800,2700,3600,4400}.png`.
+The samples show the raised left hand across the near/mid/far planes; this
+take was recorded in the evening, so the hand reads as a dark silhouette
+against the room (the first take was daylight and brighter). The camera
+handles both; the labels only need the presence decision.
 
 ## Scope note (owner decision, 2026-10-07)
 
-The owner ran the **left-hand** pass only and asked to process it rather than
-run the right-hand pass. The capture pipeline is therefore proven end-to-end
-on hardware; the formal G-A statement (both hands) is evaluated for the
-recorded scope in `docs/notes/s8-gate.md` and ADR-0014, with the right-hand
-coverage flagged.
+The owner ran the **left-hand** pass (twice, to improve the take) and asked to
+process it rather than run the right-hand/both-hand passes. The capture
+pipeline is proven end-to-end on hardware; the formal G-A statement (both
+hands) and U-06 remain open per `docs/questions/S8-HIL.md`, tracked by
+TD-086. `stage-8-complete` stays withheld.
