@@ -1,5 +1,5 @@
 add_executable(
-    cg_capture_tests contract_tests.cpp slot_tests.cpp recorder_tests.cpp cgrec_roundtrip_tests.cpp
+    cg_capture_tests contract_tests.cpp slot_tests.cpp recorder_tests.cpp cgrec_roundtrip_tests.cpp replay_tests.cpp
 )
 
 # TD-010: cg_capture propagates cg_warnings PUBLIC, so this header consumer
