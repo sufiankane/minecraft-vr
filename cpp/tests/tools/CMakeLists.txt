@@ -14,3 +14,15 @@ add_test(NAME soak_gate COMMAND cg_soak_gate_tests)
 # itself is exercised by the nightly 30-minute run.
 add_test(NAME soak_smoke COMMAND $<TARGET_FILE:glasses_soak> --minutes 0.05 --rate 200)
 set_tests_properties(soak_smoke PROPERTIES TIMEOUT 120)
+
+# The capture probe's argument parsing and report formatting live in the
+# header-only `args.hpp` next to the tool, so the unit tests pin the CLI
+# contract without a device (the rss_gate.hpp pattern).
+add_executable(cg_capture_probe_tests capture_probe_tests.cpp)
+target_link_libraries(cg_capture_probe_tests PRIVATE cg::capture GTest::gtest_main cg_warnings)
+target_include_directories(cg_capture_probe_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/capture_probe)
+
+add_test(NAME capture_probe_args COMMAND cg_capture_probe_tests)
+
+# The help path runs the real tool (exit 0, no device or library needed).
+add_test(NAME capture_probe_help COMMAND $<TARGET_FILE:cg_capture_probe> --help)
