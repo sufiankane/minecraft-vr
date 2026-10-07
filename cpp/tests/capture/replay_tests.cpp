@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -64,24 +65,55 @@ class ManualClock final : public IFrameClock {
   private:
     std::atomic<HostTime> now_{0};
 };
-
+/// Records deliveries from the replay worker. The worker thread appends under
+/// a mutex and the test reads copies through the accessors, so ThreadSanitizer
+/// sees a synchronised handoff rather than a cross-thread data race.
 class RecordingSink final : public cg::IStereoFrameSink {
   public:
     void OnFrame(const cg::StereoFrame &frame) noexcept override {
-        ++calls;
-        seqs.push_back(frame.seq);
-        times.push_back(frame.time);
-        clock_values.push_back(clock == nullptr ? 0 : clock->Now());
+        const std::lock_guard<std::mutex> lock(mutex_);
+        ++calls_;
+        seqs_.push_back(frame.seq);
+        times_.push_back(frame.time);
+        clock_values_.push_back(clock == nullptr ? 0 : clock->Now());
         const std::size_t bytes = static_cast<std::size_t>(frame.f0.stride) * static_cast<std::size_t>(frame.f0.height);
-        left0.assign(frame.f0.left, frame.f0.left + bytes); // the last frame's first image
+        left0_.assign(frame.f0.left, frame.f0.left + bytes); // the last frame's first image
+    }
+
+    [[nodiscard]] int Calls() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return calls_;
+    }
+
+    [[nodiscard]] std::vector<std::uint64_t> Seqs() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return seqs_;
+    }
+
+    [[nodiscard]] std::vector<HostTime> Times() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return times_;
+    }
+
+    [[nodiscard]] std::vector<HostTime> ClockValues() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return clock_values_;
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> Left0() const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return left0_;
     }
 
     IFrameClock *clock = nullptr;
-    int calls = 0;
-    std::vector<std::uint64_t> seqs;
-    std::vector<HostTime> times;
-    std::vector<HostTime> clock_values;
-    std::vector<std::uint8_t> left0;
+
+  private:
+    mutable std::mutex mutex_;
+    int calls_ = 0;
+    std::vector<std::uint64_t> seqs_;
+    std::vector<HostTime> times_;
+    std::vector<HostTime> clock_values_;
+    std::vector<std::uint8_t> left0_;
 };
 
 /// Records a scripted fake session with `frames` frames and `step_ns` spacing.
@@ -129,18 +161,18 @@ TEST(ReplaySource, FastReplayDeliversEveryRecordedFrameByteEqual) {
     ASSERT_TRUE(replay.Finished()) << "fast replay must finish on its own";
     replay.Stop();
 
-    ASSERT_EQ(sink.calls, 6);
+    ASSERT_EQ(sink.Calls(), 6);
     for (int i = 0; i < 6; ++i) {
-        EXPECT_EQ(sink.seqs.at(static_cast<std::size_t>(i)), static_cast<std::uint64_t>(i) + 1U);
-        EXPECT_EQ(sink.times.at(static_cast<std::size_t>(i)), static_cast<HostTime>(i) * 100'000'000);
+        EXPECT_EQ(sink.Seqs().at(static_cast<std::size_t>(i)), static_cast<std::uint64_t>(i) + 1U);
+        EXPECT_EQ(sink.Times().at(static_cast<std::size_t>(i)), static_cast<HostTime>(i) * 100'000'000);
     }
     // The last delivered frame equals the recorded frame file.
     const cg::Result<std::vector<std::uint8_t>> recorded = ReadFrameImages(session, *info, 6);
     ASSERT_TRUE(recorded.ok()) << recorded.status().message();
     ASSERT_EQ((*recorded).size(), static_cast<std::size_t>(20) * 4U * 4U) << "four images per frame";
-    EXPECT_EQ(sink.left0.size(), static_cast<std::size_t>(20) * 4U);
+    EXPECT_EQ(sink.Left0().size(), static_cast<std::size_t>(20) * 4U);
     const std::vector<std::uint8_t> expected_left0((*recorded).begin(), (*recorded).begin() + 20 * 4);
-    EXPECT_TRUE(sink.left0 == expected_left0);
+    EXPECT_TRUE(sink.Left0() == expected_left0);
 }
 
 TEST(ReplaySource, RealTimeHonoursTheRecordedTimeline) {
@@ -157,28 +189,28 @@ TEST(ReplaySource, RealTimeHonoursTheRecordedTimeline) {
     // Frame 1 targets the start instant; let the worker deliver it.
     const auto wait_for = [&sink](int calls) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (sink.calls < calls && std::chrono::steady_clock::now() < deadline) {
+        while (sink.Calls() < calls && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     };
     wait_for(1);
-    ASSERT_EQ(sink.calls, 1) << "the first frame plays at the start instant";
-    EXPECT_EQ(sink.clock_values.at(0), 0);
+    ASSERT_EQ(sink.Calls(), 1) << "the first frame plays at the start instant";
+    EXPECT_EQ(sink.ClockValues().at(0), 0);
 
     clock.Advance(90'000'000); // 90 ms: still before frame 2's 100 ms target
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(sink.calls, 1) << "a frame must never play early";
+    EXPECT_EQ(sink.Calls(), 1) << "a frame must never play early";
 
     clock.Advance(20'000'000); // 110 ms: frame 2 plays, frame 3 (200 ms) does not
     wait_for(2);
-    ASSERT_EQ(sink.calls, 2);
-    EXPECT_GE(sink.clock_values.at(1), 100'000'000);
-    EXPECT_LT(sink.clock_values.at(1), 200'000'000);
+    ASSERT_EQ(sink.Calls(), 2);
+    EXPECT_GE(sink.ClockValues().at(1), 100'000'000);
+    EXPECT_LT(sink.ClockValues().at(1), 200'000'000);
 
     clock.Advance(100'000'000); // 210 ms: frame 3 plays
     wait_for(3);
-    ASSERT_EQ(sink.calls, 3);
-    EXPECT_GE(sink.clock_values.at(2), 200'000'000);
+    ASSERT_EQ(sink.Calls(), 3);
+    EXPECT_GE(sink.ClockValues().at(2), 200'000'000);
     replay.Stop();
 }
 
@@ -192,15 +224,15 @@ TEST(ReplaySource, StopInterruptsAWaitingReplayAndForbidsCallbacksAfterReturn) {
     RecordingSink sink;
     ASSERT_TRUE(replay.Start(&sink).ok());
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (sink.calls < 1 && std::chrono::steady_clock::now() < deadline) {
+    while (sink.Calls() < 1 && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    ASSERT_EQ(sink.calls, 1);
+    ASSERT_EQ(sink.Calls(), 1);
     replay.Stop();
-    const int after_stop = sink.calls;
+    const int after_stop = sink.Calls();
     clock.Advance(10'000'000'000);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    EXPECT_EQ(sink.calls, after_stop) << "no callback may follow Stop";
+    EXPECT_EQ(sink.Calls(), after_stop) << "no callback may follow Stop";
 }
 
 TEST(ReplaySource, InvalidSessionFailsStartWithTheValidatorReason) {
@@ -211,7 +243,7 @@ TEST(ReplaySource, InvalidSessionFailsStartWithTheValidatorReason) {
     const cg::Result<void> started = replay.Start(&sink);
     ASSERT_FALSE(started.ok());
     EXPECT_NE(std::string(started.status().message()).find("manifest"), std::string::npos);
-    EXPECT_EQ(sink.calls, 0);
+    EXPECT_EQ(sink.Calls(), 0);
 }
 
 TEST(ReplaySource, StopBeforeStartAndDoubleStopAreSafe) {
