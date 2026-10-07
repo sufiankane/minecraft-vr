@@ -22,6 +22,7 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kRadiansToDegrees = 180.0 / kPi;
 constexpr std::int64_t kMillisecondNs = 1'000'000;
+constexpr std::int64_t kTenMillisecondsNs = 10 * kMillisecondNs;
 constexpr std::int64_t kHundredMillisecondsNs = 100 * kMillisecondNs;
 
 /// `HeadSample` is not default-constructible, so every read target is built
@@ -203,22 +204,25 @@ TEST(VitureFault, PollErrorsReconnectWithDoublingBackoff) {
     EXPECT_EQ(first.seq, 1U);
 
     // The first sustained failure destroys the device. The wait pumps the
-    // clock, because the retry pacing inside the grace is clock-gated.
-    ASSERT_TRUE(
-        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() == 1U; }));
+    // clock in 10 ms steps (an order below the 100 ms backoff), because the
+    // retry pacing inside the grace is clock-gated: a coarse step could jump
+    // past the whole backoff before the test observes the destroy.
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kTenMillisecondsNs}, [&] { return api.destroy_calls.load() == 1U; }));
     EXPECT_EQ(api.create_calls.load(), 1U);
 
     // The first backoff is 100 ms: after spending half of it no reconnect may
-    // be in flight.
+    // be in flight (the pump overshoot is at most one 10 ms step, so the
+    // thread cannot have reached the 100 ms deadline yet).
     clock.Advance(Duration{50 * kMillisecondNs});
     EXPECT_EQ(api.create_calls.load(), 1U) << "the 100 ms backoff must not release after 50 ms";
 
     // Release the first backoff and let the recreated session fail again.
-    ASSERT_TRUE(WaitForAdvancing(clock, Duration{50 * kMillisecondNs}, [&] { return api.create_calls.load() == 2U; }));
+    ASSERT_TRUE(WaitForAdvancing(clock, Duration{kTenMillisecondsNs}, [&] { return api.create_calls.load() == 2U; }));
     ASSERT_TRUE(
-        WaitForAdvancing(clock, Duration{kHundredMillisecondsNs}, [&] { return api.destroy_calls.load() == 2U; }));
+        WaitForAdvancing(clock, Duration{2 * kTenMillisecondsNs}, [&] { return api.destroy_calls.load() == 2U; }));
 
-    // The second consecutive failure doubles the backoff to 200 ms.
+    // The second consecutive failure doubles the backoff to 200 ms; the pump
+    // overshoot is at most one 20 ms step, so +100 ms cannot reach 200 ms.
     clock.Advance(Duration{kHundredMillisecondsNs});
     EXPECT_EQ(api.create_calls.load(), 2U) << "the doubled backoff must not release after 100 ms";
 
