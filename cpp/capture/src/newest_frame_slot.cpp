@@ -153,9 +153,10 @@ bool NewestFrameSlot::GeometryMatches(const StereoFrame &frame) const noexcept {
 
 StereoImage NewestFrameSlot::ViewFor(const std::vector<std::uint64_t> &left, const std::vector<std::uint64_t> &right,
                                      int width, int height, int stride) noexcept {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) — the payload is byte data in word storage.
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast) — the payload is byte data in word storage.
     return StereoImage{reinterpret_cast<const std::uint8_t *>(left.data()),
                        reinterpret_cast<const std::uint8_t *>(right.data()), width, height, stride};
+    // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 }
 
 void NewestFrameSlot::CopyImages(const StereoFrame &frame, Slot &slot, std::size_t image_bytes) noexcept {
