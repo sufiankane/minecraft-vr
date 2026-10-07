@@ -1,4 +1,4 @@
-add_library(cg_capture STATIC src/fake_stereo_source.cpp)
+add_library(cg_capture STATIC src/fake_stereo_source.cpp src/newest_frame_slot.cpp)
 add_library(cg::capture ALIAS cg_capture)
 
 target_compile_features(cg_capture PUBLIC cxx_std_20)
