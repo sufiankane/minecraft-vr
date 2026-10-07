@@ -1,19 +1,57 @@
 #include "cg/capture/newest_frame_slot.hpp"
 
 #include <algorithm>
-#include <cstring>
+#include <atomic>
+#include <cstdint>
 #include <thread>
-#include <utility>
 
 namespace cg::capture {
 
 namespace {
 
 constexpr std::uint64_t kWriteFlag = 1; // version parity: odd while writing
+constexpr std::size_t kWordBytes = sizeof(std::uint64_t);
 
 [[nodiscard]] int EffectiveStride(const FrameSlotGeometry &geometry) noexcept {
     return geometry.stride > 0 ? geometry.stride : geometry.width;
 }
+
+[[nodiscard]] std::size_t WordCount(std::size_t bytes) noexcept { return (bytes + kWordBytes - 1U) / kWordBytes; }
+
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-type-const-cast,
+// cppcoreguidelines-pro-bounds-pointer-arithmetic) — the payload is byte data stored in word
+// vectors; the atomic word copy needs the reinterpretation, and the alignment probe
+// bounds the pointer arithmetic to the caller's buffer.
+/// Copies `bytes` bytes from `src` to `dst` through relaxed `std::atomic_ref`
+/// accesses. The destination is one of our aligned word vectors; when the
+/// source is 8-aligned the copy runs word-wise, otherwise byte-wise.
+void AtomicCopy(std::uint64_t *dst, const std::uint8_t *src, std::size_t bytes) noexcept {
+    const bool words_ok = (reinterpret_cast<std::uintptr_t>(src) % kWordBytes) == 0;
+    if (words_ok) {
+        const std::size_t words = bytes / kWordBytes;
+        const auto *src_words = reinterpret_cast<const std::uint64_t *>(src);
+        for (std::size_t i = 0; i < words; ++i) {
+            const std::uint64_t value = std::atomic_ref<std::uint64_t>(*const_cast<std::uint64_t *>(src_words + i))
+                                            .load(std::memory_order_relaxed);
+            std::atomic_ref<std::uint64_t>(dst[i]).store(value, std::memory_order_relaxed);
+        }
+        auto *dst_bytes = reinterpret_cast<std::uint8_t *>(dst);
+        for (std::size_t i = words * kWordBytes; i < bytes; ++i) {
+            const std::uint8_t value =
+                std::atomic_ref<std::uint8_t>(const_cast<std::uint8_t &>(src[i])).load(std::memory_order_relaxed);
+            std::atomic_ref<std::uint8_t>(dst_bytes[i]).store(value, std::memory_order_relaxed);
+        }
+        return;
+    }
+    auto *dst_bytes = reinterpret_cast<std::uint8_t *>(dst);
+    for (std::size_t i = 0; i < bytes; ++i) {
+        const std::uint8_t value =
+            std::atomic_ref<std::uint8_t>(const_cast<std::uint8_t &>(src[i])).load(std::memory_order_relaxed);
+        std::atomic_ref<std::uint8_t>(dst_bytes[i]).store(value, std::memory_order_relaxed);
+    }
+}
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast, cppcoreguidelines-pro-type-const-cast,
+// cppcoreguidelines-pro-bounds-pointer-arithmetic)
 
 } // namespace
 
@@ -21,11 +59,12 @@ NewestFrameSlot::NewestFrameSlot(FrameSlotGeometry geometry) : geometry_(geometr
     geometry_.stride = EffectiveStride(geometry_);
     image_bytes_ = static_cast<std::size_t>(std::max(geometry_.stride, 0)) *
                    static_cast<std::size_t>(std::max(geometry_.height, 0));
+    const std::size_t words = WordCount(image_bytes_);
     for (Slot *slot : {&slots_.front(), &slots_.back(), &consumer_}) {
-        slot->l0.resize(image_bytes_);
-        slot->r0.resize(image_bytes_);
-        slot->l1.resize(image_bytes_);
-        slot->r1.resize(image_bytes_);
+        slot->l0.resize(words);
+        slot->r0.resize(words);
+        slot->l1.resize(words);
+        slot->r1.resize(words);
     }
 }
 
@@ -38,8 +77,8 @@ void NewestFrameSlot::OnFrame(const StereoFrame &frame) noexcept {
     Slot &slot = slots_.at(write_);
     const std::uint64_t version = slot.version.load(std::memory_order_relaxed);
     slot.version.store(version + kWriteFlag, std::memory_order_relaxed);
-    slot.time = frame.time;
-    slot.seq = frame.seq;
+    slot.time.store(frame.time, std::memory_order_relaxed);
+    slot.seq.store(frame.seq, std::memory_order_relaxed);
     CopyImages(frame, slot, image_bytes_);
     slot.version.store(version + 2 * kWriteFlag, std::memory_order_release);
 
@@ -70,8 +109,8 @@ bool NewestFrameSlot::TryTake(StereoFrame &out) noexcept {
         }
         last_taken_version_.at(index) = before;
         ++taken_;
-        out.time = slot.time;
-        out.seq = slot.seq;
+        out.time = slot.time.load(std::memory_order_relaxed);
+        out.seq = slot.seq.load(std::memory_order_relaxed);
         out.f0 = ViewFor(consumer_.l0, consumer_.r0, geometry_.width, geometry_.height, geometry_.stride);
         out.f1 = ViewFor(consumer_.l1, consumer_.r1, geometry_.width, geometry_.height, geometry_.stride);
         return true;
@@ -107,23 +146,31 @@ bool NewestFrameSlot::GeometryMatches(const StereoFrame &frame) const noexcept {
            frame.f1.height == geometry_.height && frame.f1.stride == geometry_.stride;
 }
 
-StereoImage NewestFrameSlot::ViewFor(const std::vector<std::uint8_t> &left, const std::vector<std::uint8_t> &right,
+StereoImage NewestFrameSlot::ViewFor(const std::vector<std::uint64_t> &left, const std::vector<std::uint64_t> &right,
                                      int width, int height, int stride) noexcept {
-    return StereoImage{left.data(), right.data(), width, height, stride};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) — the payload is byte data in word storage.
+    return StereoImage{reinterpret_cast<const std::uint8_t *>(left.data()),
+                       reinterpret_cast<const std::uint8_t *>(right.data()), width, height, stride};
 }
 
 void NewestFrameSlot::CopyImages(const StereoFrame &frame, Slot &slot, std::size_t image_bytes) noexcept {
-    std::memcpy(slot.l0.data(), frame.f0.left, image_bytes);
-    std::memcpy(slot.r0.data(), frame.f0.right, image_bytes);
-    std::memcpy(slot.l1.data(), frame.f1.left, image_bytes);
-    std::memcpy(slot.r1.data(), frame.f1.right, image_bytes);
+    AtomicCopy(slot.l0.data(), frame.f0.left, image_bytes);
+    AtomicCopy(slot.r0.data(), frame.f0.right, image_bytes);
+    AtomicCopy(slot.l1.data(), frame.f1.left, image_bytes);
+    AtomicCopy(slot.r1.data(), frame.f1.right, image_bytes);
 }
 
 void NewestFrameSlot::CopyImages(const Slot &from, Slot &to, std::size_t image_bytes) noexcept {
-    std::memcpy(to.l0.data(), from.l0.data(), image_bytes);
-    std::memcpy(to.r0.data(), from.r0.data(), image_bytes);
-    std::memcpy(to.l1.data(), from.l1.data(), image_bytes);
-    std::memcpy(to.r1.data(), from.r1.data(), image_bytes);
+    // Both buffers are ours and aligned, so the same atomic word copy applies;
+    // the source is viewed as bytes for the shared helper.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    AtomicCopy(to.l0.data(), reinterpret_cast<const std::uint8_t *>(from.l0.data()), image_bytes);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    AtomicCopy(to.r0.data(), reinterpret_cast<const std::uint8_t *>(from.r0.data()), image_bytes);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    AtomicCopy(to.l1.data(), reinterpret_cast<const std::uint8_t *>(from.l1.data()), image_bytes);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    AtomicCopy(to.r1.data(), reinterpret_cast<const std::uint8_t *>(from.r1.data()), image_bytes);
 }
 
 } // namespace cg::capture

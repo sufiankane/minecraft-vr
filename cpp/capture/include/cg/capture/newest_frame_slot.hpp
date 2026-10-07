@@ -68,20 +68,25 @@ class NewestFrameSlot final : public IStereoFrameSink {
 
   private:
     struct Slot {
-        std::vector<std::uint8_t> l0;
-        std::vector<std::uint8_t> r0;
-        std::vector<std::uint8_t> l1;
-        std::vector<std::uint8_t> r1;
+        /// Payload storage in 64-bit words so it can be copied through
+        /// `std::atomic_ref` (the bridge payload precedent): ThreadSanitizer
+        /// then sees the handoff as synchronization instead of a data race,
+        /// while relaxed atomic word copies compile to plain moves on x86-64.
+        /// Each buffer holds ceil(image_bytes / 8) words.
+        std::vector<std::uint64_t> l0;
+        std::vector<std::uint64_t> r0;
+        std::vector<std::uint64_t> l1;
+        std::vector<std::uint64_t> r1;
         /// Frame header copied with the images (inside the version bracket).
-        HostTime time = 0;
-        std::uint64_t seq = 0;
+        std::atomic<HostTime> time{0};
+        std::atomic<std::uint64_t> seq{0};
         /// Even when settled, odd while the producer writes this slot.
         std::atomic<std::uint64_t> version{0};
     };
 
     [[nodiscard]] bool GeometryMatches(const StereoFrame &frame) const noexcept;
-    [[nodiscard]] static StereoImage ViewFor(const std::vector<std::uint8_t> &left,
-                                             const std::vector<std::uint8_t> &right, int width, int height,
+    [[nodiscard]] static StereoImage ViewFor(const std::vector<std::uint64_t> &left,
+                                             const std::vector<std::uint64_t> &right, int width, int height,
                                              int stride) noexcept;
     static void CopyImages(const StereoFrame &frame, Slot &slot, std::size_t image_bytes) noexcept;
     static void CopyImages(const Slot &from, Slot &to, std::size_t image_bytes) noexcept;
