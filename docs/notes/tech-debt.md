@@ -172,3 +172,4 @@ hermeticity, remesh leak, plugin warning, HUD/game-window/calibration fixes
 | #60 | CI/tooling | TD-030 MSVC /analyze | Fixed: CG_ENABLE_ANALYZE lane over core-math/glasses/bridge/test-support; findings fixed; clean from-scratch analyze build |
 | #60 | Release | TD-067 (duplicate of TD-004) | Closed with TD-004 |
 | #63 | Unity | TD-077 ignored symlink-refusal test | Fixed: replaced by a junction-based DeltaPathReparsePointIsRefusedOnLoad probe; EditMode 200/200 with zero skips |
+| TD-086 | Release/HIL | S8 HIL deferred 2026-10-07: left-hand probe + `a1-left` session done (U-02/U-03/U-05 answered with committed artefacts), but the right/both-hand passes, the 20-minute dataset and the G-A labels are pending, so U-06/G-A stay open | Medium | s8-gate; S8-HIL.md | `stage-8-complete` withheld | Owner: finish the remaining scripts and labels per docs/questions/S8-HIL.md |
