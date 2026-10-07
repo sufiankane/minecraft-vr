@@ -102,6 +102,11 @@ bool NewestFrameSlot::TryTake(StereoFrame &out) noexcept {
             return false; // nothing settled since the last take from this slot
         }
         CopyImages(slot, consumer_, image_bytes_);
+        // The header is read inside the version bracket: reading it after the
+        // final check would let a producer rewrite pair a newer seq with an
+        // older version tag and return a duplicate frame.
+        const HostTime time = slot.time.load(std::memory_order_relaxed);
+        const std::uint64_t seq = slot.seq.load(std::memory_order_relaxed);
         const std::uint64_t after = slot.version.load(std::memory_order_acquire);
         if (after != before) {
             torn_retries_.fetch_add(1, std::memory_order_relaxed);
@@ -109,8 +114,8 @@ bool NewestFrameSlot::TryTake(StereoFrame &out) noexcept {
         }
         last_taken_version_.at(index) = before;
         ++taken_;
-        out.time = slot.time.load(std::memory_order_relaxed);
-        out.seq = slot.seq.load(std::memory_order_relaxed);
+        out.time = time;
+        out.seq = seq;
         out.f0 = ViewFor(consumer_.l0, consumer_.r0, geometry_.width, geometry_.height, geometry_.stride);
         out.f1 = ViewFor(consumer_.l1, consumer_.r1, geometry_.width, geometry_.height, geometry_.stride);
         return true;
