@@ -17,3 +17,10 @@ endif()
 set_target_properties(glasses_soak PROPERTIES
     OUTPUT_NAME "glasses_soak"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(cg_recorder recorder/main.cpp)
+target_link_libraries(cg_recorder PRIVATE cg::capture cg_warnings)
+
+set_target_properties(cg_recorder PROPERTIES
+    OUTPUT_NAME "cg-recorder"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
