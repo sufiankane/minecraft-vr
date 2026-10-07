@@ -9,6 +9,7 @@ add_executable(
     viture_fault_tests.cpp
     viture_loader_path_tests.cpp
     viture_loader_tests.cpp
+    viture_stereo_source_tests.cpp
 )
 # TD-010: no explicit cg_warnings here on purpose. cg_glasses propagates it
 # PUBLIC, so this target (a plain header consumer) compiles under /W4 /WX
