@@ -24,3 +24,10 @@ target_link_libraries(cg_recorder PRIVATE cg::capture cg_warnings)
 set_target_properties(cg_recorder PROPERTIES
     OUTPUT_NAME "cg-recorder"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+add_executable(cg_capture_probe capture_probe/main.cpp)
+target_link_libraries(cg_capture_probe PRIVATE cg::capture cg::glasses cg_warnings)
+
+set_target_properties(cg_capture_probe PROPERTIES
+    OUTPUT_NAME "cg-capture-probe"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
