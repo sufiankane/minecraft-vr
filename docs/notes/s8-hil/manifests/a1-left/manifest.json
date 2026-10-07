@@ -1,0 +1,12 @@
+{
+  "created_utc": "2026-10-07T15:27:58Z",
+  "dof": "3dof",
+  "dropped": 0,
+  "frame_count": 4494,
+  "height": 480,
+  "schema": 2,
+  "sdk_version": "",
+  "storage": "bin",
+  "stride": 640,
+  "width": 640
+}

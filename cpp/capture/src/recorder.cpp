@@ -178,8 +178,13 @@ void Recorder::CopyFrameImages(const StereoFrame &frame, QueueSlot &slot) noexce
     for (std::size_t image = 0; image < sources.size(); ++image) {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) — the slot owns four packed images.
         std::uint8_t *destination = slot.images.data() + image * image_bytes_;
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) — the row sources live in one image.
-        std::memcpy(destination, sources.at(image), image_bytes_);
+        if (sources.at(image) != nullptr) {
+            std::memcpy(destination, sources.at(image), image_bytes_);
+        } else {
+            // A null stream is absent on this device/mode (U-03); record zeros
+            // so the frame layout stays homogeneous.
+            std::memset(destination, 0, image_bytes_);
+        }
     }
 }
 

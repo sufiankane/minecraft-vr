@@ -1,0 +1,12 @@
+source: viture
+samples: 3359  sample span: 29.982681600 s  measured rate: 111.998 Hz
+jitter (|interval - mean|): p50=6925.882 us  p95=7538.570 us  p99=8073.613 us
+status: stable=3000 unstable=359 lost=0
+polls: 3375 (failed: 16)
+first: t=236269.532994850 s seq=371 state=unstable pos=(0.000000, 0.000000, 0.000000) quat=(1.000000, 0.000000, 0.000000, 0.000000)
+last : t=236299.515676450 s seq=3664937 state=stable pos=(-0.112056, -0.108598, -0.083365) quat=(0.912587, -0.118106, 0.046850, -0.388639)
+csv: wrote 3359 samples to C:\Users\sufia\Documents\cgrec\s8\pose-offset.csv
+[CARINA][TIME]:236269288142	[PID:22748][TID:26932]	get exp flag status: Host Command Invalid
+[CARINA][TIME]:236269504136	[PID:22748][TID:26932]	remain sync data transfer :15872 15872
+Current thread priority is 0x0
+[CARINA][TIME]:236269511756	[PID:22748][TID:26932]	init open_vst_str: off

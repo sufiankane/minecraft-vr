@@ -88,6 +88,15 @@ TEST(CaptureProbeReport, RateUsesTheSdkSpan) {
     EXPECT_DOUBLE_EQ(FramesPerSecond(observations), 10.0);
 }
 
+TEST(CaptureProbeReport, RatePrefersTheHostSpanWhenKnown) {
+    Observations observations;
+    observations.frames = 6;
+    observations.host_span_ns = 250'000'000; // the SDK stamps may be artifacts
+    observations.first_time = 123;
+    observations.last_time = 456;
+    EXPECT_DOUBLE_EQ(FramesPerSecond(observations), 20.0);
+}
+
 TEST(CaptureProbeReport, RateIsZeroWithoutASpan) {
     Observations observations;
     EXPECT_DOUBLE_EQ(FramesPerSecond(observations), 0.0);
@@ -110,12 +119,17 @@ TEST(CaptureProbeReport, FormatCarriesEveryField) {
     observations.stride = 640;
     observations.f0_equals_f1 = false;
     observations.left0_equals_right0 = true;
+    observations.l0_present = true;
+    observations.r0_present = true;
+    observations.l1_present = false;
+    observations.r1_present = false;
     observations.snapshots_written = 4;
     observations.snapshot_dir = "C:/tmp/snap";
     const std::string report = FormatObservations(observations);
     EXPECT_NE(report.find("frames=120"), std::string::npos);
     EXPECT_NE(report.find("rate=119.0 Hz"), std::string::npos);
     EXPECT_NE(report.find("geometry=640x480 stride=640 packed=yes"), std::string::npos);
+    EXPECT_NE(report.find("streams=l0:y r0:y l1:n r1:n"), std::string::npos);
     EXPECT_NE(report.find("sequence_gaps=1"), std::string::npos);
     EXPECT_NE(report.find("f0_equals_f1=no"), std::string::npos);
     EXPECT_NE(report.find("left0_equals_right0=yes"), std::string::npos);

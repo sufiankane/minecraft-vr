@@ -243,6 +243,24 @@ void TraceInt(const char *prefix, int value) noexcept {
     (void)std::fputc('\n', stderr);
 }
 
+/// One contained formatted line for the camera-callback trace (HIL U-03:
+/// which streams the vendor callback delivers, at what geometry, and with what
+/// timestamp).
+constexpr std::size_t kCameraTraceBufferSize = 160;
+/// Log every Nth camera frame (the layout is stable; the first lines are the
+/// interesting ones).
+constexpr std::uint64_t kCameraTraceEvery = 30;
+
+void TraceCameraFrame(const void *left0, const void *right0, const void *left1, const void *right1, int width,
+                      int height, double timestamp) noexcept {
+    std::array<char, kCameraTraceBufferSize> buffer{};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) — a single contained snprintf for the HIL trace.
+    (void)std::snprintf(buffer.data(), buffer.size(), "viture-camera: l0=%d r0=%d l1=%d r1=%d %dx%d ts=%.6f\n",
+                        left0 != nullptr ? 1 : 0, right0 != nullptr ? 1 : 0, left1 != nullptr ? 1 : 0,
+                        right1 != nullptr ? 1 : 0, width, height, timestamp);
+    (void)std::fputs(buffer.data(), stderr);
+}
+
 /// Outcome of validating a caller-supplied vendor-DLL path.
 ///
 /// A path is accepted only when it is absolute and either outside the working
@@ -1125,6 +1143,9 @@ class VendorVitureApi final : public IVitureApi {
     void OnCameraFrame(char *left0, char *right0, char *left1, char *right1, double timestamp, int width,
                        int height) noexcept {
         const std::lock_guard<std::mutex> lock(frame_mutex_);
+        if (DebugTracesEnabled() && (camera_trace_counter_++ % kCameraTraceEvery) == 0U) {
+            TraceCameraFrame(left0, right0, left1, right1, width, height, timestamp);
+        }
         if (frame_sink_ == nullptr) {
             return;
         }
@@ -1168,6 +1189,7 @@ class VendorVitureApi final : public IVitureApi {
     IStereoFrameSink *frame_sink_ = nullptr;
     int frame_stride_ = 0;
     std::uint64_t frame_sequence_ = 0;
+    std::uint64_t camera_trace_counter_ = 0;
 };
 
 void ViturePoseCallback(float * /*pose*/, double timestamp) {
