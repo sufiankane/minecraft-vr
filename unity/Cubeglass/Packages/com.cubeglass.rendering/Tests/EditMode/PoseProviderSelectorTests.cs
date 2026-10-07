@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Cubeglass.CoreMath;
 using Cubeglass.Unity.Bridge;
 using NUnit.Framework;
 using UnityEngine;
@@ -333,6 +334,41 @@ namespace Cubeglass.Unity.Rendering.Tests
             latch.TickOnce();
             Assert.AreSame(fallback, latch.Provider, "ForcedSynthetic is test scaffolding, not a deployment fallback");
             Assert.AreEqual(PoseTrackingState.Stable, latch.TrackingState, "the scripted state flows through");
+        }
+
+        /// <summary>
+        /// S7 HIL defect 2 (2026-10-07): with no bridge writer the honest
+        /// fallback reports Lost, and the interaction service disables breaks
+        /// and places, so the playtest cannot exercise them. The
+        /// <c>CG_SYNTHETIC_TRACKING</c> seam enables interactions for the HIL
+        /// run while the default stays Lost (TD-057).
+        /// </summary>
+        [TestCase("stable", TrackState.Stable)]
+        [TestCase("STABLE", TrackState.Stable)]
+        [TestCase(" unstable ", TrackState.Unstable)]
+        [TestCase("lost", TrackState.Lost)]
+        public void FallbackTrackingStateOverrideParses(string value, TrackState expected)
+        {
+            Assert.AreEqual(expected, PoseProviderSelector.ParseFallbackTrackingState(value));
+        }
+
+        [TestCase("")]
+        [TestCase("bridge")]
+        [TestCase("1")]
+        public void FallbackTrackingStateOverrideRejectsUnknownValues(string value)
+        {
+            Assert.IsNull(PoseProviderSelector.ParseFallbackTrackingState(value));
+        }
+
+        [Test]
+        public void FallbackTrackingStateOverrideAppliesAndKeepsTheDefaultOtherwise()
+        {
+            PoseProviderSelector selector = CreateComponent(out _, out _);
+            Assert.AreEqual(TrackState.Lost, selector.FallbackTrackingState, "the default stays honest (TD-057)");
+            selector.ApplyFallbackTrackingStateOverride("stable");
+            Assert.AreEqual(TrackState.Stable, selector.FallbackTrackingState, "the HIL seam enables interactions");
+            selector.ApplyFallbackTrackingStateOverride("nonsense");
+            Assert.AreEqual(TrackState.Stable, selector.FallbackTrackingState, "unknown values are ignored");
         }
 
         private sealed class FakePoseProvider : MonoBehaviour, IPoseProvider

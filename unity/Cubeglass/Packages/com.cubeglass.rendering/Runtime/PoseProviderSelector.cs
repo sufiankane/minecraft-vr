@@ -268,6 +268,48 @@ namespace Cubeglass.Unity.Rendering
         /// </summary>
         public TrackState FallbackTrackingState { get; set; } = TrackState.Lost;
 
+        /// <summary>
+        /// Environment variable that overrides <see cref="FallbackTrackingState"/>
+        /// for HIL runs (S7 HIL defect 2, 2026-10-07): with no bridge writer the
+        /// honest fallback reports <see cref="TrackState.Lost"/>, and the
+        /// interaction service then disables breaks and places, so the S7
+        /// playtest cannot exercise them. Values: <c>stable</c>,
+        /// <c>unstable</c>, <c>lost</c>. The default stays Lost (TD-057) and no
+        /// normal deployment sets this.
+        /// </summary>
+        public const string FallbackTrackingStateEnvironmentVariable = "CG_SYNTHETIC_TRACKING";
+
+        /// <summary>Parses the HIL override; null for unset or unknown values.</summary>
+        public static TrackState? ParseFallbackTrackingState(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return null;
+            }
+
+            switch (value.Trim().ToLowerInvariant())
+            {
+                case "stable":
+                    return TrackState.Stable;
+                case "unstable":
+                    return TrackState.Unstable;
+                case "lost":
+                    return TrackState.Lost;
+                default:
+                    return null;
+            }
+        }
+
+        /// <summary>Applies the HIL override when the value parses; unknown values are ignored.</summary>
+        public void ApplyFallbackTrackingStateOverride(string value)
+        {
+            TrackState? parsed = ParseFallbackTrackingState(value);
+            if (parsed.HasValue)
+            {
+                FallbackTrackingState = parsed.Value;
+            }
+        }
+
         /// <summary>Fallback warnings emitted (entry plus rate-limited recurring); test/diagnostic.</summary>
         public int FallbackWarnings
         {
@@ -293,6 +335,7 @@ namespace Cubeglass.Unity.Rendering
 
         private void Awake()
         {
+            ApplyFallbackTrackingStateOverride(Environment.GetEnvironmentVariable(FallbackTrackingStateEnvironmentVariable));
             SelectProvider();
         }
 

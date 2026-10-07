@@ -188,3 +188,38 @@ update before archiving this escalation.
   before the re-test.
 - **Evidence:** `docs/notes/s7-hil/session-start.png` (the run state before the
   defect was hit).
+
+## Defect 2 (2026-10-07, fixed)
+
+- **Symptom (second playtest):** break and place still dead after the cursor
+  fix, even with the game foregrounded on the glasses.
+- **Root cause:** with no bridge writer the pose selector reports the honest
+  fallback state **Lost** (TD-057), which maps to `TrackingQuality.None`;
+  `InteractionService.Update` then returns early after 200 ms of loss and
+  **never runs targeting, breaks or places**. Mouse look and movement were
+  unaffected, which is why the first cursor fix appeared to help nothing for
+  interactions. This also explains the first playtest's "can't break
+  anything".
+- **Fix:** a documented HIL seam, `PoseProviderSelector` reads
+  `CG_SYNTHETIC_TRACKING` (`stable`/`unstable`/`lost`) at `Awake` and applies
+  it to `FallbackTrackingState`; the default stays `Lost`, and unknown values
+  are ignored. Pinned by `PoseProviderSelectorTests` (parse + default + ignore
+  cases). The playtest player is launched with the variable set to `stable`.
+- **Consequence for the HIL design:** the S7 playtest needs the seam until
+  the S12 writer exists; a future stage should also consider surfacing a
+  visible "tracking lost — interactions disabled" hint in the HUD.
+
+## Retest 1 (2026-10-07, with the tracking seam)
+
+| # | Item | Result |
+|---|---|---|
+| 1 | Mouse look | **Pass** (cursor lock + foreground) |
+| 2 | LMB break | **Pass** |
+| 3 | RMB place | **Pass** |
+| 4 | No stuck states + save/reload persistence | **Deferred by the owner** |
+| 5 | Snap turn + vignette | **Pass** |
+
+`stage-7-complete` stays withheld until item 4 is retested and committed;
+evidence for the passing items: `docs/notes/s7-hil/retest-start.png` and
+`retest-tracking3.png` (the overlay reads `track Stable (NoDataWrite)` with
+the seam).
