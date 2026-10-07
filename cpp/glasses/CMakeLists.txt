@@ -6,6 +6,7 @@ add_library(
     src/replay_head_pose_source.cpp
     src/viture_loader.cpp
     src/viture_head_pose_source.cpp
+    src/viture_stereo_source.cpp
 )
 add_library(cg::glasses ALIAS cg_glasses)
 

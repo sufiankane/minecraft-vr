@@ -59,6 +59,7 @@
 #include <utility>
 
 #include "cg/glasses/file_hash.hpp"
+#include "cg/glasses/viture_stereo_source.hpp"
 #include "result.hpp"
 
 #ifdef _WIN32
@@ -811,7 +812,11 @@ constexpr std::size_t kPoseIndexQz = 6;
 class VendorVitureApi;
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) — the vendor pose callback carries no context.
 std::atomic<VendorVitureApi *> g_pose_callback_target{nullptr};
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables) — same for the camera callback.
+std::atomic<VendorVitureApi *> g_camera_callback_target{nullptr};
 void ViturePoseCallback(float *pose, double timestamp);
+void VitureCameraCallback(char *left0, char *right0, char *left1, char *right1, double timestamp, int width,
+                          int height);
 
 /// No-op state callback: the SDK expects one to be registered, the adapter
 /// does not consume device state events. Under `CG_VITURE_DEBUG=1` every
@@ -822,12 +827,6 @@ void VitureStateCallback(int glass_state_id, int glass_value) {
         TraceInt("viture-state: value=", glass_value);
     }
 }
-
-/// No-op stereo camera callback: the Carina VIO engine captures the camera
-/// callback pointer at start time (vendor demo note), so the S5 adapter
-/// registers one even though it does not consume camera frames.
-void VitureCameraCallback(char * /*left0*/, char * /*right0*/, char * /*left1*/, char * /*right1*/,
-                          double /*timestamp*/, int /*width*/, int /*height*/) {}
 
 /// The vendor-backed API. It owns the library handle and the device handle and
 /// keeps the resolved pointers valid exactly as long as the API object.
@@ -919,9 +918,13 @@ class VendorVitureApi final : public IVitureApi {
         // The Carina VIO engine captures the callback pointers at start time,
         // so registration happens before StartPose (vendor demo comment). The
         // pose callback supplies the SDK timestamp for polled poses; the
-        // camera callback is a no-op the VIO engine expects to be present;
-        // vsync and IMU frames are not consumed by the S5 adapter.
+        // camera callback forwards to the sink registered through
+        // `SetFrameSink` (S8 Task 5), and the VIO engine expects the pointer to
+        // be present even before a sink is registered; vsync and IMU frames
+        // are not consumed by the adapter.
         g_pose_callback_target.store(this, std::memory_order_release);
+        g_camera_callback_target.store(this, std::memory_order_release);
+        frame_sequence_ = 0;
         code = fns_.register_callbacks_carina(handle_, &ViturePoseCallback, nullptr, nullptr, &VitureCameraCallback);
         if (trace) {
             TraceInt("viture-device: register_callbacks_carina rc=", code);
@@ -943,6 +946,12 @@ class VendorVitureApi final : public IVitureApi {
         }
         const bool trace = DebugTracesEnabled();
         ReleaseCallback();
+        {
+            // Clearing the sink under the lock waits for an in-flight camera
+            // callback, so no frame can follow the destroy.
+            const std::lock_guard<std::mutex> lock(frame_mutex_);
+            frame_sink_ = nullptr;
+        }
         if (started_) {
             const int stop_code = fns_.stop(handle_);
             if (trace) {
@@ -1098,6 +1107,32 @@ class VendorVitureApi final : public IVitureApi {
         has_stamp_.store(true, std::memory_order_release);
     }
 
+    Result<void> SetFrameSink(IStereoFrameSink *sink, VitureFrameSinkConfig config) override {
+        if (handle_ == nullptr) {
+            return Err<void>(Status{StatusCode::NotReady, "viture: no device; call CreateDevice first"});
+        }
+        // The lock waits for an in-flight camera callback, so clearing the
+        // sink guarantees no callback after this returns (S8 Task 5).
+        const std::lock_guard<std::mutex> lock(frame_mutex_);
+        frame_sink_ = sink;
+        frame_stride_ = config.stride;
+        return Ok();
+    }
+
+    /// SDK-thread entry point for the Carina camera callback. The frame views
+    /// point at the vendor buffers and stay valid for the sink call only.
+    // NOLINTNEXTLINE(bugprone-exception-escape) — the mutex lock can theoretically throw; the callback must not.
+    void OnCameraFrame(char *left0, char *right0, char *left1, char *right1, double timestamp, int width,
+                       int height) noexcept {
+        const std::lock_guard<std::mutex> lock(frame_mutex_);
+        if (frame_sink_ == nullptr) {
+            return;
+        }
+        const StereoFrame frame = MakeVendorFrame(
+            VendorFrameArgs{left0, right0, left1, right1, timestamp, width, height}, frame_stride_, ++frame_sequence_);
+        frame_sink_->OnFrame(frame);
+    }
+
   private:
     /// Releases the device handle of a failed `CreateDevice` (not started, so
     /// no stop/shutdown call).
@@ -1107,10 +1142,12 @@ class VendorVitureApi final : public IVitureApi {
         handle_ = nullptr;
     }
 
-    /// Clears the process-wide callback target if this instance owns it.
+    /// Clears the process-wide callback targets if this instance owns them.
     void ReleaseCallback() noexcept {
         VendorVitureApi *expected = this;
         g_pose_callback_target.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
+        expected = this;
+        g_camera_callback_target.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
     }
 
     VitureApiFns fns_{};
@@ -1123,12 +1160,28 @@ class VendorVitureApi final : public IVitureApi {
     // wrapper's `LastSdkSeconds`).
     std::atomic<double> stamp_seconds_{0.0};
     std::atomic<bool> has_stamp_{false};
+
+    // Camera-frame path (S8 Task 5): the mutex makes "no callback after
+    // clearing" true by waiting for an in-flight callback; the sink must
+    // return quickly (the slot/recorder contract).
+    std::mutex frame_mutex_;
+    IStereoFrameSink *frame_sink_ = nullptr;
+    int frame_stride_ = 0;
+    std::uint64_t frame_sequence_ = 0;
 };
 
 void ViturePoseCallback(float * /*pose*/, double timestamp) {
     VendorVitureApi *target = g_pose_callback_target.load(std::memory_order_acquire);
     if (target != nullptr) {
         target->OnPoseCallback(timestamp);
+    }
+}
+
+void VitureCameraCallback(char *left0, char *right0, char *left1, char *right1, double timestamp, int width,
+                          int height) {
+    VendorVitureApi *target = g_camera_callback_target.load(std::memory_order_acquire);
+    if (target != nullptr) {
+        target->OnCameraFrame(left0, right0, left1, right1, timestamp, width, height);
     }
 }
 

@@ -21,6 +21,7 @@
 #include "cg/glasses/fake_head_pose_source.hpp"
 #include "cg/glasses/manual_clock.hpp"
 #include "cg/glasses/viture_api.hpp"
+#include "cg/glasses/viture_stereo_source.hpp"
 #include "ports.hpp"
 
 namespace cg::glasses::test {
@@ -104,6 +105,14 @@ class FakeVitureApi final : public IVitureApi {
     std::atomic<std::uint64_t> set_display_mode_calls{0};
     std::atomic<std::uint64_t> get_refresh_hz_calls{0};
     mutable std::atomic<std::uint64_t> sdk_version_calls{0};
+    std::atomic<std::uint64_t> set_frame_sink_calls{0};
+
+    /// The registered frame sink (S8 Task 5); the fake's `DeliverFrame` drives
+    /// it exactly like the loader's camera callback would.
+    IStereoFrameSink *frame_sink = nullptr;
+    int frame_stride = 0;
+    std::uint64_t frame_sequence = 0;
+    std::uint64_t frames_delivered = 0;
 
     /// Last display arguments. `SetDisplayMode`/`GetRefreshHz` are only called
     /// from the thread driving the display control (the polling thread never
@@ -164,6 +173,31 @@ class FakeVitureApi final : public IVitureApi {
         if (on_device_call) {
             on_device_call();
         }
+    }
+
+    Result<void> SetFrameSink(IStereoFrameSink *sink, VitureFrameSinkConfig config) override {
+        set_frame_sink_calls.fetch_add(1, std::memory_order_relaxed);
+        if (!device_alive.load(std::memory_order_relaxed)) {
+            return Err<void>(Status{StatusCode::NotReady, "fake: no device"});
+        }
+        frame_sink = sink;
+        frame_stride = config.stride;
+        return Ok();
+    }
+
+    /// Drives one vendor-style frame through the registered sink when the
+    /// device is alive; mirrors the loader's callback mapping so source tests
+    /// exercise `MakeVendorFrame` too. Single-threaded unless a test says
+    /// otherwise.
+    void DeliverFrame(char *left0, char *right0, char *left1, char *right1, double timestamp, int width, int height) {
+        if (!device_alive.load(std::memory_order_relaxed) || frame_sink == nullptr) {
+            return;
+        }
+        ++frame_sequence;
+        ++frames_delivered;
+        const StereoFrame frame = MakeVendorFrame(
+            VendorFrameArgs{left0, right0, left1, right1, timestamp, width, height}, frame_stride, frame_sequence);
+        frame_sink->OnFrame(frame);
     }
 
     Result<void> StartPose() override {

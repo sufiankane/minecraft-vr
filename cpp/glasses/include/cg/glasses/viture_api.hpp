@@ -5,6 +5,7 @@
 #include <string>
 
 #include "cg_types.h"
+#include "ports.hpp"
 #include "result.hpp"
 
 namespace cg::glasses {
@@ -17,6 +18,13 @@ inline constexpr std::int64_t kViturePollTimeoutNs = 100'000'000;
 
 /// Number of floats in the SDK pose layout `[px, py, pz, qw, qx, qy, qz]`.
 inline constexpr std::size_t kViturePoseFloatCount = 7;
+
+/// Frame-sink registration options (S8 Task 5). U-03 keeps the vendor stride a
+/// configuration: `0` means "packed rows" until the capture probe measures the
+/// real layout; a positive value overrides it for every delivered view.
+struct VitureFrameSinkConfig {
+    int stride = 0;
+};
 
 /// The seam between `cg-glasses` and the VITURE SDK (ADR-0001, ADR-0009).
 ///
@@ -113,6 +121,17 @@ class IVitureApi {
     /// Asks a blocked `PollPose` to return promptly and marks the session for
     /// shutdown. Thread-safe, idempotent, `noexcept`; cleared by `StartPose`.
     virtual void RequestStop() noexcept = 0;
+
+    /// Registers the stereo frame sink (`nullptr` clears it) and returns
+    /// `NotReady` when no device is created. While a sink is registered the
+    /// vendor camera callback forwards frames to it; clearing the sink
+    /// guarantees no callback after the call returns (an in-flight callback
+    /// finishes first). `config.stride` overrides the delivered row stride
+    /// (`0` = packed rows, the U-03 default until the capture probe measures
+    /// the real layout). Frames arrive only while the device is started
+    /// (`StartPose`), because the vendor captures the callback pointer at
+    /// start time (dossier F-02/S8).
+    virtual Result<void> SetFrameSink(IStereoFrameSink *sink, VitureFrameSinkConfig config) = 0;
 };
 
 } // namespace cg::glasses
