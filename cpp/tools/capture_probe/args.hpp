@@ -118,12 +118,23 @@ struct ParseResult {
 struct Observations {
     std::uint64_t frames = 0;
     std::uint64_t sequence_gaps = 0;
-    /// SDK monotonic nanoseconds (the frame's `time`).
+    /// SDK monotonic nanoseconds (the frame's `time`); the first stamp of a
+    /// session is a startup artifact (observed 2026-10-07), so the span is
+    /// reported for the record.
     HostTime first_time = 0;
     HostTime last_time = 0;
+    /// Host arrival span between the first and last delivered frame; the rate
+    /// is computed from this when positive, because it is artifact-free.
+    HostTime host_span_ns = 0;
     int width = 0;
     int height = 0;
     int stride = 0;
+    /// Which streams the vendor delivered on the first frame (U-03): a null
+    /// pointer means the callback carries no such stream.
+    bool l0_present = false;
+    bool r0_present = false;
+    bool l1_present = false;
+    bool r1_present = false;
     /// Any observed frame where the `f0` pair equals the `f1` pair byte-wise.
     bool f0_equals_f1 = false;
     /// Any observed frame where `left0` equals `right0` byte-wise (a likely
@@ -132,15 +143,22 @@ struct Observations {
     std::uint64_t snapshots_written = 0;
     std::string snapshot_dir;
 };
-
-/// Frames per second over the observed SDK span; 0 when fewer than two frames
-/// or a non-positive span (never divides by zero).
+/// Frames per second: over the host arrival span when it is known (the first
+/// SDK stamp of a session is a startup artifact), else over the SDK span;
+/// 0 when fewer than two frames or a non-positive span (never divides by
+/// zero).
 [[nodiscard]] inline double FramesPerSecond(const Observations &observations) noexcept {
-    if (observations.frames < 2 || observations.last_time <= observations.first_time) {
+    if (observations.frames < 2) {
         return 0.0;
     }
-    const double span_s = static_cast<double>(observations.last_time - observations.first_time) / kNanosecondsPerSecond;
-    return static_cast<double>(observations.frames - 1) / span_s;
+    HostTime span_ns = observations.host_span_ns;
+    if (span_ns <= 0) {
+        span_ns = observations.last_time - observations.first_time;
+    }
+    if (span_ns <= 0) {
+        return 0.0;
+    }
+    return static_cast<double>(observations.frames - 1) / (static_cast<double>(span_ns) / kNanosecondsPerSecond);
 }
 
 /// The multi-line HIL log block; the tests pin the field labels and values.
@@ -150,9 +168,14 @@ struct Observations {
     (void)std::snprintf(rate, sizeof(rate), "%.1f", FramesPerSecond(observations));
     std::string text = "frames=" + std::to_string(observations.frames);
     text += "\nrate=" + std::string{rate} + " Hz";
-    text += "\nspan_ns=" + std::to_string(observations.last_time - observations.first_time);
+    text += "\nhost_span_ns=" + std::to_string(observations.host_span_ns);
+    text += "\nsdk_span_ns=" + std::to_string(observations.last_time - observations.first_time);
     text += "\ngeometry=" + std::to_string(observations.width) + "x" + std::to_string(observations.height) +
             " stride=" + std::to_string(observations.stride) + (packed ? " packed=yes" : " padded=yes");
+    text += "\nstreams=l0:" + std::string{observations.l0_present ? "y" : "n"} +
+            " r0:" + std::string{observations.r0_present ? "y" : "n"} +
+            " l1:" + std::string{observations.l1_present ? "y" : "n"} +
+            " r1:" + std::string{observations.r1_present ? "y" : "n"};
     text += "\nsequence_gaps=" + std::to_string(observations.sequence_gaps);
     text += "\nf0_equals_f1=" + std::string{observations.f0_equals_f1 ? "yes" : "no"} +
             " left0_equals_right0=" + std::string{observations.left0_equals_right0 ? "yes" : "no"};

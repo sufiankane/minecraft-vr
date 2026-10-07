@@ -1,0 +1,13 @@
+[CARINA][TIME]:235603383427	[PID:22908][TID:44512]	get exp flag status: Host Command Invalid
+[CARINA][TIME]:235603641547	[PID:22908][TID:44512]	remain sync data transfer :15872 15872
+Current thread priority is 0x0
+[CARINA][TIME]:235603649569	[PID:22908][TID:44512]	init open_vst_str: off
+frames=1493
+rate=25.0 Hz
+host_span_ns=59670376000
+sdk_span_ns=235273875500000
+geometry=640x480 stride=640 packed=yes
+streams=l0:y r0:y l1:n r1:n
+sequence_gaps=0
+f0_equals_f1=no left0_equals_right0=no
+snapshots=2 dir=C:\Users\sufia\Documents\cgrec\s8\snap-6dof

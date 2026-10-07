@@ -4,6 +4,7 @@
 // artefacts. It loads the vendor library through the shared loader (path
 // policy included) and drives a real create/start/attach session.
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -45,31 +46,50 @@ class ProbeSink final : public IStereoFrameSink {
 
     void OnFrame(const StereoFrame &frame) noexcept override {
         try {
-            const std::size_t bytes =
-                static_cast<std::size_t>(frame.f0.stride) * static_cast<std::size_t>(frame.f0.height);
+            const bool present[4] = {frame.f0.left != nullptr, frame.f0.right != nullptr, frame.f1.left != nullptr,
+                                     frame.f1.right != nullptr};
+            const auto arrival = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count();
             if (observations_.frames == 0) {
-                observations_.first_time = frame.time;
                 observations_.width = frame.f0.width;
                 observations_.height = frame.f0.height;
                 observations_.stride = frame.f0.stride;
+                observations_.l0_present = present[0];
+                observations_.r0_present = present[1];
+                observations_.l1_present = present[2];
+                observations_.r1_present = present[3];
+                observations_.first_time = frame.time;
+                host_first_arrival_ns_ = arrival;
             }
             observations_.last_time = frame.time;
+            observations_.host_span_ns = arrival - host_first_arrival_ns_;
             if (observations_.frames > 0 && frame.seq != last_seq_ + 1) {
                 ++observations_.sequence_gaps;
             }
             last_seq_ = frame.seq;
             ++observations_.frames;
-            if (std::memcmp(frame.f0.left, frame.f1.left, bytes) == 0) {
+
+            const std::size_t bytes =
+                static_cast<std::size_t>(frame.f0.stride) * static_cast<std::size_t>(frame.f0.height);
+            if (bytes > 0 && present[0] && present[2] && std::memcmp(frame.f0.left, frame.f1.left, bytes) == 0) {
                 observations_.f0_equals_f1 = true;
             }
-            if (std::memcmp(frame.f0.left, frame.f0.right, bytes) == 0) {
+            if (bytes > 0 && present[0] && present[1] && std::memcmp(frame.f0.left, frame.f0.right, bytes) == 0) {
                 observations_.left0_equals_right0 = true;
             }
             if (observations_.frames == snapshot_frame_) {
-                snapshot_l0_.assign(frame.f0.left, frame.f0.left + bytes);
-                snapshot_r0_.assign(frame.f0.right, frame.f0.right + bytes);
-                snapshot_l1_.assign(frame.f1.left, frame.f1.left + bytes);
-                snapshot_r1_.assign(frame.f1.right, frame.f1.right + bytes);
+                const std::uint8_t *const sources[4] = {frame.f0.left, frame.f0.right, frame.f1.left, frame.f1.right};
+                std::vector<std::uint8_t> *const destinations[4] = {&snapshot_l0_, &snapshot_r0_, &snapshot_l1_,
+                                                                    &snapshot_r1_};
+                for (std::size_t index = 0; index < 4; ++index) {
+                    snapshot_present_.at(index) = present[index] && bytes > 0;
+                    if (snapshot_present_.at(index)) {
+                        destinations[index]->assign(sources[index], sources[index] + bytes);
+                    } else {
+                        destinations[index]->clear();
+                    }
+                }
                 has_snapshot_ = true;
             }
         } catch (...) {
@@ -82,6 +102,10 @@ class ProbeSink final : public IStereoFrameSink {
 
     [[nodiscard]] bool HasSnapshot() const noexcept { return has_snapshot_; }
 
+    /// Which of the four streams the snapshot frame carried (a null pointer
+    /// means the vendor delivered no such stream).
+    [[nodiscard]] const std::array<bool, 4> &SnapshotPresent() const noexcept { return snapshot_present_; }
+
     [[nodiscard]] const std::vector<std::uint8_t> &SnapshotL0() const noexcept { return snapshot_l0_; }
     [[nodiscard]] const std::vector<std::uint8_t> &SnapshotR0() const noexcept { return snapshot_r0_; }
     [[nodiscard]] const std::vector<std::uint8_t> &SnapshotL1() const noexcept { return snapshot_l1_; }
@@ -90,9 +114,11 @@ class ProbeSink final : public IStereoFrameSink {
   private:
     std::uint64_t snapshot_frame_ = 1;
     std::uint64_t last_seq_ = 0;
+    HostTime host_first_arrival_ns_ = 0;
     Observations observations_{};
     bool has_snapshot_ = false;
     bool failed_ = false;
+    std::array<bool, 4> snapshot_present_{};
     std::vector<std::uint8_t> snapshot_l0_;
     std::vector<std::uint8_t> snapshot_r0_;
     std::vector<std::uint8_t> snapshot_l1_;
@@ -119,8 +145,12 @@ std::uint64_t WriteSnapshots(const Options &options, const Observations &observa
     const std::vector<std::uint8_t> *const streams[4] = {&sink.SnapshotL0(), &sink.SnapshotR0(), &sink.SnapshotL1(),
                                                          &sink.SnapshotR1()};
     const char *const names[4] = {"_l0", "_r0", "_l1", "_r1"};
+    const std::array<bool, 4> &present = sink.SnapshotPresent();
     std::uint64_t written = 0;
     for (std::size_t index = 0; index < 4; ++index) {
+        if (!present.at(index)) {
+            continue; // the vendor delivered no such stream (U-03)
+        }
         const std::vector<std::uint8_t> &data = *streams[index];
         const StereoImage view{data.data(), data.data(), observations.width, observations.height, observations.stride};
         const std::filesystem::path path =
