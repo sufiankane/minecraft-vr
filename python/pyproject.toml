@@ -7,6 +7,12 @@ name = "cubeglass-tools"
 version = "0.0.0"
 description = "Offline Python tooling for Cubeglass."
 requires-python = ">=3.11"
+dependencies = [
+    # S9 calibration: numeric arrays and OpenCV (headless build; cp37-abi3
+    # wheel verified on the CI/dev CPython 3.14).
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+]
 
 [tool.setuptools]
 packages = ["calib", "depcheck"]
@@ -17,6 +23,13 @@ target-version = "py311"
 
 [tool.mypy]
 strict = true
+
+# OpenCV ships no type stubs; `calib` treats it as an untyped module behind
+# this explicit override (every cv2 result is converted through numpy or
+# float() before it reaches a typed binding).
+[[tool.mypy.overrides]]
+module = ["cv2", "cv2.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
