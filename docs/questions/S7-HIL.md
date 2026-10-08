@@ -216,10 +216,27 @@ update before archiving this escalation.
 | 1 | Mouse look | **Pass** (cursor lock + foreground) |
 | 2 | LMB break | **Pass** |
 | 3 | RMB place | **Pass** |
-| 4 | No stuck states + save/reload persistence | **Deferred by the owner** |
+| 4 | No stuck states + save/reload persistence | **Pass (2026-10-08)**: two edits survived a graceful close + relaunch and a further break/place saved; the owner walked the carved area and reported no stuck states |
 | 5 | Snap turn + vignette | **Pass** |
 
 `stage-7-complete` stays withheld until item 4 is retested and committed;
 evidence for the passing items: `docs/notes/s7-hil/retest-start.png` and
 `retest-tracking3.png` (the overlay reads `track Stable (NoDataWrite)` with
 the seam).
+
+## Completion (2026-10-08)
+
+The owner completed item 4 (persistence across a graceful close and relaunch;
+walk-around clean) and confirmed the full checklist. Two **M1 control limits**
+were observed and are by design, not defects:
+
+- there is no jump control (nothing maps Space or a jump action; the
+  controller only steps gravity and collision);
+- mouse look is yaw-only: `PlayerController` documents "pitch has no input
+  source in S4", `InputMapping` notes `Look.Y` is "sampled for future pitch
+  input", and pitch arrives with the head pose (S12 writer).
+
+The S7 exit gate is satisfied: the checklist above is complete, the CI player
+build has been green with the cursor-lock and tracking-seam fixes
+(`21cbd95`, `44b9e82`), and `stage-7-complete` + `v0.1.0` are eligible.
+
