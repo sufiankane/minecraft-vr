@@ -9,8 +9,14 @@ from calib.projection import (
     rotation_matrix,
     transform_points,
 )
-from calib.solver import PinholeSolution, calibrate_pinhole, solve_pinhole_stereo
-from calib.synth import SynthViews, default_pinhole_rig, synthetic_views
+from calib.solver import (
+    StereoSolution,
+    calibrate_fisheye,
+    calibrate_pinhole,
+    solve_fisheye_stereo,
+    solve_pinhole_stereo,
+)
+from calib.synth import SynthViews, default_fisheye_rig, default_pinhole_rig, synthetic_views
 from calib.types import FISHEYE, PINHOLE, BoardSpec, Intrinsics, StereoRig
 
 #: Major version of the `calibration.json` schema (dossier 5.7). The loader
@@ -23,15 +29,18 @@ __all__ = [
     "SCHEMA_VERSION",
     "BoardSpec",
     "Intrinsics",
-    "PinholeSolution",
     "StereoRig",
+    "StereoSolution",
     "SynthViews",
+    "calibrate_fisheye",
     "calibrate_pinhole",
+    "default_fisheye_rig",
     "default_pinhole_rig",
     "project",
     "quaternion_from_rotation",
     "rotation_from_quaternion",
     "rotation_matrix",
+    "solve_fisheye_stereo",
     "solve_pinhole_stereo",
     "synthetic_views",
     "transform_points",
