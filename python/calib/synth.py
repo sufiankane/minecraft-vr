@@ -8,7 +8,7 @@ import numpy as np
 import numpy.typing as npt
 
 from calib.projection import project, rotation_from_quaternion, transform_points
-from calib.types import PINHOLE, BoardSpec, Intrinsics, StereoRig
+from calib.types import FISHEYE, PINHOLE, BoardSpec, Intrinsics, StereoRig
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -21,6 +21,28 @@ def default_pinhole_rig(
     intrinsics = Intrinsics(PINHOLE, fx, fx, width / 2.0, height / 2.0, (0.0, 0.0, 0.0, 0.0, 0.0))
     # The right camera sits `baseline` to the +X side of the left camera and
     # looks the same way (identity rotation); its frame translates by -x.
+    return StereoRig(
+        image_size=image_size,
+        left=intrinsics,
+        right=intrinsics,
+        right_from_left_p=(-baseline_m, 0.0, 0.0),
+        right_from_left_q=(1.0, 0.0, 0.0, 0.0),
+        reproj_rms_px=0.0,
+        n_views=0,
+    )
+
+
+def default_fisheye_rig(
+    *,
+    fx: float = 300.0,
+    baseline_m: float = 0.0635,
+    image_size: tuple[int, int] = (640, 480),
+    dist: tuple[float, float, float, float] = (-0.02, 0.001, 0.0, 0.0),
+) -> StereoRig:
+    """A fisheye (equidistant) pair; the default distortion is mild, so tests
+    that need a pinhole-rejecting lens pass a stronger `dist`."""
+    width, height = image_size
+    intrinsics = Intrinsics(FISHEYE, fx, fx, width / 2.0, height / 2.0, dist)
     return StereoRig(
         image_size=image_size,
         left=intrinsics,

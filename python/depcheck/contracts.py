@@ -81,6 +81,11 @@ EXEMPT_CONTRACT_FILES: dict[str, str] = {
     "contracts/licence-allowlist.json": (
         "licence policy data, not ABI surface; enforced by the licence gate"
     ),
+    "contracts/calibration.schema.json": (
+        "data-format JSON Schema (dossier 5.7), versioned by the calibration document's "
+        "integer `schema` field; enforced by the writer's validation and the S9 loader's "
+        "golden fixtures, not by the C ABI fingerprint gate"
+    ),
     "contracts/.gitkeep": "empty placeholder that keeps the contracts/ directory in git",
 }
 

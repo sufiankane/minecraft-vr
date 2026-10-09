@@ -8,10 +8,16 @@ version = "0.0.0"
 description = "Offline Python tooling for Cubeglass."
 requires-python = ">=3.11"
 dependencies = [
-    # S9 calibration: numeric arrays and OpenCV (headless build; cp37-abi3
-    # wheel verified on the CI/dev CPython 3.14).
+    # S9 calibration: numeric arrays, OpenCV (headless build; cp37-abi3 wheel
+    # verified on the CI/dev CPython 3.14) and JSON Schema validation of
+    # calibration.json against the contract schema.
+    #
+    # OpenCV is pinned below 5: 5.0.0.93's `cv2.fisheye.calibrate` fails on
+    # valid inputs (an internal `arithm_op` size mismatch, reproduced with a
+    # textbook minimal case), so the fisheye path needs the stable 4.x line.
     "numpy>=2.0",
-    "opencv-python-headless>=4.10",
+    "opencv-python-headless>=4.10,<5",
+    "jsonschema>=4.21",
 ]
 
 [tool.setuptools]
@@ -24,11 +30,12 @@ target-version = "py311"
 [tool.mypy]
 strict = true
 
-# OpenCV ships no type stubs; `calib` treats it as an untyped module behind
-# this explicit override (every cv2 result is converted through numpy or
-# float() before it reaches a typed binding).
+# OpenCV and jsonschema ship no type stubs; `calib` treats them as untyped
+# modules behind this explicit override (every cv2 result is converted through
+# numpy or float() before it reaches a typed binding, and the jsonschema
+# validator is exercised through `writer.validate_document`).
 [[tool.mypy.overrides]]
-module = ["cv2", "cv2.*"]
+module = ["cv2", "cv2.*", "jsonschema", "jsonschema.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
