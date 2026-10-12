@@ -16,7 +16,7 @@ dependencies = [
     # valid inputs (an internal `arithm_op` size mismatch, reproduced with a
     # textbook minimal case), so the fisheye path needs the stable 4.x line.
     "numpy>=2.0",
-    "opencv-python-headless>=4.10,<5",
+    "opencv-python-headless>=4.10,<6",
     "jsonschema>=4.21",
 ]
 
