@@ -47,7 +47,7 @@ jobs:
         working-directory: cpp
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bench-cpp-results
           path: cpp/benchmark_results.json
@@ -86,7 +86,7 @@ jobs:
 
       - name: Upload soak log
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: soak-log
           path: cpp/soak.log
@@ -130,7 +130,7 @@ jobs:
           -- p95 --budget-ms 8
 
       - name: Upload BenchmarkDotNet artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bench-dotnet-results
           path: dotnet/BenchmarkDotNet.Artifacts
@@ -151,13 +151,13 @@ jobs:
         run: python -m pip install -e python
 
       - name: Download C++ benchmark results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bench-cpp-results
           path: artifacts/cpp
 
       - name: Download .NET benchmark results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: bench-dotnet-results
           path: artifacts/dotnet
@@ -204,7 +204,7 @@ jobs:
 
       - name: Upload the benchmark history
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-bench-history
           path: benchmark-history
@@ -240,7 +240,7 @@ jobs:
         # TD-053: pinned v2.6.0 scanning the hash-pinned Python requirement
         # files. OSV has no vcpkg extractor and the Unity UPM registry has no
         # open-source scanner; both residuals are documented in docs/ci.md.
-        uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+        uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
         with:
           scan-args: |-
             scan
@@ -315,7 +315,7 @@ jobs:
 
       - name: Upload the Gameplay mutation report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-gameplay-report
           path: dotnet/mutation-gameplay
